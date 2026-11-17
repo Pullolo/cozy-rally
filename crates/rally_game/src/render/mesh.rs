@@ -232,3 +232,10 @@ impl MeshBuilder {
 pub fn trs(t: Vec3, r: Quat, s: Vec3) -> Mat4 {
     Mat4::from_scale_rotation_translation(s, r, t)
 }
+
+/// Vertex-colour convention for OPAQUE meshes: alpha encodes wind-sway weight
+/// (255 = rigid, lower = sways more; the opaque shader treats output alpha as 1).
+/// Use for foliage tips, grass blades, flags. Never use on alpha-blended meshes.
+pub fn sway(c: [u8; 4], weight: f32) -> [u8; 4] {
+    [c[0], c[1], c[2], (255.0 - weight.clamp(0.0, 1.0) * 200.0) as u8]
+}
