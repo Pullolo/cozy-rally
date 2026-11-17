@@ -21,13 +21,23 @@ pub const TERRAIN_CELL: f32 = 2.5;
 pub struct TrackParams {
     pub seed: u64,
     pub biome: Option<Biome>,
-    /// 0 = short (~1.4km), 1 = medium (~2km), 2 = long (~2.8km)
+    /// 0 = short (~1.3km), 1 = medium (~1.8km), 2 = long (~2.5km)
     pub length_class: u8,
+    /// Track style / technicality: 0 = Relaxed (flowing, wide), 1 = Rally (default),
+    /// 2 = Expert (more hairpins, narrower, more surface patches, kinks after jumps)
+    #[serde(default = "default_difficulty")]
+    pub difficulty: u8,
 }
+
+fn default_difficulty() -> u8 {
+    1
+}
+
+pub const DIFFICULTY_NAMES: [&str; 3] = ["Relaxed", "Rally", "Expert"];
 
 impl Default for TrackParams {
     fn default() -> Self {
-        TrackParams { seed: 1, biome: None, length_class: 1 }
+        TrackParams { seed: 1, biome: None, length_class: 1, difficulty: default_difficulty() }
     }
 }
 
@@ -46,6 +56,8 @@ pub struct TrackSample {
     pub bank: f32,
     /// Signed curvature (1/m), positive = left turn
     pub curvature: f32,
+    /// Driving surface of the road at this sample (patches of ice/mud/sand, tarmac sections...)
+    pub surface: Surface,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +155,8 @@ pub struct Track {
     pub water_level: Option<f32>,
     /// Sample indices where jumps take off (for UI/FX hints)
     pub jumps: Vec<usize>,
+    /// Designed layout pieces (corners/straights) in arc length, for stats and hints
+    pub features: Vec<crate::layout::Feature>,
     grid: SpatialGrid,
     prop_grid: SpatialGrid,
 }
@@ -154,38 +168,6 @@ fn wrap(i: isize, n: usize) -> usize {
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
-}
-
-fn catmull_rom(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, t: f32) -> Vec2 {
-    let t2 = t * t;
-    let t3 = t2 * t;
-    0.5 * ((2.0 * p1) + (-p0 + p2) * t + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2 + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3)
-}
-
-/// Resample a closed polyline to (approximately) uniform spacing.
-fn resample_closed(pts: &[Vec2], spacing: f32) -> Vec<Vec2> {
-    let n = pts.len();
-    let mut total = 0.0;
-    for i in 0..n {
-        total += pts[i].distance(pts[(i + 1) % n]);
-    }
-    let count = (total / spacing).round().max(8.0) as usize;
-    let step = total / count as f32;
-    let mut out = Vec::with_capacity(count);
-    let mut seg = 0;
-    let mut seg_start = 0.0;
-    let mut seg_len = pts[0].distance(pts[1 % n]);
-    for k in 0..count {
-        let target = k as f32 * step;
-        while seg_start + seg_len < target && seg < n * 2 {
-            seg_start += seg_len;
-            seg += 1;
-            seg_len = pts[seg % n].distance(pts[(seg + 1) % n]);
-        }
-        let t = if seg_len > 1e-6 { (target - seg_start) / seg_len } else { 0.0 };
-        out.push(pts[seg % n].lerp(pts[(seg + 1) % n], t.clamp(0.0, 1.0)));
-    }
-    out
 }
 
 fn signed_curvature_2d(pts: &[Vec2]) -> Vec<f32> {
@@ -263,171 +245,59 @@ impl Track {
         let style = biome.style();
         let noise_seed = (params.seed as u32).wrapping_mul(2654435761);
 
-        // ---- 1. control loop
-        let base_r = match params.length_class {
-            0 => 150.0,
-            1 => 215.0,
-            _ => 290.0,
-        } * rng.range(0.9, 1.1);
-        let n_ctrl = rng.range_i(9, 15) as usize;
-        let mut ctrl: Vec<Vec2> = Vec::with_capacity(n_ctrl);
-        for i in 0..n_ctrl {
-            let ang = std::f32::consts::TAU * (i as f32 + rng.range(-0.3, 0.3)) / n_ctrl as f32;
-            let mut r = base_r * rng.range(0.6, 1.25);
-            if rng.chance(0.18) {
-                r *= 0.55; // pinch -> hairpin-ish
-            }
-            ctrl.push(Vec2::new(ang.cos(), ang.sin()) * r);
-        }
-        // ---- 2. spline
-        let mut dense = Vec::new();
-        for i in 0..n_ctrl {
-            let p0 = ctrl[wrap(i as isize - 1, n_ctrl)];
-            let p1 = ctrl[i];
-            let p2 = ctrl[(i + 1) % n_ctrl];
-            let p3 = ctrl[(i + 2) % n_ctrl];
-            for k in 0..24 {
-                dense.push(catmull_rom(p0, p1, p2, p3, k as f32 / 24.0));
-            }
-        }
-        let mut pts = resample_closed(&dense, SAMPLE_SPACING);
-        // ---- 3. smooth until min radius is ok
-        let min_radius = 16.0;
-        for _ in 0..60 {
-            let curv = signed_curvature_2d(&pts);
-            let worst = curv.iter().fold(0.0f32, |m, c| m.max(c.abs()));
-            if worst < 1.0 / min_radius {
+        // ---- 1-3. designed layout (corner complexes + straights, closed exactly)
+        let diff = params.difficulty.min(2);
+        let (hw_narrow, hw_wide) = [(3.75, 5.6), (3.5, 5.3), (3.3, 5.0)][diff as usize];
+        let half_w_base = hw_wide + 0.6;
+        let mut layout = None;
+        for _ in 0..120 {
+            if let Some(l) = crate::layout::design(&mut rng, diff, params.length_class, SAMPLE_SPACING, half_w_base, SHOULDER) {
+                layout = Some(l);
                 break;
             }
-            let n = pts.len();
-            let mut next = pts.clone();
-            for i in 0..n {
-                if curv[i].abs() > 0.7 / min_radius {
-                    for k in -3isize..=3 {
-                        let j = wrap(i as isize + k, n);
-                        let avg = (pts[wrap(j as isize - 1, n)] + pts[(j + 1) % n]) * 0.5;
-                        next[j] = pts[j].lerp(avg, 0.5);
-                    }
-                }
-            }
-            pts = resample_closed(&next, SAMPLE_SPACING);
         }
-        // general light smoothing for flow
-        for _ in 0..4 {
-            let n = pts.len();
-            let prev = pts.clone();
-            for i in 0..n {
-                let avg = (prev[wrap(i as isize - 1, n)] + prev[(i + 1) % n]) * 0.5;
-                pts[i] = prev[i].lerp(avg, 0.5);
-            }
-        }
-        pts = resample_closed(&pts, SAMPLE_SPACING);
+        let layout = layout?;
+        let pts = layout.pts;
         let n = pts.len();
-        let curv = signed_curvature_2d(&pts);
-        if curv.iter().any(|c| c.abs() > 1.0 / 13.0) {
+        let raw_curv = signed_curvature_2d(&pts);
+        if raw_curv.iter().any(|c| c.abs() > 1.0 / 10.5) {
             return None;
         }
         let length = n as f32 * SAMPLE_SPACING;
-        if length < 700.0 {
-            return None;
-        }
-
-        // ---- 4. clearance check (track must not come near itself)
-        let half_w_base = 5.6;
-        let clearance = 2.0 * (half_w_base + SHOULDER) + 12.0;
         let grid = SpatialGrid::new(&pts, 16.0, 60.0);
-        for i in (0..n).step_by(2) {
-            let mut bad = false;
-            grid.for_each_near(pts[i], clearance, |j| {
-                let j = j as usize;
-                let di = (i as isize - j as isize).unsigned_abs();
-                let di = di.min(n - di);
-                if di as f32 * SAMPLE_SPACING > clearance * 2.2 && pts[i].distance(pts[j]) < clearance {
-                    bad = true;
-                }
-            });
-            if bad {
-                return None;
-            }
-        }
+        let mut curv = raw_curv;
+        smooth_closed_f32(&mut curv, 2, 2);
 
-        // ---- 5. choose start: middle of the straightest stretch
-        let mut best = (f32::MAX, 0usize);
-        let win = 30isize;
-        for i in 0..n {
-            let mut sum = 0.0;
-            for k in -win..=win {
-                sum += curv[wrap(i as isize + k, n)].abs();
-            }
-            if sum < best.0 {
-                best = (sum, i);
-            }
-        }
-        pts.rotate_left(best.1);
-        let grid = SpatialGrid::new(&pts, 16.0, 60.0);
-        let mut curv = signed_curvature_2d(&pts);
-        smooth_closed_f32(&mut curv, 3, 2);
-
-        // ---- 6. elevation
+        // ---- 6. elevation: natural terrain, slope limited, then designed crests / dips / jumps
         let mut elev: Vec<f32> = pts.iter().map(|p| natural_height(&style, biome, noise_seed, p.x, p.y)).collect();
         smooth_closed_f32(&mut elev, 12, 3);
-        // slope limit
-        let max_slope = 0.11 * SAMPLE_SPACING;
-        for _ in 0..4 {
-            for i in 0..n {
-                let prev = elev[wrap(i as isize - 1, n)];
-                elev[i] = elev[i].clamp(prev - max_slope, prev + max_slope);
-            }
-            for i in (0..n).rev() {
-                let next = elev[(i + 1) % n];
-                elev[i] = elev[i].clamp(next - max_slope, next + max_slope);
-            }
-        }
+        slope_limit(&mut elev, 0.11 * SAMPLE_SPACING);
         smooth_closed_f32(&mut elev, 3, 2);
+        let jumps = crate::layout::shape_elevation(&mut elev, &layout.features, &curv, &mut rng, diff, SAMPLE_SPACING);
         // flatten the start area
-        let start_flat = 20;
+        let start_flat = 22;
         let e0 = elev[0];
         for k in -(start_flat as isize)..=(start_flat as isize) {
             let i = wrap(k, n);
             let t = smoothstep(start_flat as f32, start_flat as f32 * 0.5, k.unsigned_abs() as f32);
             elev[i] = elev[i] + (e0 - elev[i]) * t;
         }
-        // jumps on straight-ish sections away from start
-        let mut jumps = Vec::new();
-        let jump_count = rng.range_i(1, 3);
-        let mut tries = 0;
-        while (jumps.len() as i32) < jump_count && tries < 200 {
-            tries += 1;
-            let i = rng.range_i(60, n as i32 - 60) as usize;
-            let straight = (-25isize..=25).all(|k| curv[wrap(i as isize + k, n)].abs() < 1.0 / 90.0);
-            let far = jumps.iter().all(|&j: &usize| (j as isize - i as isize).unsigned_abs() > 80);
-            if straight && far {
-                jumps.push(i);
-            }
-        }
-        for &j in &jumps {
-            // ramp up over 16m then drop over ~5m
-            let up = 8isize;
-            let down = 3isize;
-            let h = rng.range(1.3, 1.9);
-            for k in -up..=down {
-                let i = wrap(j as isize + k, n);
-                let f = if k <= 0 {
-                    let t = (k + up) as f32 / up as f32;
-                    t * t * (3.0 - 2.0 * t)
-                } else {
-                    1.0 - (k as f32 / down as f32)
-                };
-                elev[i] += h * f;
-            }
-        }
 
-        // ---- 7. samples (tangent / banking)
-        let mut bank: Vec<f32> = curv.iter().map(|c| (c * 22.0).clamp(-0.13, 0.13)).collect();
-        smooth_closed_f32(&mut bank, 6, 2);
-        let mut samples = Vec::with_capacity(n);
-        let mut width_noise: Vec<f32> = (0..n).map(|i| noise::value2(i as f32 * 0.02, 3.3, noise_seed) * 0.6).collect();
+        // ---- 7. width, surface, banking, samples
+        let mut tech = layout.tech.clone();
+        smooth_closed_f32(&mut tech, 6, 2);
+        let mut width_noise: Vec<f32> = (0..n).map(|i| noise::value2(i as f32 * 0.03, 3.3, noise_seed) * 0.25).collect();
         smooth_closed_f32(&mut width_noise, 4, 1);
+        let surfaces = crate::layout::surface_patches(biome, style.road_surface, &layout.features, &jumps, &mut rng, diff, n, SAMPLE_SPACING);
+        let mut bank: Vec<f32> = (0..n)
+            .map(|i| {
+                let b = (curv[i] * 24.0).clamp(-0.14, 0.14);
+                let cam = layout.camber[i];
+                if cam >= 0.0 { b * cam } else { -b * 0.55 }
+            })
+            .collect();
+        smooth_closed_f32(&mut bank, 5, 2);
+        let mut samples = Vec::with_capacity(n);
         for i in 0..n {
             let p = Vec3::new(pts[i].x, elev[i], pts[i].y);
             let pn = Vec3::new(pts[(i + 1) % n].x, elev[(i + 1) % n], pts[(i + 1) % n].y);
@@ -440,16 +310,18 @@ impl Track {
             // tilt the right vector: positive bank lifts the right side
             let right = (flat_right * bank[i].cos() + Vec3::Y * bank[i].sin()).normalize();
             let up = right.cross(tangent).normalize();
-            let start_wide = smoothstep(40.0, 10.0, (i.min(n - i)) as f32) * 1.2;
+            let start_wide = smoothstep(40.0, 10.0, (i.min(n - i)) as f32) * 1.0;
+            let hw = (hw_wide + (hw_narrow - hw_wide) * tech[i].clamp(0.0, 1.0) + width_noise[i]).max(3.25);
             samples.push(TrackSample {
                 pos: p,
                 tangent,
                 right,
                 up,
                 s: i as f32 * SAMPLE_SPACING,
-                half_width: half_w_base + width_noise[i] + start_wide,
+                half_width: hw + start_wide,
                 bank: bank[i],
                 curvature: curv[i],
+                surface: surfaces[i],
             });
         }
 
@@ -487,9 +359,12 @@ impl Track {
                     candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
                     let mut sections: Vec<usize> = Vec::new();
                     for &(j, _) in candidates.iter() {
+                        // same stretch of road only if close along the loop *relative* to the
+                        // spatial gap (hairpin legs are separate sections and blend smoothly)
                         let near_existing = sections.iter().any(|&k| {
                             let d = (k as isize - j as isize).unsigned_abs();
-                            d.min(n - d) < 40
+                            let ds = d.min(n - d) as f32 * SAMPLE_SPACING;
+                            ds < 1.4 * pts[k].distance(pts[j]) + 8.0
                         });
                         if !near_existing {
                             sections.push(j);
@@ -543,6 +418,7 @@ impl Track {
             checkpoints,
             water_level,
             jumps,
+            features: layout.features,
             grid,
             prop_grid: SpatialGrid::new(&[Vec2::ZERO], 32.0, 1.0),
         };
@@ -738,12 +614,14 @@ impl Track {
 
     pub fn surface_at(&self, p: Vec3, hint: Option<usize>) -> (Surface, TrackQuery) {
         let q = self.query(p, hint);
-        let hw = self.samples[q.index].half_width;
+        let smp = &self.samples[q.index];
+        let hw = smp.half_width;
         let s = if q.dist <= hw + 0.4 {
-            self.style.road_surface
+            smp.surface
         } else if q.dist <= hw + SHOULDER {
-            match self.style.road_surface {
+            match smp.surface {
                 Surface::Asphalt => Surface::Gravel,
+                Surface::Ice => Surface::Snow,
                 other => other,
             }
         } else {
@@ -808,6 +686,20 @@ impl Track {
     }
 }
 
+fn slope_limit(elev: &mut [f32], max_step: f32) {
+    let n = elev.len();
+    for _ in 0..4 {
+        for i in 0..n {
+            let prev = elev[wrap(i as isize - 1, n)];
+            elev[i] = elev[i].clamp(prev - max_step, prev + max_step);
+        }
+        for i in (0..n).rev() {
+            let next = elev[(i + 1) % n];
+            elev[i] = elev[i].clamp(next - max_step, next + max_step);
+        }
+    }
+}
+
 /// Road height at q using the cross-section at sample j; returns (lateral, height, half_width)
 fn road_profile_at(samples: &[TrackSample], j: usize, q: Vec2) -> (f32, f32, f32) {
     let n = samples.len();
@@ -842,9 +734,10 @@ impl Track {
     /// A generated track whose terrain is perfectly flat and whose every surface is `surface`.
     /// Used by physics tests.
     pub fn flat_for_tests(surface: Surface) -> Track {
-        let mut t = Track::generate(&TrackParams { seed: 7, biome: Some(Biome::Meadow), length_class: 2 });
+        let mut t = Track::generate(&TrackParams { seed: 7, biome: Some(Biome::Meadow), length_class: 2, ..Default::default() });
         t.terrain.heights.iter_mut().for_each(|h| *h = 0.0);
         t.style.road_surface = surface;
+        t.samples.iter_mut().for_each(|s| s.surface = surface);
         t.style.offroad_surface = surface;
         t.water_level = None;
         t.props.clear();
