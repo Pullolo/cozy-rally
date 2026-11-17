@@ -84,11 +84,13 @@ pub struct HudState {
     last_sample: f32,
     players: Vec<PlayerHud>,
     time: f32,
+    /// COZY_HUD_DEMO=1..4 forces HUD messages on screen for visual testing
+    demo: u32,
 }
 
 impl HudState {
     pub fn new(s: &RaceSession) -> HudState {
-        HudState { history: vec![Vec::new(); s.world.cars.len()], last_sample: -1.0, players: (0..s.players.len()).map(|_| PlayerHud::default()).collect(), time: 0.0 }
+        HudState { history: vec![Vec::new(); s.world.cars.len()], last_sample: -1.0, players: (0..s.players.len()).map(|_| PlayerHud::default()).collect(), time: 0.0, demo: std::env::var("COZY_HUD_DEMO").ok().and_then(|v| v.parse().ok()).unwrap_or(0) }
     }
 
     pub fn update(&mut self, s: &RaceSession, dt: f32) {
@@ -196,6 +198,30 @@ impl HudState {
                     _ => {}
                 }
             }
+            if self.demo > 0 && race.is_racing() {
+                let d = 0.6 + (self.time * 0.7).sin().abs() * 0.4;
+                match self.demo {
+                    1 => {
+                        h.final_lap_age = Some(1.2);
+                        h.place_change = 1;
+                        h.place_age = 1.0;
+                        h.split_flash = Some((23.456, Some(-0.42)));
+                        h.split_age = 1.0;
+                        h.delta = Some(-0.31);
+                    }
+                    2 => {
+                        h.lap_flash = Some((2, 47.123, true));
+                        h.lap_age = 1.0;
+                        h.place_change = -1;
+                        h.place_age = 0.6;
+                        h.delta = Some(0.57);
+                    }
+                    4 => h.finish_age = Some(2.0),
+                    _ => {}
+                }
+                h.traction = [0.1, 0.35 * d, 0.6 * d, 1.0 * d];
+                continue;
+            }
             for (k, w) in car.wheels.iter().enumerate() {
                 let target = if w.contact { tyre_slip(w) } else { 0.0 };
                 h.traction[k] = approach(h.traction[k], target, if target > h.traction[k] { 30.0 } else { 6.0 }, dt);
@@ -234,7 +260,7 @@ impl HudState {
 pub fn hud_scale(vp: &Viewport) -> f32 {
     let full = (screen_height() / 720.0).min(screen_width() / 1280.0);
     let own = (vp.h / 720.0).min(vp.w / 1280.0);
-    own.max(full * 0.62).clamp(0.4, 4.0)
+    own.max(full * 0.74).clamp(0.4, 4.0)
 }
 
 pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
@@ -367,7 +393,7 @@ pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
                     let a = ((fa - 0.4) / 0.4).min(1.0);
                     text_outlined_centered(&format!("Time {}", format_time(r.finish_time.unwrap_or(0.0))), mx, my + 66.0 * k, 30.0 * k, with_alpha(CREAM, a));
                 }
-            } else if r.wrong_way {
+            } else if r.wrong_way || hud.demo == 3 {
                 let pulse = 1.0 + 0.05 * (t * 8.0).sin();
                 let w = 300.0 * k * pulse;
                 let hh = 64.0 * k * pulse;
@@ -377,8 +403,9 @@ pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
                 uturn_icon(mx - w * 0.5 + 40.0 * k, my, 18.0 * k, CREAM);
                 text_mid("Wrong way!", mx + 22.0 * k, my, 34.0 * k * pulse, CREAM);
             }
-            if r.reset_timer > 0.6 && !r.finished {
-                let f = ((r.reset_timer - 0.6) / 1.9).clamp(0.0, 1.0);
+            let reset_timer = if hud.demo == 3 { 1.6 } else { r.reset_timer };
+            if reset_timer > 0.6 && !r.finished {
+                let f = ((reset_timer - 0.6) / 1.9).clamp(0.0, 1.0);
                 let yy = my + 74.0 * k;
                 let w = 240.0 * k;
                 let hh = 46.0 * k;
@@ -438,7 +465,7 @@ fn draw_standings(s: &RaceSession, hud: &HudState, player: usize, x: f32, y: f32
     }
     let me = s.players[player].car;
     let rh = 26.0 * k;
-    let room = ((vp.h * 0.42) / (rh + 3.0 * k)).floor() as usize;
+    let room = ((vp.h * if vp.h < screen_height() * 0.75 { 0.30 } else { 0.42 }) / (rh + 3.0 * k)).floor() as usize;
     let max_rows = room.clamp(3, 8);
     // which rows to show: everyone if they fit, else the leader + a window around me
     let rows: Vec<usize> = if n <= max_rows {
@@ -463,7 +490,7 @@ fn draw_standings(s: &RaceSession, hud: &HudState, player: usize, x: f32, y: f32
         let c = order[row];
         let is_me = c == me;
         let is_local = locals.contains(&c);
-        let bg = if is_me { Color::new(1.0, 0.98, 0.94, 0.95) } else { Color::new(1.0, 0.97, 0.92, 0.62) };
+        let bg = if is_me { Color::new(1.0, 0.98, 0.94, 0.95) } else { Color::new(1.0, 0.97, 0.92, 0.80) };
         rounded_rect(x, yy, w, rh, rh * 0.5, bg);
         if is_me {
             rounded_rect_outline(x, yy, w, rh, rh * 0.5, 2.0 * k, BUTTER);
@@ -474,7 +501,9 @@ fn draw_standings(s: &RaceSession, hud: &HudState, player: usize, x: f32, y: f32
         let name = &s.names[c];
         let fs = 15.0 * k;
         text(name, x + rh + 6.0 * k, mid_baseline(yy + rh * 0.5, fs), fs, if is_local { INK } else { INK_SOFT });
-        let gap = if race.racers[c].finished && row == 0 {
+        let gap = if race.clock < 3.0 && !race.racers[c].finished {
+            None
+        } else if race.racers[c].finished && row == 0 {
             Some("Done".to_string())
         } else {
             hud.gap_to_leader(s, c).map(|g| format!("+{}", short_time(g)))
@@ -494,8 +523,8 @@ fn draw_speedo(car: &Car, h: &PlayerHud, cx: f32, cy: f32, r: f32, k: f32, t: f3
     let rpm_frac = (car.rpm / car.spec.redline).clamp(0.0, 1.05);
     let a0 = PI * 0.75;
     let sweep = PI * 1.5;
-    let r0 = r * 0.76;
-    let r1 = r * 0.90;
+    let r0 = r * 0.74;
+    let r1 = r * 0.91;
     let red = 0.86;
     arc(cx, cy, r0, r1, a0, a0 + sweep * red, with_alpha(INK, 0.08));
     arc(cx, cy, r0, r1, a0 + sweep * red, a0 + sweep, with_alpha(BERRY, 0.25));
@@ -503,7 +532,7 @@ fn draw_speedo(car: &Car, h: &PlayerHud, cx: f32, cy: f32, r: f32, k: f32, t: f3
     let at_red = rpm_frac > red;
     let flash = at_red && (t * 14.0).sin() > 0.0;
     let fill_end = if at_red { BERRY } else { BUTTER };
-    arc_gradient(cx, cy, r0, r1, a0, a0 + sweep * f, MINT, mix(MINT, fill_end, (f / red).min(1.0)));
+    arc_gradient(cx, cy, r0, r1, a0, a0 + sweep * f, shade(MINT, 0.9), mix(shade(MINT, 0.9), fill_end, (f / red).min(1.0)));
     // ticks
     for i in 0..=10 {
         let ff = i as f32 / 10.0;
@@ -698,8 +727,8 @@ fn draw_minimap(s: &RaceSession, player: usize, x: f32, y: f32, size: f32) {
     let f = cr.forward();
     let d = vec2(f.x, f.z).normalize_or_zero();
     let n2 = vec2(-d.y, d.x);
-    let tip = p + d * 12.0 * k;
-    draw_triangle(tip, p - d * 4.0 * k + n2 * 7.0 * k, p - d * 4.0 * k - n2 * 7.0 * k, INK);
-    circle(p.x, p.y, 8.0 * k, INK);
-    circle(p.x, p.y, 6.0 * k, car_color(s, me));
+    circle(p.x, p.y, 9.0 * k, INK);
+    circle(p.x, p.y, 7.0 * k, car_color(s, me));
+    let tip = p + d * 17.0 * k;
+    draw_triangle(tip, p + d * 8.0 * k + n2 * 6.0 * k, p + d * 8.0 * k - n2 * 6.0 * k, INK);
 }

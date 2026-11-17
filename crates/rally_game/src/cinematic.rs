@@ -2,7 +2,7 @@
 //! Produces (eye, target, fov) for `RaceSession::cam_override`, cutting between shots
 //! (orbit, trackside, drone flyover, high chase) with a gentle dip-to-cream.
 use crate::game::{interp, RaceSession};
-use macroquad::math::{vec3, Vec3};
+use macroquad::math::{vec2, vec3, Vec2, Vec3};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Shot {
@@ -32,6 +32,8 @@ pub struct Cinematic {
     pub orbit_only: bool,
     /// 0..1 strength of the dip-to-cream around cuts (draw as an overlay)
     pub dip: f32,
+    /// Where the subject should sit on screen (NDC, -1..1, +y up); zero = centred
+    pub frame: Vec2,
 }
 
 impl Cinematic {
@@ -50,6 +52,7 @@ impl Cinematic {
             started: false,
             orbit_only: false,
             dip: 0.0,
+            frame: vec2(0.0, 0.0),
         }
     }
 
@@ -117,9 +120,10 @@ impl Cinematic {
         let (eye, target, fov, smooth) = match self.shot {
             Shot::Orbit => {
                 self.angle += dt * if self.orbit_only { 0.22 } else { 0.16 };
-                let d = if self.orbit_only { 7.5 } else { 9.0 };
+                let d = if self.orbit_only { 10.5 } else { 9.0 };
                 let eye = pos + vec3(self.angle.cos() * d, 2.6, self.angle.sin() * d);
-                (eye, pos + Vec3::Y * 0.6, 46f32.to_radians(), 6.0)
+                // the orbit itself is smooth: follow the (moving) car without lag
+                (eye, pos + Vec3::Y * 0.6, 46f32.to_radians(), 40.0)
             }
             Shot::Trackside { eye } => {
                 let dist = eye.distance(pos);
@@ -143,6 +147,17 @@ impl Cinematic {
             }
         };
         let mut eye = eye;
+        // off-centre framing: aim beside the subject so it lands at `frame` on screen
+        let mut target = target;
+        if self.frame != Vec2::ZERO {
+            let fwd = (target - eye).normalize_or_zero();
+            let right = fwd.cross(Vec3::Y).normalize_or_zero();
+            let up = right.cross(fwd);
+            let dist = (target - eye).length();
+            let aspect = macroquad::window::screen_width() / macroquad::window::screen_height().max(1.0);
+            let half_h = dist * (fov * 0.5).tan();
+            target -= right * self.frame.x * half_h * aspect + up * self.frame.y * half_h;
+        }
         let ground = track.visual_height(eye.x, eye.z);
         eye.y = eye.y.max(ground + 1.4);
         if !self.initialized {

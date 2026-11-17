@@ -26,10 +26,12 @@ use ui::*;
 
 fn window_conf() -> Conf {
     let s = settings::load();
+    // COZY_WINDOW=1920x1080 for resolution testing
+    let (ww, wh) = std::env::var("COZY_WINDOW").ok().and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?)))).unwrap_or((1280, 720));
     Conf {
         window_title: "Cozy Rally".to_owned(),
-        window_width: 1280,
-        window_height: 720,
+        window_width: ww,
+        window_height: wh,
         high_dpi: true,
         fullscreen: s.fullscreen,
         sample_count: std::env::var("COZY_MSAA").ok().and_then(|v| v.parse().ok()).unwrap_or(4),
@@ -297,14 +299,9 @@ impl App {
         self.screen_t = 0.0;
         self.focus = Focus::default();
         self.set_music(audio::Music::Race);
-        match self.hooks.after_load.take().as_deref() {
-            Some("pause") => {
-                if let Some(s) = self.session.as_mut() {
-                    s.paused = true;
-                }
-            }
-            Some("results") => self.fast_forward_results(),
-            _ => {}
+        if self.hooks.after_load.as_deref() == Some("results") {
+            self.hooks.after_load = None;
+            self.fast_forward_results();
         }
     }
 
@@ -326,6 +323,7 @@ impl App {
         }
         self.screen = Screen::Results;
         self.results_cine = Cinematic::orbit(s.players[0].car);
+        self.results_cine.frame = vec2(-0.46, 0.32);
         self.set_music(audio::Music::Results);
     }
 
@@ -351,6 +349,8 @@ impl App {
                     s.world.race.phase = rally_core::race::RacePhase::Countdown(1.5);
                 }
                 self.cine = Cinematic::new(seed);
+                // keep the action to the right of the menu column
+                self.cine.frame = vec2(0.30, 0.0);
                 self.attract = Some(s);
                 self.attract_fade = 1.0;
             }
@@ -392,8 +392,8 @@ impl App {
         let spec = car_specs()[car].clone();
         let dpi = screen_dpi_scale();
         self.gpu.begin_3d((x * dpi) as i32, (y * dpi) as i32, (w * dpi) as i32, (h * dpi) as i32, true);
-        let eye = vec3(4.2, 2.0, 4.8);
-        let view = Mat4::look_at_rh(eye, vec3(0.0, 0.2, 0.0), Vec3::Y);
+        let eye = vec3(5.4, 2.3, 6.2);
+        let view = Mat4::look_at_rh(eye, vec3(0.0, -0.25, 0.0), Vec3::Y);
         let proj = Mat4::perspective_rh_gl(40f32.to_radians(), w / h, 0.1, 100.0);
         let v = View::new(view, proj, eye);
         let env = Environment { sun_dir: vec3(-0.4, 0.8, 0.5).normalize(), sun_color: [1.05, 0.98, 0.9], ambient: [0.5, 0.52, 0.58], fog_color: [1.0, 1.0, 1.0], fog_density: 0.0, time: 0.0 };
@@ -508,8 +508,8 @@ impl App {
         let col1 = x + 44.0 * s;
         let col2 = x + 300.0 * s;
         let col3 = x + 560.0 * s;
-        text("Player 1 / solo", col2, y + 104.0 * s, 18.0 * s, INK_SOFT);
-        text("Player 2 / also solo", col3, y + 104.0 * s, 18.0 * s, INK_SOFT);
+        text("Solo  /  Player 1", col2, y + 104.0 * s, 18.0 * s, INK_SOFT);
+        text("Also solo  /  Player 2", col3, y + 104.0 * s, 18.0 * s, INK_SOFT);
         let ks = 32.0 * s;
         for (i, (label, a, b)) in rows.iter().enumerate() {
             let ry = y + 140.0 * s + i as f32 * 46.0 * s;
@@ -557,7 +557,8 @@ impl App {
         let specs = car_specs();
         let rows = if self.setup.split { 13 } else { 11 };
         self.focus.begin(rows);
-        let rh = ((h - 140.0 * s) / rows as f32 - 8.0 * s).min(46.0 * s);
+        // the Back/Start pair shares one visual row
+        let rh = ((h - 150.0 * s) / (rows - 1) as f32 - 8.0 * s).min(50.0 * s);
         let mut ry = y + 74.0 * s;
         let rw = w - 48.0 * s;
         let rx = x + 24.0 * s;
@@ -808,6 +809,17 @@ impl App {
             self.pause_focus = Focus::default();
             audio::ui_sound(if sess.paused { audio::UiSound::Select } else { audio::UiSound::Back });
         }
+        // test hook: open the pause menu once the race is showing
+        if matches!(self.hooks.after_load.as_deref(), Some("pause") | Some("pause_settings")) && self.screen_t > 2.0 {
+            let to_settings = self.hooks.after_load.as_deref() == Some("pause_settings");
+            self.hooks.after_load = None;
+            sess.paused = true;
+            if to_settings {
+                self.settings_from = Screen::Race;
+                self.switch_now(Screen::Settings);
+                return;
+            }
+        }
         // autopilot for automated playtests
         let mut touch = None;
         if self.hooks.autoplay && !sess.paused {
@@ -868,6 +880,7 @@ impl App {
         } else if sess.is_over() {
             let car = sess.players.first().map(|p| p.car).unwrap_or(0);
             self.results_cine = Cinematic::orbit(car);
+            self.results_cine.frame = vec2(-0.46, 0.32);
             self.switch_now(Screen::Results);
             self.set_music(audio::Music::Results);
         }
@@ -956,7 +969,7 @@ impl App {
             _ => "Race complete",
         };
         text_outlined_centered(headline, sw * 0.5, ty + 22.0 * s, (58.0 * s * title_k).max(1.0), BUTTER);
-        text_outlined_centered(&format!("{}  -  {} laps", sess.track().style.name, sess.world.race.laps), sw * 0.5, ty + 54.0 * s, 22.0 * s, with_alpha(CREAM, fade));
+        text_outlined_centered(&format!("{}  -  {} lap{}", sess.track().style.name, sess.world.race.laps, if sess.world.race.laps == 1 { "" } else { "s" }), sw * 0.5, ty + 54.0 * s, 22.0 * s, with_alpha(CREAM, fade));
 
         // podium (left)
         let total_w = (1100.0 * s).min(sw - 40.0 * s);
@@ -1249,7 +1262,7 @@ async fn main() {
             "help" => Screen::Help,
             "settings" => Screen::Settings,
             "race" | "loading" => Screen::Loading,
-            "pause" | "results" => {
+            "pause" | "pause_settings" | "results" => {
                 app.hooks.after_load = Some(scr.clone());
                 Screen::Loading
             }
