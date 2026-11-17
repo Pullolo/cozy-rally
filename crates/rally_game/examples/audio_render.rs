@@ -317,6 +317,25 @@ fn engine_sweeps(ck: &mut Checks, dir: &std::path::Path) {
         let r_before = rms(&m[(4.5 * SR) as usize..(4.75 * SR) as usize]);
         let r_shift = rms(&m[(4.88 * SR) as usize..(4.98 * SR) as usize]);
         ck.check(r_shift < r_before, format!("{name}: gear-shift dip {:.1} dB", db(r_shift) - db(r_before)));
+        if kind == 2 {
+            // turbo whistle: narrow tone at ~4.4 kHz on full boost (high rpm, full load)
+            let x = &m[(3.5 * SR) as usize..(3.5 * SR) as usize + 8192];
+            let mut best = (0.0, 0.0);
+            let mut f = 3000.0;
+            while f < 5000.0 {
+                let g = goertzel(x, f);
+                if g > best.0 {
+                    best = (g, f);
+                }
+                f += 10.0;
+            }
+            let side = (goertzel(x, best.1 - 150.0) + goertzel(x, best.1 + 150.0)) * 0.5;
+            ck.check(db(best.0) - db(side) > 12.0, format!("thistle: turbo whistle at {:.0} Hz, {:.1} dB above its surroundings", best.1, db(best.0) - db(side)));
+            // blow-off "pssh" right after the lift at 5.0 s
+            let bov = band_rms(&m[(5.02 * SR) as usize..(5.25 * SR) as usize], 1500.0, 4000.0);
+            let after = band_rms(&m[(5.6 * SR) as usize..(5.83 * SR) as usize], 1500.0, 4000.0);
+            ck.check(db(bov) - db(after) > 8.0, format!("thistle: blow-off pssh on lift +{:.1} dB (1.5-4 kHz)", db(bov) - db(after)));
+        }
     }
 }
 

@@ -221,6 +221,8 @@ pub struct EngineVoice {
     water_f: Svf,
     water_w: Wander,
     muffle: OnePole,
+    tyre_soft: Svf,
+    tyre_soft_c: SvfCoef,
     out_dc: DcBlock,
 }
 
@@ -295,6 +297,8 @@ impl EngineVoice {
             water_f: Svf::default(),
             water_w: Wander::default(),
             muffle: OnePole::default(),
+            tyre_soft: Svf::default(),
+            tyre_soft_c: SvfCoef::new(5200.0, 0.6, sr),
             out_dc: DcBlock::default(),
         }
     }
@@ -408,7 +412,7 @@ impl EngineVoice {
         let grain_rate = (loose * (25.0 + 950.0 * sp) + (c.s_loose + c.s_grass) * g * (slip_l * 1900.0 + c.spin_loose * 1700.0)) / sr;
         let grain_amp = 0.25 + 0.6 * sp + 0.7 * slip_l + 0.6 * c.spin_loose;
         let snow_rate = (snow * (18.0 + 380.0 * sp) + c.s_snow * g * (slip_l + c.spin_loose) * 2600.0) / sr;
-        let bed_amt = (c.s_loose * g) * (sp * 0.07 + slip_l * 0.45 + c.spin_loose * 0.3) + c.s_snow * g * (sp * 0.03 + slip_l * 0.35 + c.spin_loose * 0.2);
+        let bed_amt = (c.s_loose * g) * (sp * 0.07 + slip_l * 0.6 + c.spin_loose * 0.38) + c.s_snow * g * (sp * 0.03 + slip_l * 0.55 + c.spin_loose * 0.3);
         let spray_amt = (c.s_loose * g) * (c.spin_loose * 0.22 + slip_l * 0.06);
         let grass_amt = c.s_grass * g * (sp * 0.12 + slip_l * 0.3);
         // asphalt squeal: lateral scrub, brake lock or wheelspin beyond grip
@@ -416,7 +420,7 @@ impl EngineVoice {
         let sq_lock = smoothstep(0.05, 0.9, c.lock_hard);
         let sq_spin = smoothstep(0.05, 0.9, c.spin_hard);
         let sq = (sq_lat.max(sq_lock).max(sq_spin) * g).min(1.0);
-        let sq_amt = 0.20 * sq.powf(1.2) * smoothstep(1.0, 5.0, c.speed + 4.0 * sq_spin);
+        let sq_amt = 0.25 * sq.powf(1.2) * smoothstep(1.0, 5.0, c.speed + 4.0 * sq_spin);
         let sq_freq = 700.0 + 170.0 * sq_lat - 120.0 * sq_lock + 200.0 * sq_spin;
         let judder = 0.55 * sq_lock;
         let whirr_amt = 0.09 * sq_spin + 0.05 * c.spin_loose;
@@ -616,6 +620,8 @@ impl EngineVoice {
             }
 
             let gain = self.gain.step(p.gain, gain_a) * self.fade;
+            // keep the tyre/wind hiss soft: gentle 12 dB/oct rolloff above ~5 kHz
+            let ty = self.tyre_soft.lp(ty, &self.tyre_soft_c);
             let mono = self.out_dc.process(eng + ty, self.dc_r);
             let v = self.muffle.lp(mono, muffle_a) * gain;
             out_l[i] += v * pl;
