@@ -1,101 +1,8 @@
-//! Procedural low-poly models (cars, wheels, props). Everything is built from code.
+//! Props: trees, rocks, buildings, critters, signs and festive bits, per biome.
 use crate::render::mesh::{mix, rgb, shade, trs, MeshBuilder};
 use macroquad::math::{Mat4, Quat, Vec3};
 use rally_core::biome::BiomeStyle;
 use rally_core::track::{Prop, PropKind};
-use rally_core::vehicle::CarSpec;
-
-/// Car paint palette (players can pick)
-pub const PAINTS: [[f32; 3]; 8] = [
-    [0.95, 0.45, 0.40],
-    [0.35, 0.62, 0.95],
-    [0.98, 0.80, 0.30],
-    [0.45, 0.75, 0.48],
-    [0.75, 0.52, 0.90],
-    [0.98, 0.62, 0.30],
-    [0.95, 0.95, 0.92],
-    [0.30, 0.78, 0.80],
-];
-
-pub struct CarModel {
-    pub body: MeshBuilder,
-    pub wheel: MeshBuilder,
-}
-
-/// Car body in car-local space (origin = CG, -Z forward, +Y up).
-pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
-    let mut m = MeshBuilder::new();
-    let he = spec.half_extents;
-    let body_c = rgb(paint);
-    let dark = rgb([0.18, 0.18, 0.22]);
-    let glass = rgb([0.55, 0.75, 0.88]);
-    let light = rgb([1.0, 0.97, 0.85]);
-    let tail = rgb([0.9, 0.15, 0.15]);
-    let trim = rgb(shade(paint, 0.7));
-    let ride = -0.05;
-    match spec.id {
-        3 => {
-            // Burrow: boxy camper van
-            m.box_tapered(trs(Vec3::new(0.0, ride, 0.0), Quat::IDENTITY, Vec3::ONE), Vec3::new(he.x, 0.35, he.z), 0.98, body_c);
-            m.box_tapered(trs(Vec3::new(0.0, ride + 0.75, 0.25), Quat::IDENTITY, Vec3::ONE), Vec3::new(he.x * 0.95, 0.42, he.z * 0.78), 0.95, rgb([0.96, 0.94, 0.88]));
-            m.cube(trs(Vec3::new(0.0, ride + 0.8, -he.z * 0.6), Quat::from_rotation_x(-0.35), Vec3::ONE), Vec3::new(he.x * 0.9, 0.3, 0.05), glass);
-            // roof rack + luggage
-            m.cube(trs(Vec3::new(0.0, ride + 1.22, 0.3), Quat::IDENTITY, Vec3::ONE), Vec3::new(he.x * 0.8, 0.04, he.z * 0.6), dark);
-            m.cube(trs(Vec3::new(0.2, ride + 1.38, 0.5), Quat::from_rotation_y(0.2), Vec3::ONE), Vec3::new(0.35, 0.14, 0.45), rgb([0.75, 0.5, 0.3]));
-            m.blob(trs(Vec3::new(-0.35, ride + 1.36, -0.2), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.3, 0.12, 0.3), 3, 6, rgb([0.4, 0.6, 0.85]));
-        }
-        0 => {
-            // Pip: round tiny hatch
-            m.box_tapered(trs(Vec3::new(0.0, ride, 0.0), Quat::IDENTITY, Vec3::ONE), Vec3::new(he.x, 0.3, he.z), 0.95, body_c);
-            m.box_tapered(trs(Vec3::new(0.0, ride + 0.52, 0.15), Quat::IDENTITY, Vec3::ONE), Vec3::new(he.x * 0.88, 0.24, he.z * 0.62), 0.78, glass);
-            m.cube(trs(Vec3::new(0.0, ride + 0.78, 0.15), Quat::IDENTITY, Vec3::ONE), Vec3::new(he.x * 0.70, 0.03, he.z * 0.5), body_c);
-        }
-        1 => {
-            // Bramble: long-nose coupe
-            m.box_tapered(trs(Vec3::new(0.0, ride - 0.02, 0.0), Quat::IDENTITY, Vec3::ONE), Vec3::new(he.x, 0.26, he.z), 0.94, body_c);
-            m.box_tapered(trs(Vec3::new(0.0, ride + 0.42, 0.35), Quat::IDENTITY, Vec3::ONE), Vec3::new(he.x * 0.82, 0.2, he.z * 0.45), 0.72, glass);
-            m.cube(trs(Vec3::new(0.0, ride + 0.62, 0.35), Quat::IDENTITY, Vec3::ONE), Vec3::new(he.x * 0.58, 0.02, he.z * 0.3), body_c);
-            // stripes
-            m.cube(trs(Vec3::new(0.25, ride + 0.25, -0.3), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.1, 0.01, he.z * 0.65), rgb([0.97, 0.97, 0.95]));
-            m.cube(trs(Vec3::new(-0.25, ride + 0.25, -0.3), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.1, 0.01, he.z * 0.65), rgb([0.97, 0.97, 0.95]));
-        }
-        _ => {
-            // Thistle: rally sedan with wing
-            m.box_tapered(trs(Vec3::new(0.0, ride, 0.0), Quat::IDENTITY, Vec3::ONE), Vec3::new(he.x, 0.3, he.z), 0.95, body_c);
-            m.box_tapered(trs(Vec3::new(0.0, ride + 0.5, 0.2), Quat::IDENTITY, Vec3::ONE), Vec3::new(he.x * 0.85, 0.22, he.z * 0.5), 0.75, glass);
-            m.cube(trs(Vec3::new(0.0, ride + 0.73, 0.2), Quat::IDENTITY, Vec3::ONE), Vec3::new(he.x * 0.62, 0.03, he.z * 0.34), body_c);
-            m.cube(trs(Vec3::new(0.0, ride + 0.62, he.z - 0.15), Quat::IDENTITY, Vec3::ONE), Vec3::new(he.x * 0.95, 0.03, 0.18), trim);
-            m.cube(trs(Vec3::new(0.6, ride + 0.45, he.z - 0.15), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.04, 0.15, 0.1), trim);
-            m.cube(trs(Vec3::new(-0.6, ride + 0.45, he.z - 0.15), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.04, 0.15, 0.1), trim);
-            // number roundel
-            m.cylinder(trs(Vec3::new(he.x + 0.005, ride + 0.05, 0.0), Quat::from_rotation_z(std::f32::consts::FRAC_PI_2), Vec3::ONE), 0.22, 0.01, 10, rgb([0.97, 0.97, 0.95]), rgb([0.97, 0.97, 0.95]));
-            m.cylinder(trs(Vec3::new(-he.x - 0.005, ride + 0.05, 0.0), Quat::from_rotation_z(std::f32::consts::FRAC_PI_2), Vec3::ONE), 0.22, 0.01, 10, rgb([0.97, 0.97, 0.95]), rgb([0.97, 0.97, 0.95]));
-        }
-    }
-    // bumpers, lights, underside
-    m.cube(trs(Vec3::new(0.0, ride - 0.22, -he.z + 0.05), Quat::IDENTITY, Vec3::ONE), Vec3::new(he.x * 1.01, 0.09, 0.08), dark);
-    m.cube(trs(Vec3::new(0.0, ride - 0.22, he.z - 0.05), Quat::IDENTITY, Vec3::ONE), Vec3::new(he.x * 1.01, 0.09, 0.08), dark);
-    for sx in [-1.0, 1.0] {
-        m.cube(trs(Vec3::new(sx * he.x * 0.62, ride + 0.08, -he.z - 0.01), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.16, 0.07, 0.03), light);
-        m.cube(trs(Vec3::new(sx * he.x * 0.7, ride + 0.1, he.z + 0.01), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.14, 0.06, 0.03), tail);
-        // wheel arches
-        for z in [-spec.cg_to_front, spec.cg_to_rear] {
-            m.cube(trs(Vec3::new(sx * (he.x - 0.02), ride - 0.08, z), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.06, 0.12, spec.wheel_radius * 1.1), trim);
-        }
-    }
-    m.cube(trs(Vec3::new(0.0, ride - 0.3, 0.0), Quat::IDENTITY, Vec3::ONE), Vec3::new(he.x * 0.9, 0.05, he.z * 0.9), dark);
-
-    // wheel: cylinder around local X
-    let mut w = MeshBuilder::new();
-    let tire = rgb([0.16, 0.16, 0.18]);
-    let rim = rgb([0.85, 0.85, 0.82]);
-    let rot = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
-    w.cylinder(trs(Vec3::ZERO, rot, Vec3::ONE), spec.wheel_radius, spec.wheel_width * 0.5, 12, tire, tire);
-    w.cylinder(trs(Vec3::ZERO, rot, Vec3::ONE), spec.wheel_radius * 0.58, spec.wheel_width * 0.52, 6, rim, rim);
-    // hub detail so rotation is visible
-    w.cube(trs(Vec3::ZERO, Quat::IDENTITY, Vec3::ONE), Vec3::new(spec.wheel_width * 0.54, spec.wheel_radius * 0.5, 0.05), rgb([0.6, 0.6, 0.6]));
-    CarModel { body: m, wheel: w }
-}
 
 fn leaf_color(style: &BiomeStyle, variant: u8, x: f32) -> [f32; 3] {
     let c = style.leaves[(variant as usize) % 2];
@@ -203,5 +110,17 @@ pub fn add_prop(m: &mut MeshBuilder, p: &Prop, style: &BiomeStyle) {
             m.frustum(at(0.0, 0.38, 0.0), 0.13, 0.11, 0.05, 6, rgb([1.0, 1.0, 1.0]), rgb([1.0, 1.0, 1.0]));
         }
     }
-    let _ = mix;
+    let _ = (mix, trs, Quat::IDENTITY);
+}
+
+/// Every prop kind/variant worth showing for a biome (dev showroom catalogue)
+pub fn catalogue_kinds(_b: rally_core::biome::Biome) -> Vec<(PropKind, u8)> {
+    use PropKind::*;
+    let mut v = Vec::new();
+    for k in [Tree, Pine, Bush, Rock, Cactus, Palm, Flowers, Spectator, HayBale, Tent, Cone] {
+        for var in 0..3 {
+            v.push((k, var));
+        }
+    }
+    v
 }
