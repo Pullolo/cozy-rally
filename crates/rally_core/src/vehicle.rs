@@ -301,6 +301,9 @@ pub struct Car {
     pub spec: CarSpec,
     pub pos: Vec3,
     pub rot: Quat,
+    /// State at the previous fixed tick (for render interpolation)
+    pub prev_pos: Vec3,
+    pub prev_rot: Quat,
     pub vel: Vec3,
     pub ang_vel: Vec3,
     pub wheels: [WheelState; 4],
@@ -352,6 +355,8 @@ impl Car {
         Car {
             pos,
             rot,
+            prev_pos: pos,
+            prev_rot: rot,
             vel: Vec3::ZERO,
             ang_vel: Vec3::ZERO,
             wheels,
@@ -400,6 +405,8 @@ impl Car {
     pub fn teleport(&mut self, pos: Vec3, rot: Quat) {
         self.pos = pos;
         self.rot = rot;
+        self.prev_pos = pos;
+        self.prev_rot = rot;
         self.vel = Vec3::ZERO;
         self.ang_vel = Vec3::ZERO;
         self.rpm = self.spec.idle_rpm;

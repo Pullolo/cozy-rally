@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 macroquad = "0.4"
+rally_core = { version = "0.1.0", path = "../rally_core" }

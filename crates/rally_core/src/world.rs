@@ -101,6 +101,8 @@ impl World {
         let dt = TICK;
         for (i, c) in self.cars.iter_mut().enumerate() {
             c.input = self.inputs[i];
+            c.prev_pos = c.pos;
+            c.prev_rot = c.rot;
         }
         self.physics_tick(dt);
         let mut race_events = Vec::new();
