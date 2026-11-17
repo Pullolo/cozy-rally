@@ -5,6 +5,7 @@ pub mod biome;
 pub mod input;
 pub mod noise;
 pub mod race;
+pub mod racing_line;
 pub mod rng;
 pub mod surface;
 pub mod terrain;
