@@ -3,3 +3,4 @@
 *.png
 !assets/**/*.png
 /screenshots
+/dist

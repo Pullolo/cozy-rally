@@ -41,3 +41,7 @@ pub fn set_volumes(_master: f32, _music: f32, _sfx: f32) {}
 pub fn update_cars(_cars: &[CarSound], _dt: f32) {}
 pub fn world_event(_e: &WorldEvent, _distance: f32) {}
 pub fn stop_cars() {}
+
+/// Called once per frame by RaceSession::update (after the world advanced; events are in
+/// `session.frame_events`). Drive engine/tyre loops and one-shots from here.
+pub fn race_frame(_session: &crate::game::RaceSession, _dt: f32) {}

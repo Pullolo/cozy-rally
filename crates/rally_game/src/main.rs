@@ -2,6 +2,7 @@
 //! Cozy Rally — a cosy procedural rally racer.
 mod audio;
 mod camera;
+mod fx;
 mod game;
 mod hud;
 mod input;

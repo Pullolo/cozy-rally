@@ -1,6 +1,7 @@
 //! A running race: simulation world, local players (with cameras/viewports), AI,
 //! and rendering of the 3D scene for each viewport.
 use crate::camera::ChaseCam;
+use crate::fx::Fx;
 use crate::input::{PlayerInput, Scheme};
 use crate::models::{car_model, PAINTS};
 use crate::render::gpu::{DrawParams, Gpu, GpuMesh, View};
@@ -59,6 +60,7 @@ pub struct RaceSession {
     /// Events from the last update, for audio/FX/UI consumers
     pub frame_events: Vec<WorldEvent>,
     pub paused: bool,
+    pub fx: Fx,
 }
 
 const AI_NAMES: [&str; 8] = ["Hazel", "Juniper", "Basil", "Clover", "Fern", "Rowan", "Maple", "Pebble"];
@@ -124,7 +126,8 @@ impl RaceSession {
             .enumerate()
             .map(|(i, p)| LocalPlayer { car: n_ai + i, input: PlayerInput::new(p.scheme), cam: ChaseCam::new(), name: p.name.clone() })
             .collect();
-        RaceSession { config, world, scene, cars, names, ais, players, alpha: 0.0, time: 0.0, frame_events: Vec::new(), paused: false }
+        let fx = Fx::new(&world);
+        RaceSession { config, world, scene, cars, names, ais, players, alpha: 0.0, time: 0.0, frame_events: Vec::new(), paused: false, fx }
     }
 
     pub fn free(self, gpu: &mut Gpu) {
@@ -202,6 +205,8 @@ impl RaceSession {
             let (pos, _) = interp(&self.world.cars[p.car], self.alpha);
             p.cam.update(pos, &self.world.cars[p.car], &track, dt);
         }
+        self.fx.update(&self.world, &self.frame_events, self.alpha, dt);
+        crate::audio::race_frame(self, dt);
     }
 
     pub fn is_over(&self) -> bool {
@@ -246,6 +251,7 @@ impl RaceSession {
             self.scene.draw_opaque(gpu, &view);
             self.draw_cars(gpu, &view);
             self.draw_shadows(gpu, &view);
+            self.fx.draw(gpu, &view, &self.scene.env);
             extra(gpu, &view, i);
             self.scene.draw_transparent(gpu, &view);
             gpu.end_3d();
