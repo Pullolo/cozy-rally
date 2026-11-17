@@ -7,7 +7,11 @@ pub const PI: f32 = std::f32::consts::PI;
 #[inline]
 pub fn sin_turns(p: f32) -> f32 {
     // map to y in [-1, 1) where sin(2*pi*p) = -sin(pi*y)
-    let x = p - p.floor();
+    // fract via truncating cast (f32::floor is a libm call on baseline x86_64)
+    let mut x = p - (p as i32) as f32;
+    if x < 0.0 {
+        x += 1.0;
+    }
     let mut y = 2.0 * x - 1.0;
     // fold to [-0.5, 0.5] using sin(pi*(1-y)) = sin(pi*y)
     if y > 0.5 {
@@ -213,6 +217,37 @@ impl Svf {
     }
 }
 
+/// Enable flush-to-zero / denormals-are-zero for the calling thread (x86). Decaying envelopes
+/// and filter tails otherwise crawl through subnormal floats, which are ~100x slower.
+/// Cheap enough to call once per block. Other architectures rely on the explicit flushes.
+#[inline]
+pub fn denormals_off() {
+    #[cfg(target_arch = "x86_64")]
+    #[allow(deprecated)]
+    unsafe {
+        use std::arch::x86_64::{_mm_getcsr, _mm_setcsr};
+        let csr = _mm_getcsr();
+        if csr & 0x8040 != 0x8040 {
+            _mm_setcsr(csr | 0x8040);
+        }
+    }
+    #[cfg(target_arch = "x86")]
+    #[allow(deprecated)]
+    unsafe {
+        use std::arch::x86::{_mm_getcsr, _mm_setcsr};
+        let csr = _mm_getcsr();
+        if csr & 0x8040 != 0x8040 {
+            _mm_setcsr(csr | 0x8040);
+        }
+    }
+}
+
+/// Zero values small enough to become subnormal soon
+#[inline]
+pub fn flush(x: f32) -> f32 {
+    if x.abs() < 1e-15 { 0.0 } else { x }
+}
+
 /// Exponential parameter smoother
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Smooth {
@@ -222,7 +257,8 @@ pub struct Smooth {
 impl Smooth {
     #[inline]
     pub fn step(&mut self, target: f32, a: f32) -> f32 {
-        self.v += (target - self.v) * a;
+        let d = target - self.v;
+        self.v = if d.abs() < 1e-7 { target } else { self.v + d * a };
         self.v
     }
 }

@@ -230,6 +230,7 @@ impl Synth {
 
     /// Render `n <= BLOCK` frames into `out_l` / `out_r`.
     pub fn render_block(&mut self, n: usize) {
+        denormals_off();
         let n = n.min(BLOCK);
         self.mus_l[..n].fill(0.0);
         self.mus_r[..n].fill(0.0);
@@ -303,6 +304,9 @@ impl Synth {
             self.out_r[i] = soft_clip(r * g);
         }
         self.pre_peak = peak;
+        self.lim_env = flush(self.lim_env);
+        self.lofi_l.z = flush(self.lofi_l.z);
+        self.lofi_r.z = flush(self.lofi_r.z);
     }
 
     /// Convenience: render interleaved stereo

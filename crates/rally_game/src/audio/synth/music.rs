@@ -253,7 +253,7 @@ impl MusicPlayer {
             }
             let nz = self.rng.bi();
             let c = self.crackle_lp.lp(nz * self.crackle_env, a) * 2.5;
-            self.crackle_env *= dec;
+            self.crackle_env = flush(self.crackle_env * dec);
             let h = self.hiss_lp.lp(self.rng.bi(), ha) * 0.004;
             let v = lvl;
             l[i] += (c * (1.0 - self.crackle_pan) + h) * v;
@@ -349,7 +349,7 @@ fn play_step(l: &mut Layer, st: &Style, offset: f32, step_s: f32, pool: &mut Not
         pool.play(Note::new(Inst::Hat, 7600.0, 0.04 * v).env(0.001, 0.028).bus(bus).pan(-0.25).at(t + hum(rng)));
     };
     let shaker = |pool: &mut NotePool, rng: &mut Rng, v: f32| {
-        pool.play(Note::new(Inst::Shaker, 6200.0, 0.045 * v).bus(bus).pan(0.3).at(t + hum(rng)));
+        pool.play(Note::new(Inst::Shaker, 4800.0, 0.04 * v).bus(bus).pan(0.3).at(t + hum(rng)));
     };
     let fill_bar = bar % 8 == 7 && int >= 1;
     if int >= 1 {
@@ -502,7 +502,6 @@ fn play_step(l: &mut Layer, st: &Style, offset: f32, step_s: f32, pool: &mut Not
                 0.6
             }
         }
-        Mood::Results => 0.4,
         _ => 0.0,
     };
     if s == 0 && pad_lvl > 0.0 {
@@ -528,7 +527,7 @@ fn play_step(l: &mut Layer, st: &Style, offset: f32, step_s: f32, pool: &mut Not
             Note::new(Inst::Pluck, midi_hz(p as f32), 0.13 * v)
                 .bright(0.35)
                 .env(0.001, 1.6)
-                .hold(1.2, 0.2)
+                .hold(if mood == Mood::Results { 0.6 } else { 1.0 }, 0.15)
                 .pan(rng.bi() * 0.4)
                 .bus(bus)
                 .send(0.2)
@@ -545,6 +544,7 @@ fn play_step(l: &mut Layer, st: &Style, offset: f32, step_s: f32, pool: &mut Not
             for j in 0..pn.min(3) {
                 pluck(pool, rng, pt[j], 0.6, j as f32 * 0.016);
             }
+            // (strums are short: hold ends with the next one)
         }
         Mood::Race if int >= 2 && s % 2 == 1 && rng.chance(0.25) => {
             let k = (rng.next_u32() as usize) % pn.max(1);

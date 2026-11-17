@@ -60,8 +60,8 @@ impl Note {
             Inst::Sine => (0.004, 0.3, 0.3, 0.05),
             Inst::Marimba => (0.001, 0.35, 2.0, 0.05),
             Inst::Wood => (0.0005, 0.05, 0.4, 0.03),
-            Inst::Glock => (0.001, 0.9, 3.0, 0.1),
-            Inst::Bell => (0.001, 0.8, 3.0, 0.1),
+            Inst::Glock => (0.001, 0.9, 1.6, 0.12),
+            Inst::Bell => (0.001, 0.8, 2.0, 0.12),
             Inst::EPiano => (0.003, 1.4, 1.0, 0.25),
             Inst::Pluck => (0.001, 2.5, 1.5, 0.12),
             Inst::Bass => (0.006, 0.9, 0.5, 0.07),
@@ -337,6 +337,11 @@ impl NotePool {
             if !v.active {
                 continue;
             }
+            // still waiting for its start time: skip the whole block
+            if v.t + (n as i64) <= 0 {
+                v.t += n as i64;
+                continue;
+            }
             let bus = v.n.bus as usize;
             let lg = if bus == 0 { 1.0 } else { layer_gains[bus.min(3)] };
             let (pl, pr) = pan_gains(v.n.pan);
@@ -376,7 +381,8 @@ impl NotePool {
                     rev_r[i] += y * gr * send;
                 }
                 v.t += 1;
-                if v.lvl < 2e-5 {
+                // done once inaudible: ~-85 dBFS before bus volumes
+                if v.lvl * v.n.gain < 6e-5 {
                     v.active = false;
                     break;
                 }
@@ -420,7 +426,7 @@ fn render_inst(v: &mut Voice, inc: f32, f: f32, sr: f32) -> f32 {
             let p = adv(&mut v.ph[0], inc);
             let p2 = adv(&mut v.ph[1], inc * 2.756);
             let p3 = adv(&mut v.ph[2], inc * 5.404);
-            let x = sin_turns(p) + 0.35 * v.aux[0] * sin_turns(p2) + 0.15 * v.aux[1] * sin_turns(p3) + 0.15 * v.aux[2] * v.rng.bi();
+            let x = sin_turns(p) + 0.3 * v.aux[0] * sin_turns(p2) + 0.08 * v.aux[1] * sin_turns(p3) + 0.1 * v.aux[2] * v.rng.bi();
             for k in 0..3 {
                 v.aux[k] *= v.aux_mul[k];
             }

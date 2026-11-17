@@ -407,10 +407,10 @@ impl EngineVoice {
         let road_amt = g * c.s_hard * sp.powf(1.4) * 0.16;
         let grain_rate = (loose * (25.0 + 950.0 * sp) + (c.s_loose + c.s_grass) * g * (slip_l * 1900.0 + c.spin_loose * 1700.0)) / sr;
         let grain_amp = 0.25 + 0.6 * sp + 0.7 * slip_l + 0.6 * c.spin_loose;
-        let snow_rate = (snow * (18.0 + 380.0 * sp) + c.s_snow * g * (slip_l + c.spin_loose) * 900.0) / sr;
-        let bed_amt = (c.s_loose * g) * (sp * 0.06 + slip_l * 0.22 + c.spin_loose * 0.12) + c.s_snow * g * (sp * 0.03 + slip_l * 0.08);
-        let spray_amt = (c.s_loose * g) * c.spin_loose * 0.10 + (c.s_loose * g) * slip_l * 0.03;
-        let grass_amt = c.s_grass * g * (sp * 0.10 + slip_l * 0.10);
+        let snow_rate = (snow * (18.0 + 380.0 * sp) + c.s_snow * g * (slip_l + c.spin_loose) * 2600.0) / sr;
+        let bed_amt = (c.s_loose * g) * (sp * 0.07 + slip_l * 0.45 + c.spin_loose * 0.3) + c.s_snow * g * (sp * 0.03 + slip_l * 0.35 + c.spin_loose * 0.2);
+        let spray_amt = (c.s_loose * g) * (c.spin_loose * 0.22 + slip_l * 0.06);
+        let grass_amt = c.s_grass * g * (sp * 0.12 + slip_l * 0.3);
         // asphalt squeal: lateral scrub, brake lock or wheelspin beyond grip
         let sq_lat = smoothstep(0.05, 0.9, c.slip_lat_hard);
         let sq_lock = smoothstep(0.05, 0.9, c.lock_hard);
@@ -443,9 +443,10 @@ impl EngineVoice {
         let pop_dec = (-1.0 / (0.014 * sr)).exp();
         let bov_dec = (-1.0 / (0.16 * sr)).exp();
         let wp = pr.width / pr.cyl as f32;
-        let warp = 1.0 - 0.6 * pr.snap;
+        // quadratic phase warp: snappier attack for buzzy engines (cheap stand-in for u^a)
+        let warp = 0.9 * pr.snap;
         let lope_amt = pr.lope * (1.0 - rpm_n) * (1.0 - self.load.v * 0.7);
-        let base_amp = pr.gain * 0.32;
+        let base_amp = pr.gain * 0.5;
 
         for i in 0..n {
             self.fade += (fade_target - self.fade) * fade_a;
@@ -486,7 +487,8 @@ impl EngineVoice {
                     q += 1.0;
                 }
                 if q < wp {
-                    let u = (q / wp).powf(warp);
+                    let u0 = q / wp;
+                    let u = u0 * (1.0 + warp * (1.0 - u0));
                     s += pr.amps[k] * self.jit[k] * (0.5 - 0.5 * cos_turns(u));
                 }
                 // firing event (crossing the offset)
@@ -566,7 +568,7 @@ impl EngineVoice {
                         self.grain_env[k] *= if k == 2 { snow_dec } else { grain_dec };
                     }
                 }
-                ty += gr * 0.32;
+                ty += gr * 0.6;
             }
             if bed_amt > 1e-4 {
                 ty += self.bed_f.bp(n2, &self.bed_c) * bed_amt;
@@ -621,6 +623,7 @@ impl EngineVoice {
             rev_l[i] += v * pl * 0.04;
             rev_r[i] += v * prr * 0.04;
         }
+        self.fade = flush(self.fade);
         if self.releasing && self.fade < 1e-4 {
             self.active = false;
             self.id = u32::MAX;

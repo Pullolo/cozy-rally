@@ -37,7 +37,7 @@ pub fn play(pool: &mut NotePool, rng: &mut Rng, kind: SfxKind, gain: f32, pan: f
         SfxKind::Collision { strength, scenery } => {
             let k = clamp01((strength - 1.0) / 12.0);
             let (f0, f1) = if scenery { (95.0, 40.0) } else { (125.0, 52.0) };
-            pool.play(Note::new(Inst::Thump, f0, (0.16 + 0.42 * k) * g).glide_to(f1, 0.04).env(0.001, 0.11 + 0.09 * k).pan(p).send(0.05));
+            pool.play(Note::new(Inst::Thump, f0, (0.12 + 0.32 * k) * g).glide_to(f1, 0.04).env(0.001, 0.11 + 0.09 * k).pan(p).send(0.05));
             pool.play(Note::new(Inst::NoiseLp, 1400.0, (0.08 + 0.18 * k) * g).glide_to(500.0, 0.05).env(0.001, 0.05 + 0.04 * k).pan(p));
             // a bit of cute clatter (bonks of loose bits), more with harder hits
             let count = 1 + (k * 5.0) as usize;
@@ -49,7 +49,7 @@ pub fn play(pool: &mut NotePool, rng: &mut Rng, kind: SfxKind, gain: f32, pan: f
         }
         SfxKind::Landing { strength } => {
             let k = clamp01((strength - 3.0) / 8.0);
-            pool.play(Note::new(Inst::Thump, 88.0, (0.12 + 0.36 * k) * g).glide_to(42.0, 0.05).env(0.001, 0.13 + 0.06 * k).pan(p));
+            pool.play(Note::new(Inst::Thump, 88.0, (0.08 + 0.26 * k) * g).glide_to(42.0, 0.05).env(0.001, 0.13 + 0.06 * k).pan(p));
             pool.play(Note::new(Inst::NoiseLp, 420.0, 0.12 * k * g).env(0.002, 0.05).pan(p));
             // springy suspension "boing"
             pool.play(Note::new(Inst::Sine, 215.0, (0.025 + 0.04 * k) * g).glide_to(150.0, 0.08).env(0.002, 0.09).at(0.02).pan(p));

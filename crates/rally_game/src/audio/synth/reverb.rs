@@ -66,7 +66,8 @@ impl Reverb {
     /// In-place: the buffers hold the send on entry and the wet signal on exit
     pub fn process(&mut self, n: usize, l: &mut [f32; BLOCK], r: &mut [f32; BLOCK]) {
         for i in 0..n {
-            let x = (l[i] + r[i]) * 0.5 * 0.35;
+            // tiny offset keeps the decaying tails out of subnormal range (removed by the master DC blocker)
+            let x = (l[i] + r[i]) * 0.5 * 0.35 + 1e-18;
             let mut outs = [0.0f32; 2];
             for ch in 0..2 {
                 let mut acc = 0.0;
