@@ -12,8 +12,8 @@
 //!   yaw stability, air control that lands you wheels-down.
 //! Car local frame: +X right, +Y up, -Z forward.
 use crate::input::CarInput;
-use crate::surface::Surface;
-use crate::track::Track;
+use crate::surface::{Surface, SurfaceProps};
+use crate::track::{Track, TrackQuery};
 use glam::{Mat3, Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
@@ -107,11 +107,11 @@ pub fn car_specs() -> Vec<CarSpec> {
             max_steer: 0.62,
             drivetrain: Drivetrain::Fwd,
             awd_front_split: 1.0,
-            peak_torque: 130.0,
-            peak_rpm: 5400.0,
+            peak_torque: 145.0,
+            peak_rpm: 5600.0,
             idle_rpm: 900.0,
             redline: 7200.0,
-            gears: &[2.85, 1.95, 1.5, 1.2, 1.0],
+            gears: &[2.6, 1.85, 1.42, 1.15, 0.95],
             final_drive: 3.5,
             reverse_ratio: 3.2,
             engine_inertia: 0.10,
@@ -666,12 +666,11 @@ impl Car {
             w.susp_length = (spec.susp_rest - comp).max(spec.susp_rest - spec.susp_travel);
             let contact = mount + down * t;
             w.contact_point = contact;
-            let (surface, q) = track.surface_at(contact, self.track_hint);
+            let (props, surface, q) = wheel_ground(track, contact, self.track_hint);
             if i == 0 {
                 self.track_hint = Some(q.index);
             }
-            w.surface = Some(surface);
-            let props = surface.props();
+            w.surface = surface;
             let comp_vel = (w.compression - w.prev_compression) / dt;
             if !was_contact {
                 landing = landing.max((-self.vel.dot(normal)).max(0.0));
@@ -704,7 +703,7 @@ impl Car {
             let grip_bias = if front { 1.0 } else { spec.rear_grip_bias };
             let mu = spec.tire_grip * props.grip * grip_bias;
             let max_f = mu * fz;
-            let tyre = Tyre { max_f, peak_alpha: spec.peak_slip_angle, peak_kappa: peak_slip_ratio(props.loose, surface), slide: props.slide_grip, slide_long: props.slide_grip * 0.94 };
+            let tyre = Tyre { max_f, peak_alpha: spec.peak_slip_angle, peak_kappa: peak_slip_ratio(&props), slide: props.slide_grip, slide_long: props.slide_grip * 0.94 };
             let alpha = v_lat.atan2(v_long.abs().max(3.5));
             let v_ref = v_long.abs().max(LOW_SPEED_REF);
 
@@ -737,8 +736,11 @@ impl Car {
             // rolling resistance and standstill hold (body forces, not through the wheel)
             let low_speed = (v_long.abs() / 0.6).min(1.0);
             fx -= v_long.signum() * props.rolling * fz * low_speed;
-            if brake > 0.1 && v_long.abs() < 0.6 && throttle < 0.1 {
-                fx -= v_long * spec.mass * 0.25 * 8.0;
+            // static friction for a held wheel (brake at standstill or handbrake-locked) so
+            // cars don't creep on slopes through the low-speed slip regularisation
+            let held = omega == 0.0 && brake_t > 0.0;
+            if (held || (brake > 0.1 && throttle < 0.1)) && v_long.abs() < 0.6 {
+                fx = (fx - v_long * spec.mass * 25.0).clamp(-max_f, max_f);
             }
             let tire_force = f_dir * fx + r_dir * fy;
             // apply a little above the contact patch to reduce body roll (arcade stability)
@@ -1012,15 +1014,22 @@ pub fn abs_strength(assist_level: f32) -> f32 {
     }
 }
 
-/// Slip ratio at peak longitudinal friction for a surface
-pub fn peak_slip_ratio(loose: bool, surface: Surface) -> f32 {
-    match surface {
-        Surface::Asphalt => 0.10,
-        Surface::Ice => 0.08,
-        Surface::Snow => 0.14,
-        _ if loose => 0.15,
-        _ => 0.12,
-    }
+/// Ground under one wheel: (surface properties, dominant surface for FX, track query).
+/// The ONLY place the tyre model reads the surface, so blended surfaces can be plugged in here
+/// (grip must vary continuously as each wheel crosses a transition).
+#[inline]
+pub fn wheel_ground(track: &Track, contact: Vec3, hint: Option<usize>) -> (SurfaceProps, Option<Surface>, TrackQuery) {
+    let (surface, q) = track.surface_at(contact, hint);
+    (surface.props(), Some(surface), q)
+}
+
+/// Slip ratio at peak longitudinal friction. A continuous function of the surface properties
+/// (so it blends across surface transitions): ~0.10 on tarmac, ~0.15 on loose surfaces where
+/// the tyre digs in, lower on ice.
+pub fn peak_slip_ratio(p: &SurfaceProps) -> f32 {
+    let loose = (p.bumpiness / 0.01).clamp(0.0, 1.0);
+    let icy = ((0.5 - p.grip) / 0.2).clamp(0.0, 1.0);
+    0.10 + 0.05 * loose - 0.02 * icy
 }
 
 /// Combined-slip tyre: normalised slip vector (slip ratio / peak, slip angle / peak) through

@@ -147,12 +147,66 @@ fn handling_table() {
     }
 }
 
+/// Standstill behaviour: idle and brake-held on flat ground and on the steepest road slope.
+/// Reports drift distance over 6 s and the max |angular velocity| of a wheel (jitter).
+fn rest_table() {
+    use rally_core::track::TrackParams;
+    println!("=== REST (6 s, idle in gear / handbrake held): drift m / max wheel omega rad/s / max body speed m/s");
+    let flat = Track::flat_for_tests(Surface::Gravel);
+    let hill = Track::generate(&TrackParams { seed: 6, biome: None, length_class: 1 });
+    // steepest sample
+    let n = hill.samples.len();
+    let (mut best, mut grade) = (0, 0.0f32);
+    for i in 0..n {
+        let g = (hill.samples[(i + 1) % n].pos.y - hill.samples[i].pos.y).abs() / 2.0;
+        let near_jump = hill.jumps.iter().any(|&j| (j as isize - i as isize).abs() < 25);
+        if g > grade && !near_jump {
+            grade = g;
+            best = i;
+        }
+    }
+    for spec in 0..4 {
+        let mut line = format!("{:8}", car_specs()[spec].name);
+        for (label, on_hill, brake) in [("flat idle", false, 0.0), ("flat hb", false, 1.0), ("slope idle", true, 0.0), ("slope hb", true, 1.0)] {
+            let track = if on_hill { &hill } else { &flat };
+            let mut c = if on_hill {
+                let smp = hill.samples[best];
+                let rot = hill.rotation_at(smp.s);
+                let p = smp.pos + smp.up * 0.9;
+                Car::new(car_specs()[spec].clone(), p, rot)
+            } else {
+                fresh(spec, track, 1.0)
+            };
+            c.input = CarInput { handbrake: brake, ..Default::default() };
+            for _ in 0..240 {
+                c.step(DT, track);
+            }
+            let p0 = c.pos;
+            let (mut wmax, mut vmax) = (0.0f32, 0.0f32);
+            for _ in 0..(6.0 / DT) as i32 {
+                c.step(DT, track);
+                for w in &c.wheels {
+                    wmax = wmax.max(w.spin_speed.abs());
+                }
+                vmax = vmax.max(c.vel.length());
+            }
+            line += &format!(" | {label} {:5.2}m w{:4.1} v{:4.2}{}", c.pos.distance(p0), wmax, vmax, if c.pos.is_finite() { "" } else { " NaN!" });
+        }
+        println!("{line}  (slope grade {:.0}%)", grade * 100.0);
+    }
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("rest") {
+        rest_table();
+        return;
+    }
     let arg = std::env::args().nth(1).unwrap_or_default();
     if arg != "handling" {
         launch_table();
     }
     if arg != "launch" {
         handling_table();
+        rest_table();
     }
 }
