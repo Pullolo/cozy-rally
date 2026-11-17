@@ -334,6 +334,8 @@ pub struct Focus {
     drag: Option<usize>,
     /// Set once the pointer moved (so keyboard users don't lose focus to a resting cursor)
     pointer_active: bool,
+    /// Optional fixed label column width for selectors (aligns arrows in narrow columns)
+    pub label_w: Option<f32>,
 }
 
 impl Focus {
@@ -494,7 +496,11 @@ pub fn selector_swatch(focus: &mut Focus, label: &str, value: &str, swatch: Opti
     let fs = (h * 0.44).min(27.0 * s);
     text(label, x + 16.0 * s, mid_baseline(y + h * 0.5, fs), fs, INK);
     let aw = h * 0.72;
-    let left = Rect::new(x + w * 0.42, y + (h - aw) * 0.5, aw, aw);
+    let lx = match focus.label_w {
+        Some(lw) => x + 16.0 * s + lw + 6.0 * s,
+        None => x + w * 0.42,
+    };
+    let left = Rect::new(lx, y + (h - aw) * 0.5, aw, aw);
     let right = Rect::new(x + w - aw - 8.0 * s, y + (h - aw) * 0.5, aw, aw);
     let (_, cl) = pointer_pressed_in(left);
     let (_, cr) = pointer_pressed_in(right);
@@ -570,7 +576,9 @@ pub fn slider(focus: &mut Focus, label: &str, value: &mut f32, x: f32, y: f32, w
             _ => focus.drag = None,
         }
     }
-    let _ = clicked;
+    if clicked {
+        focus.index = id;
+    }
     if focused && focus.left {
         *value = ((*value * 20.0).round() - 1.0).max(0.0) / 20.0;
     }
@@ -613,10 +621,7 @@ pub fn toggle(focus: &mut Focus, label: &str, value: &mut bool, x: f32, y: f32, 
     let sw = sh * 1.85;
     let sx = x + w - sw - 14.0 * s;
     let sy = y + (h - sh) * 0.5;
-    // animate the knob using a second anim slot keyed after the row
     let on = if *value { 1.0 } else { 0.0 };
-    let knob_id = id;
-    let _ = knob_id;
     rounded_rect(sx, sy, sw, sh, sh * 0.5, mix(Color::new(0.24, 0.2, 0.27, 0.18), mix(MINT, shade(MINT, 0.8), 0.3), on));
     let kr = sh * 0.5 - 3.0 * s;
     let kx = sx + sh * 0.5 + (sw - sh) * on;

@@ -332,12 +332,14 @@ pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
     if let Some(d) = h.delta {
         let col = if d <= 0.0 { MINT } else { PEACH };
         let label = format!("{:+.2}", d);
-        let w = 92.0 * k;
-        rounded_rect(tx + tw - w, chip_y + 2.0 * k, w, 30.0 * k, 15.0 * k, shade(col, 0.75));
-        rounded_rect(tx + tw - w, chip_y, w, 30.0 * k, 15.0 * k, col);
-        text_mid(&label, tx + tw - w * 0.5, chip_y + 15.0 * k, 19.0 * k, INK);
-        text_right("vs best", tx + tw - w - 8.0 * k, mid_baseline(chip_y + 15.0 * k, 15.0 * k), 15.0 * k, CREAM);
-        chip_y += 38.0 * k;
+        let hh = 34.0 * k;
+        rounded_rect(tx, chip_y + 2.0 * k, tw, hh, hh * 0.5, Color::new(0.2, 0.12, 0.25, 0.14));
+        rounded_rect(tx, chip_y, tw, hh, hh * 0.5, with_alpha(CREAM, 0.94));
+        text("vs best lap", tx + 14.0 * k, mid_baseline(chip_y + hh * 0.5, 16.0 * k), 16.0 * k, INK_SOFT);
+        let w = 86.0 * k;
+        rounded_rect(tx + tw - w - 4.0 * k, chip_y + 4.0 * k, w, hh - 8.0 * k, (hh - 8.0 * k) * 0.5, col);
+        text_mid(&label, tx + tw - w * 0.5 - 4.0 * k, chip_y + hh * 0.5, 18.0 * k, INK);
+        chip_y += hh + 8.0 * k;
     }
     // checkpoint split flash (under the timer, keeping top-centre free for pace notes)
     if let Some((split, delta)) = h.split_flash {
@@ -365,7 +367,7 @@ pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
     let cy = vp.y + vp.h - sr - pad;
     draw_speedo(car, h, cx, cy, sr, k, t);
     if crate::settings::get().show_traction {
-        draw_traction(car, h, cx - sr - 48.0 * k, cy + 6.0 * k, k);
+        draw_traction(car, h, cx - sr - 52.0 * k, cy + 4.0 * k, k);
     }
 
     // ---------------------------------------------------------------- minimap (bottom left)
@@ -427,13 +429,9 @@ pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
                     let sc = pop(h.lap_age * 1.3);
                     text_outlined_centered(&format!("Lap {}  {}", lap, format_time(lt)), mx, my - 40.0 * k, (40.0 * k * sc).max(1.0), with_alpha(CREAM, a));
                     if best && h.lap_age > 0.25 {
-                        let w = pill("New best lap!", mx, my + 2.0 * k, 20.0 * k * ease_back(((h.lap_age - 0.25) / 0.3).min(1.0)).max(0.01), with_alpha(MINT, a), with_alpha(INK, a));
-                        let _ = w;
+                        pill("New best lap!", mx, my + 2.0 * k, 20.0 * k * ease_back(((h.lap_age - 0.25) / 0.3).min(1.0)).max(0.01), with_alpha(MINT, a), with_alpha(INK, a));
                     }
                 }
-            }
-            if r.finished && h.finish_age.is_none() {
-                // safety: finished without seeing the event (e.g. HUD created late)
             }
             let air = car.telemetry.airtime;
             if air > 0.6 {
@@ -564,6 +562,7 @@ fn draw_speedo(car: &Car, h: &PlayerHud, cx: f32, cy: f32, r: f32, k: f32, t: f3
 
 /// Top-down car with four tyres tinting neutral -> butter -> berry as each loses grip
 fn draw_traction(car: &Car, h: &PlayerHud, cx: f32, cy: f32, k: f32) {
+    let k = k * 1.12;
     let w = 64.0 * k;
     let hh = 104.0 * k;
     rounded_rect(cx - w * 0.5, cy - hh * 0.5 + 4.0 * k, w, hh, 18.0 * k, Color::new(0.2, 0.12, 0.25, 0.14));
@@ -584,7 +583,11 @@ fn draw_traction(car: &Car, h: &PlayerHud, cx: f32, cy: f32, k: f32) {
         let x = cx + side * (bw * 0.5 + tw * 0.5 + 1.5 * k) - tw * 0.5;
         let y = if front { top + 6.0 * k } else { top + bh - th - 6.0 * k };
         let slip = h.traction[i];
-        let col = if slip < 0.45 { mix(with_alpha(INK, 0.45), BUTTER, slip / 0.45) } else { mix(BUTTER, BERRY, (slip - 0.45) / 0.55) };
+        let col = if slip < 0.45 { mix(with_alpha(INK, 0.55), BUTTER, slip / 0.45) } else { mix(BUTTER, BERRY, (slip - 0.45) / 0.55) };
+        if slip > 0.5 {
+            // soft glow so a sliding tyre catches the eye
+            rounded_rect(x - 3.0 * k, y - 3.0 * k, tw + 6.0 * k, th + 6.0 * k, 5.0 * k, with_alpha(BERRY, (slip - 0.5) * 0.6));
+        }
         let grow = slip * 2.0 * k;
         rounded_rect(x - grow * 0.5, y - grow * 0.5, tw + grow, th + grow, 3.0 * k, col);
     }
@@ -658,8 +661,6 @@ fn draw_ribbon(label: &str, vp: &Viewport, y: f32, age: f32, dur: f32, color: Co
     let hh = 64.0 * k;
     let w = vp.w * 0.6;
     let x = vp.x + (vp.w - w) * 0.5 + off;
-    let tilt = 0.0;
-    let _ = tilt;
     rounded_rect(x, y + 5.0 * k, w, hh, 14.0 * k, Color::new(0.2, 0.12, 0.25, 0.2));
     rounded_rect_gradient(x, y, w, hh, 14.0 * k, lighten(color, 0.3), color);
     // little notches like a ribbon

@@ -68,11 +68,17 @@ struct Setup {
     opponents: usize,
     difficulty: usize,
     assists: usize,
+    /// Track surface preset (index into SURFACES), wired to TrackParams by the tracks work
+    surface_mode: usize,
+    /// Track difficulty (index into TRACK_DIFFICULTY)
+    track_difficulty: usize,
 }
 
 const DIFFICULTY: [(&str, f32); 3] = [("Chill", 0.35), ("Normal", 0.7), ("Spicy", 1.0)];
 const ASSISTS: [(&str, f32); 4] = [("Cozy", 1.3), ("Normal", 1.0), ("Sport", 0.55), ("Sim", 0.0)];
 const LENGTHS: [&str; 3] = ["Short", "Medium", "Long"];
+const SURFACES: [&str; 5] = ["Biome default", "Gravel", "Tarmac", "Snow", "Mixed"];
+const TRACK_DIFFICULTY: [&str; 3] = ["Relaxed", "Rally", "Expert"];
 const PAINT_NAMES: [&str; 8] = ["Strawberry", "Blueberry", "Honey", "Pistachio", "Lilac", "Tangerine", "Coconut", "Lagoon"];
 const TIPS: [&str; 6] = [
     "Lift off and flick the handbrake into hairpins!",
@@ -104,10 +110,20 @@ fn random_seed() -> u64 {
     (macroquad::miniquad::date::now() * 1000.0) as u64 % 1_000_000
 }
 
-fn biome_name(i: usize, seed: u64) -> String {
+/// The biome a seed will actually produce (reveals "Surprise!" on the loading screen)
+fn biome_reveal(i: usize, seed: u64) -> String {
     if i == 0 {
         let b = Biome::from_index((rally_core::rng::Rng::new(seed).next_u64() % 5) as usize);
-        format!("Surprise ({})", b.style().name)
+        b.style().name.to_string()
+    } else {
+        biome_name(i, seed)
+    }
+}
+
+fn biome_name(i: usize, seed: u64) -> String {
+    if i == 0 {
+        let _ = seed;
+        "Surprise!".to_string()
     } else {
         ALL_BIOMES[i - 1].style().name.to_string()
     }
@@ -211,17 +227,23 @@ impl App {
 
     fn enter(&mut self, s: Screen) {
         let prev = self.screen;
+        if s == Screen::Race && prev == Screen::Loading {
+            // the screen is fully cream now: build the track behind it, then fade in
+            self.finish_loading();
+            return;
+        }
         self.screen = s;
         self.focus = Focus::default();
         self.screen_t = 0.0;
         if prev == Screen::Settings {
             settings::save();
         }
-        if s.is_menu() {
+        // Settings/Help can be opened over a paused race: only the title/setup end a race
+        if matches!(s, Screen::Title | Screen::Setup) {
+            self.end_session();
+        }
+        if s.is_menu() && self.session.is_none() {
             self.set_music(audio::Music::Menu);
-            if self.session.is_some() && s != Screen::Settings {
-                self.end_session();
-            }
         }
     }
 
@@ -254,10 +276,7 @@ impl App {
                 }
             }
             -1 => {
-                // hold full cream while a screen is still building (loading)
-                if self.screen != Screen::Loading {
-                    self.trans.alpha -= dt / FADE_IN;
-                }
+                self.trans.alpha -= dt / FADE_IN;
                 if self.trans.alpha <= 0.0 {
                     self.trans.alpha = 0.0;
                     self.trans.phase = 0;
@@ -387,12 +406,12 @@ impl App {
         self.preview_models.len() - 1
     }
 
-    fn draw_car_preview(&mut self, car: usize, paint: usize, x: f32, y: f32, w: f32, h: f32) {
+    fn draw_car_preview(&mut self, car: usize, paint: usize, x: f32, y: f32, w: f32, h: f32, zoom: f32) {
         let idx = self.preview_model(car, paint);
         let spec = car_specs()[car].clone();
         let dpi = screen_dpi_scale();
         self.gpu.begin_3d((x * dpi) as i32, (y * dpi) as i32, (w * dpi) as i32, (h * dpi) as i32, true);
-        let eye = vec3(5.4, 2.3, 6.2);
+        let eye = vec3(5.4, 2.3, 6.2) / zoom;
         let view = Mat4::look_at_rh(eye, vec3(0.0, -0.25, 0.0), Vec3::Y);
         let proj = Mat4::perspective_rh_gl(40f32.to_radians(), w / h, 0.1, 100.0);
         let v = View::new(view, proj, eye);
@@ -486,8 +505,14 @@ impl App {
     }
 
     fn help(&mut self) {
-        self.menu_backdrop();
-        screen_wash(Color::new(1.0, 0.96, 0.9, 0.35), Color::new(1.0, 0.94, 0.88, 0.5));
+        let over_race = self.session.is_some();
+        if over_race {
+            self.draw_race_frozen();
+            draw_rectangle(0.0, 0.0, screen_width(), screen_height(), Color::new(0.24, 0.18, 0.3, 0.35));
+        } else {
+            self.menu_backdrop();
+            screen_wash(Color::new(1.0, 0.96, 0.9, 0.35), Color::new(1.0, 0.94, 0.88, 0.5));
+        }
         let s = scale();
         let w = 820.0 * s;
         let h = 580.0 * s;
@@ -536,7 +561,11 @@ impl App {
                 audio::ui_sound(audio::UiSound::Back);
             }
             let to = self.help_from;
-            self.goto(to);
+            if over_race {
+                self.switch_now(to);
+            } else {
+                self.goto(to);
+            }
         }
     }
 
@@ -548,60 +577,103 @@ impl App {
         let sw = screen_width();
         let sh = screen_height();
         let appear = ease_back((self.screen_t / 0.4).min(1.0));
-        let w = (sw * 0.5).min(560.0 * s).max(420.0 * s).min(sw - 20.0);
-        let x = 30.0 * s - (1.0 - appear) * 50.0 * s;
-        let y = 24.0 * s;
-        let h = sh - 48.0 * s;
-        panel(x, y, w, h);
-        text(if self.setup.split { "Split-screen race" } else { "Solo race" }, x + 24.0 * s, y + 50.0 * s, 38.0 * s, INK);
         let specs = car_specs();
-        let rows = if self.setup.split { 13 } else { 11 };
-        self.focus.begin(rows);
-        // the Back/Start pair shares one visual row
-        let rh = ((h - 150.0 * s) / (rows - 1) as f32 - 8.0 * s).min(50.0 * s);
-        let mut ry = y + 74.0 * s;
-        let rw = w - 48.0 * s;
-        let rx = x + 24.0 * s;
-        let step = rh + 8.0 * s;
-        let wrap = |v: usize, d: i32, n: usize| ((v as i32 + d).rem_euclid(n as i32)) as usize;
         let players = if self.setup.split { 2 } else { 1 };
+        // left: options panel with two columns (car + race | track); right: car preview(s)
+        let margin = 24.0 * s;
+        let w = ((sw - 3.0 * margin) * 0.62).max(560.0 * s).min(sw - 2.0 * margin);
+        let x = margin - (1.0 - appear) * 50.0 * s;
+        let y = margin;
+        let h = sh - 2.0 * margin;
+        panel(x, y, w, h);
+        text(if self.setup.split { "Split-screen race" } else { "Solo race" }, x + 26.0 * s, y + 50.0 * s, 38.0 * s, INK);
+        let rows = players * 2 + 4 + 5 + 2;
+        self.focus.begin(rows);
+        let gap = 22.0 * s;
+        let cw = (w - 2.0 * 26.0 * s - gap) * 0.5;
+        let ax = x + 26.0 * s;
+        let bx = ax + cw + gap;
+        let head_h = 30.0 * s;
+        let top = y + 72.0 * s;
+        let button_h = 54.0 * s;
+        // tallest column: car rows + race rows, plus two section headers
+        let col_rows = (players * 2 + 4) as f32;
+        let avail = h - (top - y) - 2.0 * head_h - button_h - 34.0 * s;
+        let rh = (avail / col_rows - 8.0 * s).clamp(30.0 * s, 48.0 * s);
+        let step = rh + 8.0 * s;
+        let lfs = (rh * 0.44).min(27.0 * s);
+        let label_w = ["Opponents", "Difficulty", "P1 paint", "Scenery"].iter().map(|l| text_size(l, lfs).x).fold(0.0, f32::max);
+        self.focus.label_w = Some(label_w + 4.0 * s);
+        let wrap = |v: usize, d: i32, n: usize| ((v as i32 + d).rem_euclid(n as i32)) as usize;
+        let section = |label: &str, sx: f32, sy: f32| {
+            text(label, sx + 4.0 * s, sy + 18.0 * s, 19.0 * s, INK_SOFT);
+            let tw = text_size(label, 19.0 * s).x;
+            rounded_rect(sx + tw + 16.0 * s, sy + 11.0 * s, cw - tw - 20.0 * s, 2.0 * s, 1.0, with_alpha(INK, 0.12));
+        };
+        // --- column A: cars, then race options
+        let mut ay = top;
+        section(if players == 2 { "Drivers" } else { "Your car" }, ax, ay);
+        ay += head_h;
         for p in 0..players {
             let label = if players == 2 { format!("P{} car", p + 1) } else { "Car".into() };
-            let d = selector(&mut self.focus, &label, specs[self.setup.cars[p]].name, rx, ry, rw, rh, [PEACH, SKY][p]);
+            let d = selector(&mut self.focus, &label, specs[self.setup.cars[p]].name, ax, ay, cw, rh, [PEACH, SKY][p]);
             self.setup.cars[p] = wrap(self.setup.cars[p], d, specs.len());
-            ry += step;
+            ay += step;
             let paint = self.setup.paints[p];
-            let d = selector_swatch(&mut self.focus, if players == 2 { "  paint" } else { "Paint" }, paint_name(paint), Some(rgb3(models::PAINTS[paint])), rx, ry, rw, rh, [PEACH, SKY][p]);
+            let d = selector_swatch(&mut self.focus, if players == 2 { &["P1 paint", "P2 paint"][p] } else { "Paint" }, paint_name(paint), Some(rgb3(models::PAINTS[paint])), ax, ay, cw, rh, [PEACH, SKY][p]);
             self.setup.paints[p] = wrap(self.setup.paints[p], d, models::PAINTS.len());
-            ry += step;
+            ay += step;
         }
-        let d = selector(&mut self.focus, "Scenery", &biome_name(self.setup.biome, self.setup.seed), rx, ry, rw, rh, MINT);
+        ay += 6.0 * s;
+        section("Race", ax, ay);
+        ay += head_h;
+        let d = selector(&mut self.focus, "Laps", &format!("{}", self.setup.laps), ax, ay, cw, rh, BUTTER);
+        self.setup.laps = ((self.setup.laps as i32 + d - 1).rem_euclid(6) + 1) as u32;
+        ay += step;
+        let d = selector(&mut self.focus, "Opponents", &format!("{}", self.setup.opponents), ax, ay, cw, rh, BUTTER);
+        self.setup.opponents = wrap(self.setup.opponents, d, 8 - players + 1);
+        ay += step;
+        let d = selector(&mut self.focus, "AI mood", DIFFICULTY[self.setup.difficulty].0, ax, ay, cw, rh, BUTTER);
+        self.setup.difficulty = wrap(self.setup.difficulty, d, DIFFICULTY.len());
+        ay += step;
+        let d = selector(&mut self.focus, "Assists", ASSISTS[self.setup.assists].0, ax, ay, cw, rh, LAVENDER);
+        self.setup.assists = wrap(self.setup.assists, d, ASSISTS.len());
+        // --- column B: track options
+        let mut by = top;
+        section("Track", bx, by);
+        by += head_h;
+        let d = selector(&mut self.focus, "Scenery", &biome_name(self.setup.biome, self.setup.seed), bx, by, cw, rh, MINT);
         self.setup.biome = wrap(self.setup.biome, d, ALL_BIOMES.len() + 1);
-        ry += step;
-        let d = selector(&mut self.focus, "Track", LENGTHS[self.setup.length as usize], rx, ry, rw, rh, MINT);
+        by += step;
+        let d = selector(&mut self.focus, "Surface", SURFACES[self.setup.surface_mode], bx, by, cw, rh, MINT);
+        self.setup.surface_mode = wrap(self.setup.surface_mode, d, SURFACES.len());
+        by += step;
+        let d = selector(&mut self.focus, "Difficulty", TRACK_DIFFICULTY[self.setup.track_difficulty], bx, by, cw, rh, MINT);
+        self.setup.track_difficulty = wrap(self.setup.track_difficulty, d, TRACK_DIFFICULTY.len());
+        by += step;
+        let d = selector(&mut self.focus, "Length", LENGTHS[self.setup.length as usize], bx, by, cw, rh, MINT);
         self.setup.length = wrap(self.setup.length as usize, d, 3) as u8;
-        ry += step;
-        let d = selector(&mut self.focus, "Seed", &format!("{}", self.setup.seed), rx, ry, rw, rh, MINT);
+        by += step;
+        let d = selector(&mut self.focus, "Seed", &format!("{}", self.setup.seed), bx, by, cw, rh, MINT);
         if d != 0 {
             self.setup.seed = random_seed();
         }
-        ry += step;
-        let d = selector(&mut self.focus, "Laps", &format!("{}", self.setup.laps), rx, ry, rw, rh, BUTTER);
-        self.setup.laps = ((self.setup.laps as i32 + d - 1).rem_euclid(6) + 1) as u32;
-        ry += step;
-        let d = selector(&mut self.focus, "Opponents", &format!("{}", self.setup.opponents), rx, ry, rw, rh, BUTTER);
-        self.setup.opponents = wrap(self.setup.opponents, d, 8 - players + 1);
-        ry += step;
-        let d = selector(&mut self.focus, "AI mood", DIFFICULTY[self.setup.difficulty].0, rx, ry, rw, rh, BUTTER);
-        self.setup.difficulty = wrap(self.setup.difficulty, d, DIFFICULTY.len());
-        ry += step;
-        let d = selector(&mut self.focus, "Assists", ASSISTS[self.setup.assists].0, rx, ry, rw, rh, LAVENDER);
-        self.setup.assists = wrap(self.setup.assists, d, ASSISTS.len());
-        ry += step + 6.0 * s;
-        let bw = (rw - 16.0 * s) * 0.5;
-        let back = button(&mut self.focus, "Back", rx, ry, bw, rh + 6.0 * s, CREAM);
-        // Back is drawn as a button but excluded from the row count above: fold it into Start's row
-        let go = button(&mut self.focus, "Start!", rx + bw + 16.0 * s, ry, bw, rh + 6.0 * s, PEACH);
+        by += step;
+        // a little track card under the track options: what you'll get
+        let card_h = (ay - by + rh).min(110.0 * s);
+        if card_h > 60.0 * s {
+            let biome = if self.setup.biome == 0 { "A surprise biome".to_string() } else { ALL_BIOMES[self.setup.biome - 1].style().name.to_string() };
+            rounded_rect(bx, by + 4.0 * s, cw, card_h - 8.0 * s, 14.0 * s, with_alpha(CREAM_DEEP, 0.7));
+            text(&biome, bx + 16.0 * s, by + 36.0 * s, 21.0 * s, INK);
+            let line = format!("{} laps  -  {} track  -  {} opponents", self.setup.laps, LENGTHS[self.setup.length as usize].to_lowercase(), self.setup.opponents);
+            let fs = (16.0 * s).min((cw - 32.0 * s) / text_size(&line, 16.0 * s).x.max(1.0) * 16.0 * s);
+            text(&line, bx + 16.0 * s, by + 62.0 * s, fs, INK_SOFT);
+        }
+        self.focus.label_w = None;
+        // --- buttons
+        let btn_y = y + h - button_h - 22.0 * s;
+        let back = button(&mut self.focus, "Back", ax, btn_y, cw, button_h, CREAM);
+        let go = button(&mut self.focus, "Start!", bx, btn_y, cw, button_h, PEACH);
         if back || self.focus.back {
             if self.focus.back {
                 audio::ui_sound(audio::UiSound::Back);
@@ -618,64 +690,61 @@ impl App {
             return;
         }
 
-        // car previews + stats on the right
-        let px = x + w + 24.0 * s;
-        let pw = sw - px - 24.0 * s;
-        if pw > 200.0 * s {
-            let ph = if players == 2 { (h - 24.0 * s) * 0.5 } else { h };
-            for p in 0..players {
-                let py = y + p as f32 * (ph + 24.0 * s);
-                let ppx = px + (1.0 - appear) * 60.0 * s;
-                panel(ppx, py, pw, ph);
-                let spec = &specs[self.setup.cars[p]];
-                let compact = players == 2;
-                let name_size = if compact { 32.0 } else { 44.0 } * s;
-                text(spec.name, ppx + 24.0 * s, py + if compact { 44.0 } else { 56.0 } * s, name_size, INK);
-                let drive = match spec.drivetrain {
-                    rally_core::vehicle::Drivetrain::Fwd => "Front-wheel drive",
-                    rally_core::vehicle::Drivetrain::Rwd => "Rear-wheel drive",
-                    rally_core::vehicle::Drivetrain::Awd => "All-wheel drive",
-                };
-                let nw = text_size(spec.name, name_size).x;
-                pill(drive, ppx + 24.0 * s + nw + 20.0 * s + text_size(drive, 16.0 * s).x * 0.5 + 9.0 * s, py + if compact { 33.0 } else { 40.0 } * s, 16.0 * s, with_alpha([PEACH, SKY][p], 0.6), INK);
-                if players == 2 {
-                    pill(&format!("P{}", p + 1), ppx + pw - 40.0 * s, py + 33.0 * s, 18.0 * s, [PEACH, SKY][p], INK);
-                }
-                // stat bars
-                let stats = [
-                    ("Power", spec.peak_torque / 470.0, PEACH),
-                    ("Grip", (spec.tire_grip - 0.9) / 0.3, MINT),
-                    ("Weight", spec.mass / 1700.0, SKY),
-                    ("Drift", 1.0 - spec.rear_grip_bias.clamp(0.0, 1.0) * 0.5 + if spec.drivetrain == rally_core::vehicle::Drivetrain::Rwd { 0.3 } else { 0.0 }, LAVENDER),
-                ];
-                let stat_top = py + if compact { 64.0 } else { 84.0 } * s;
-                let srow = if compact { 22.0 } else { 28.0 } * s;
-                let bar_w = (pw * 0.42).min(260.0 * s);
-                for (i, (name, v, col)) in stats.iter().enumerate() {
-                    let col_x = ppx + 24.0 * s + if compact && i >= 2 { pw * 0.5 } else { 0.0 };
-                    let row_i = if compact { i % 2 } else { i };
-                    let by = stat_top + row_i as f32 * srow;
-                    let bw2 = if compact { (pw * 0.5 - 130.0 * s).max(60.0 * s) } else { bar_w };
-                    text(name, col_x, mid_baseline(by + 8.0 * s, 18.0 * s), 18.0 * s, INK);
-                    rounded_rect(col_x + 76.0 * s, by, bw2, 16.0 * s, 8.0 * s, with_alpha(INK, 0.08));
-                    let f = v.clamp(0.08, 1.0);
-                    rounded_rect_gradient(col_x + 76.0 * s, by, bw2 * f, 16.0 * s, 8.0 * s, lighten(*col, 0.3), *col);
-                    // five little pips like a rating
-                    for pip in 1..5 {
-                        let pxp = col_x + 76.0 * s + bw2 * pip as f32 / 5.0;
-                        draw_line(pxp, by + 3.0 * s, pxp, by + 13.0 * s, 1.5 * s, with_alpha(CREAM, 0.7));
-                    }
-                }
-                let stats_h = if compact { 2.0 } else { 4.0 } * srow;
-                let car = self.setup.cars[p];
-                let paint = self.setup.paints[p];
-                let top = stat_top + stats_h + 4.0 * s;
-                let bottom_text = if compact { 30.0 } else { 44.0 } * s;
-                let hh = (py + ph - bottom_text - top).max(60.0);
-                self.draw_car_preview(car, paint, ppx + 10.0 * s, top, pw - 20.0 * s, hh);
+        // --- car previews + stats on the right
+        let px0 = x + w + margin;
+        let pw = sw - px0 - margin;
+        if pw < 180.0 * s {
+            return;
+        }
+        let ph = if players == 2 { (h - margin) * 0.5 } else { h };
+        for p in 0..players {
+            let py = y + p as f32 * (ph + margin);
+            let px = px0 + (1.0 - appear) * 60.0 * s;
+            panel(px, py, pw, ph);
+            let spec = &specs[self.setup.cars[p]];
+            let compact = players == 2;
+            let name_size = if compact { 32.0 } else { 42.0 } * s;
+            text(spec.name, px + 22.0 * s, py + if compact { 42.0 } else { 54.0 } * s, name_size, INK);
+            if compact {
+                pill(&format!("P{}", p + 1), px + pw - 34.0 * s, py + 30.0 * s, 17.0 * s, [PEACH, SKY][p], INK);
+            }
+            let drive = match spec.drivetrain {
+                rally_core::vehicle::Drivetrain::Fwd => "Front-wheel drive",
+                rally_core::vehicle::Drivetrain::Rwd => "Rear-wheel drive",
+                rally_core::vehicle::Drivetrain::Awd => "All-wheel drive",
+            };
+            let dy = py + if compact { 64.0 } else { 80.0 } * s;
+            let dw = text_size(drive, 15.0 * s).x;
+            pill(drive, px + 22.0 * s + dw * 0.5 + 8.0 * s, dy, 15.0 * s, with_alpha([PEACH, SKY][p], 0.55), INK);
+            // stat bars (2x2 grid so they stay compact)
+            let stats = [
+                ("Power", spec.peak_torque / 470.0, PEACH),
+                ("Grip", (spec.tire_grip - 0.9) / 0.3, MINT),
+                ("Weight", spec.mass / 1700.0, SKY),
+                ("Drift", 1.0 - spec.rear_grip_bias.clamp(0.0, 1.0) * 0.5 + if spec.drivetrain == rally_core::vehicle::Drivetrain::Rwd { 0.3 } else { 0.0 }, LAVENDER),
+            ];
+            let stat_top = dy + 22.0 * s;
+            let colw = (pw - 44.0 * s - 16.0 * s) * 0.5;
+            for (i, (name, v, col)) in stats.iter().enumerate() {
+                let sx = px + 22.0 * s + (i % 2) as f32 * (colw + 16.0 * s);
+                let sy = stat_top + (i / 2) as f32 * 40.0 * s;
+                text(name, sx, sy + 14.0 * s, 15.0 * s, INK_SOFT);
+                let bw = colw;
+                let byy = sy + 21.0 * s;
+                rounded_rect(sx, byy, bw, 11.0 * s, 5.5 * s, with_alpha(INK, 0.08));
+                let f = v.clamp(0.08, 1.0);
+                rounded_rect_gradient(sx, byy, bw * f, 11.0 * s, 5.5 * s, lighten(*col, 0.3), *col);
+            }
+            let top = stat_top + 84.0 * s;
+            let bottom_text = if compact { 30.0 } else { 52.0 } * s;
+            let hh = (py + ph - bottom_text - top).max(60.0);
+            let car = self.setup.cars[p];
+            let paint = self.setup.paints[p];
+            self.draw_car_preview(car, paint, px + 8.0 * s, top, pw - 16.0 * s, hh, if compact { 1.4 } else { 1.0 });
+            if !compact {
                 let bl = spec.blurb;
-                let fs = (19.0 * s).min((pw - 48.0 * s) / text_size(bl, 19.0 * s).x * 19.0 * s);
-                text_mid(bl, ppx + pw * 0.5, py + ph - bottom_text * 0.55, fs, INK_SOFT);
+                let fs = (17.0 * s).min((pw - 40.0 * s) / text_size(bl, 17.0 * s).x * 17.0 * s);
+                text_mid(bl, px + pw * 0.5, py + ph - bottom_text * 0.55, fs, INK_SOFT);
             }
         }
     }
@@ -777,11 +846,6 @@ impl App {
                 self.goto(to);
             }
         }
-        if !over_race {
-            return;
-        }
-        // remember the HUD settings will take effect on resume
-        let _ = before;
     }
 
     /// The paused race drawn without advancing it (backdrop for pause overlays)
@@ -915,7 +979,6 @@ impl App {
         let restart = button(&mut f, "Restart", bx, y + 180.0 * s, bw, bh, BUTTER);
         let sett = button(&mut f, "Settings", bx, y + 248.0 * s, bw, bh, SKY);
         let quit = button(&mut f, "Quit to menu", bx, y + 316.0 * s, bw, bh, PEACH);
-        let back = f.back;
         self.pause_focus = f;
         if resume {
             if let Some(sess) = self.session.as_mut() {
@@ -932,7 +995,6 @@ impl App {
         if quit {
             self.goto(Screen::Title);
         }
-        let _ = back; // Esc is handled by race() (toggles pause)
     }
 
     fn results(&mut self) {
@@ -1096,15 +1158,17 @@ impl App {
         let cy = screen_height() * 0.45;
         wheel_icon(cx, cy - 70.0 * s, 34.0 * s, get_time() as f32 * 4.0);
         text_outlined_centered("Building your track...", cx, cy + 10.0 * s, 46.0 * s, CREAM);
-        text_mid(&biome_name(self.setup.biome, self.setup.seed), cx, cy + 46.0 * s, 26.0 * s, INK);
+        text_mid(&biome_reveal(self.setup.biome, self.setup.seed), cx, cy + 46.0 * s, 26.0 * s, INK);
         let tip = format!("Tip: {}", TIPS[self.tip % TIPS.len()]);
         let w = text_size(&tip, 20.0 * s).x + 40.0 * s;
         rounded_rect(cx - w * 0.5, cy + 86.0 * s, w, 40.0 * s, 20.0 * s, with_alpha(CREAM, 0.9));
         text_mid(&tip, cx, cy + 106.0 * s, 20.0 * s, INK_SOFT);
-        // build once the fade has fully covered the screen and a frame showed this screen
-        self.loading_frames += 1;
-        if self.loading_frames >= 3 {
-            self.finish_loading();
+        // show this screen briefly, then fade out and build the track behind the cream
+        if self.trans.phase == 0 {
+            self.loading_frames += 1;
+            if self.loading_frames >= 2 && self.screen_t > 0.5 {
+                self.goto(Screen::Race);
+            }
         }
     }
 
@@ -1224,7 +1288,7 @@ async fn main() {
     let mut app = App {
         gpu: Gpu::new(),
         screen: Screen::Title,
-        setup: Setup { split: hooks.split, cars: [2, 1], paints: [0, 1], biome: 0, length: 1, seed: random_seed(), laps: 3, opponents: 3, difficulty: 1, assists: st.assists.min(ASSISTS.len() - 1) },
+        setup: Setup { split: hooks.split, cars: [2, 1], paints: [0, 1], biome: 0, length: 1, seed: random_seed(), laps: 3, opponents: 3, difficulty: 1, assists: st.assists.min(ASSISTS.len() - 1), surface_mode: 0, track_difficulty: 1 },
         session: None,
         hud: None,
         focus: Focus::default(),
