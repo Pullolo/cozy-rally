@@ -40,6 +40,9 @@ fn draw_car(gpu: &mut Gpu, v: &View, car: usize, paint: usize, model: Mat4, ligh
         let steer = if z < 0.0 { 0.25 } else { 0.0 };
         gpu.draw_builder(&m.wheel, v, &e, model * Mat4::from_translation(p) * Mat4::from_rotation_y(steer) * Mat4::from_rotation_x(0.3), &DrawParams::default(), 0);
     }
+    if std::env::var("NOGLASS").is_err() {
+        gpu.draw_builder(&m.glass, v, &e, model, &DrawParams { rim: 0.6, ..Default::default() }, 1);
+    }
 }
 
 fn ground(gpu: &mut Gpu, v: &View, y: f32, r: f32, c: [f32; 3]) {
@@ -92,10 +95,11 @@ async fn main() {
                 let paints = [0usize, 1, 2, 3];
                 for (ci, &car) in cars.iter().enumerate() {
                     for row in 0..2 {
-                        let (w, h) = (sw / n, sh / 2.0);
-                        viewport(&mut gpu, ci as f32 * w, row as f32 * h, w, h);
+                        let (w, h) = if n == 1.0 { (sw / 2.0, sh) } else { (sw / n, sh / 2.0) };
+                        let (vx, vy) = if n == 1.0 { (row as f32 * w, 0.0) } else { (ci as f32 * w, row as f32 * h) };
+                        viewport(&mut gpu, vx, vy, w, h);
                         let ang: f32 = if row == 0 { -0.75 } else { 2.55 };
-                        let dist = if close { 5.2 } else { 6.6 };
+                        let dist = if close { 5.6 } else { 6.6 };
                         let eye = vec3(ang.sin() * dist, if row == 0 { 1.6 } else { 2.3 }, -ang.cos() * dist);
                         let eye = if row == 0 { vec3(eye.x, eye.y, -eye.z.abs()) } else { vec3(eye.x, eye.y, eye.z.abs()) };
                         let view = Mat4::look_at_rh(eye, vec3(0.0, 0.0, 0.0), Vec3::Y);
@@ -136,7 +140,7 @@ async fn main() {
                     for (i, s) in car_specs().iter().enumerate() {
                         let m = models::car_model(s, models::PAINTS[0]);
                         println!(
-                            "car {} {}: body {} wheel {} (x4 drawn) head {} brake {} rev {} => total drawn {}",
+                            "car {} {}: body {} wheel {} (x4 drawn) head {} brake {} rev {} glass {} => total drawn {}",
                             i,
                             s.name,
                             m.body.vertex_count(),
@@ -144,7 +148,8 @@ async fn main() {
                             m.head_lights.vertex_count(),
                             m.brake_lights.vertex_count(),
                             m.reverse_lights.vertex_count(),
-                            m.body.vertex_count() + 4 * m.wheel.vertex_count() + m.head_lights.vertex_count() + m.brake_lights.vertex_count() + m.reverse_lights.vertex_count()
+                            m.glass.vertex_count(),
+                            m.glass.vertex_count() + m.body.vertex_count() + 4 * m.wheel.vertex_count() + m.head_lights.vertex_count() + m.brake_lights.vertex_count() + m.reverse_lights.vertex_count()
                         );
                     }
                     for b in 0..5 {
