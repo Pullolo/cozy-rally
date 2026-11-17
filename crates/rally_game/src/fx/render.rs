@@ -198,7 +198,7 @@ fn tumble_axes(p: &Particle) -> (Vec3, Vec3) {
 
 /// Flakes, leaves, chunks, drops (lit)
 pub fn bit(b: &mut Batches, bs: &Basis, p: &Particle, dist: f32) {
-    let a = p.opacity() * near_fade(dist, 0.1);
+    let a = p.opacity() * near_fade(dist, 0.8);
     if a < 0.02 {
         return;
     }

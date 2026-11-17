@@ -86,7 +86,7 @@ fn mark_style(s: Surface) -> ([f32; 3], f32) {
         Surface::Snow => ([0.66, 0.73, 0.86], 0.6),
         Surface::Grass => ([0.30, 0.44, 0.20], 0.45),
         Surface::Sand => (shade(s.props().dust, 0.72), 0.5),
-        _ => (shade(s.props().dust, 0.6), 0.5),
+        _ => (shade(s.props().dust, 0.72), 0.45),
     }
 }
 
@@ -96,7 +96,7 @@ fn dust_rate(s: Surface) -> f32 {
         Surface::Gravel => 16.0,
         Surface::Dirt => 18.0,
         Surface::Sand => 22.0,
-        Surface::Snow => 20.0,
+        Surface::Snow => 11.0,
         Surface::Grass => 5.0,
         Surface::Mud => 8.0,
         _ => 0.0,
@@ -144,6 +144,11 @@ impl Fx {
                 };
                 self.cars[ci].air[wi] = 0.0;
                 let tr = wheel_traction(car, wi);
+                if self.stats {
+                    self.stat_trac[0] = self.stat_trac[0].max(tr.spin);
+                    self.stat_trac[1] = self.stat_trac[1].max(tr.slide);
+                    self.stat_trac[2] = self.stat_trac[2].max(tr.lock);
+                }
                 let rear = wi >= 2;
                 let roll = (speed / 26.0).clamp(0.0, 1.0);
                 let in_water = water.is_some_and(|wl| cp.y < wl + 0.12);
@@ -154,7 +159,7 @@ impl Fx {
                 let mut strength = ((tr.loss - 0.08) / 0.5).clamp(0.0, 1.0);
                 if props.loose && speed > 2.0 && (rear || tr.loss > 0.1) {
                     // faint tracks always on loose ground
-                    strength = strength.max(0.24 * (speed / 8.0).min(1.0));
+                    strength = strength.max(0.16 * (speed / 8.0).min(1.0));
                 }
                 if in_water {
                     strength = 0.0;
@@ -186,20 +191,22 @@ impl Fx {
                 if props.loose {
                     // ---- dust clouds
                     let wheel_k = if rear { 1.0 } else { 0.55 };
-                    let intensity = roll * 0.4 * wheel_k + tr.spin * 2.2 + tr.slide * 1.8 + tr.lock * 0.9;
+                    let intensity = (roll * 0.4 * wheel_k + tr.spin * 2.2 + tr.slide * 1.8 + tr.lock * 0.9).min(1.6);
                     let acc = &mut self.cars[ci].acc[wi][0];
                     *acc += dust_rate(surface) * intensity * dt * lod;
                     let n = acc.floor() as usize;
                     *acc -= n as f32;
                     let dcol = dust_color(surface);
-                    let big = if surface == Surface::Sand || surface == Surface::Snow { 1.3 } else { 1.0 };
+                    let big = if surface == Surface::Sand { 1.15 } else { 1.0 };
+                    // powder is bright: keep it airy so cars stay readable
+                    let airy = if surface == Surface::Snow || surface == Surface::Sand { 0.6 } else { 1.0 };
                     for _ in 0..n.min(10) {
                         let u = self.rng.f();
                         let jitter = Vec3::new(self.rng.r(-0.2, 0.2), self.rng.r(0.1, 0.35), self.rng.r(-0.2, 0.2));
                         let kick = roost_dir * (lose * self.rng.r(2.0, 6.5)) + Vec3::Y * (self.rng.r(0.5, 1.6) + lose * self.rng.r(0.5, 2.5));
                         let v = car.vel * 0.28 + kick + self.rng.hdir() * self.rng.r(0.2, 1.0);
                         let shade_k = self.rng.r(0.92, 1.06);
-                        let alpha = (0.5 + lose * 0.25 + roll * 0.1) * if surface == Surface::Grass { 0.45 } else { 1.0 };
+                        let alpha = (0.5 + lose * 0.2 + roll * 0.1) * airy * if surface == Surface::Grass { 0.45 } else { 1.0 };
                         let s1 = self.rng.r(1.0, 1.7) * big * (1.0 + lose * 0.7);
                         let p = Particle {
                             pos: prev.lerp(cp, 1.0 - u) + jitter + v * (u * dt),

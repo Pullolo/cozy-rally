@@ -136,6 +136,8 @@ pub struct Fx {
     stat_draw: RefCell<(f64, usize)>,
     stat_frames: u32,
     stat_timer: f32,
+    /// peak wheelspin / slide / lock seen since the last stats line
+    stat_trac: [f32; 3],
 }
 
 impl Fx {
@@ -179,6 +181,7 @@ impl Fx {
             stat_draw: RefCell::new((0.0, 0)),
             stat_frames: 0,
             stat_timer: 0.0,
+            stat_trac: [0.0; 3],
         }
     }
 
@@ -264,14 +267,18 @@ impl Fx {
             if self.stat_timer > 2.0 {
                 let (dsum, dverts) = *self.stat_draw.borrow();
                 println!(
-                    "[fx] {} particles, {} skid + {} track segs | update {:.3} ms/frame, draw {:.3} ms/frame, {} verts/frame",
+                    "[fx] {} particles, {} skid + {} track segs | update {:.3} ms/frame, draw {:.3} ms/frame, {} verts/frame | peak spin {:.2} slide {:.2} lock {:.2}",
                     self.parts.len(),
                     self.skids.segs.len(),
                     self.tracks.segs.len(),
                     self.stat_update * 1000.0 / self.stat_frames as f64,
                     dsum * 1000.0 / self.stat_frames as f64,
                     dverts / self.stat_frames as usize,
+                    self.stat_trac[0],
+                    self.stat_trac[1],
+                    self.stat_trac[2],
                 );
+                self.stat_trac = [0.0; 3];
                 self.stat_update = 0.0;
                 *self.stat_draw.borrow_mut() = (0.0, 0);
                 self.stat_frames = 0;
