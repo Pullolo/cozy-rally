@@ -15,7 +15,7 @@ pub enum Quality {
     Low,
     /// 1024 shadow map, bloom + grading + FXAA
     Medium,
-    /// 2048 shadow map, bloom + grading, MSAA offscreen target when supported (FXAA otherwise)
+    /// 3072 shadow map, bloom + grading, MSAA offscreen target when supported (FXAA otherwise)
     High,
 }
 
@@ -50,7 +50,7 @@ impl Quality {
         match self {
             Quality::Low => 0,
             Quality::Medium => 1024,
-            Quality::High => 2048,
+            Quality::High => 3072,
         }
     }
 }

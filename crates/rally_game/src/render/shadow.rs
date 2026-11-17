@@ -12,7 +12,7 @@ pub struct ShadowMap {
 }
 
 /// Half-width of the shadowed square around the camera (metres)
-pub const SHADOW_RADIUS: f32 = 72.0;
+pub const SHADOW_RADIUS: f32 = 64.0;
 
 impl ShadowMap {
     pub fn new(ctx: &mut dyn RenderingBackend, size: u32) -> ShadowMap {

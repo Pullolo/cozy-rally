@@ -69,7 +69,7 @@ void main() {
     }
     if (params2.z > 0.0) {
         // normal-offset to fight acne, scaled by shadow texel size
-        vec3 off = n * params4.x * 1.5;
+        vec3 off = n * params4.x * 2.0;
         vec4 s = shadow_mat * vec4(w.xyz + off, 1.0);
         v_shadow = s.xyz * 0.5 + 0.5;
     } else {
@@ -111,23 +111,23 @@ float shadow_tap(vec2 uv, float z) {
     return step(z, unpack_depth(texture2D(shadow_map, uv)));
 }
 
-// 3x3 texel box filter evaluated with bilinear weights from a 4x4 tap grid: soft, stable edges
-float shadow_pcf(vec3 sc) {
+// 4x4 texel box filter evaluated with bilinear weights from a 5x5 tap grid: soft, stable edges
+float shadow_pcf(vec3 sc, float slope) {
     float texel = params3.z;
     float size = 1.0 / texel;
     vec2 t = sc.xy * size - 0.5;
     vec2 f = fract(t);
     vec2 base = (floor(t) + 0.5) * texel;
-    float z = sc.z - params4.y;
+    float z = sc.z - params4.y * slope;
     float sum = 0.0;
-    for (int j = 0; j < 4; j++) {
-        float wy = j == 0 ? 1.0 - f.y : (j == 3 ? f.y : 1.0);
-        for (int i = 0; i < 4; i++) {
-            float wx = i == 0 ? 1.0 - f.x : (i == 3 ? f.x : 1.0);
-            sum += wx * wy * shadow_tap(base + vec2(float(i) - 1.0, float(j) - 1.0) * texel, z);
+    for (int j = 0; j < 5; j++) {
+        float wy = j == 0 ? 1.0 - f.y : (j == 4 ? f.y : 1.0);
+        for (int i = 0; i < 5; i++) {
+            float wx = i == 0 ? 1.0 - f.x : (i == 4 ? f.x : 1.0);
+            sum += wx * wy * shadow_tap(base + vec2(float(i) - 2.0, float(j) - 2.0) * texel, z);
         }
     }
-    return sum / 9.0;
+    return sum / 16.0;
 }
 
 vec3 soft_clip(vec3 c) {
@@ -138,11 +138,12 @@ vec3 soft_clip(vec3 c) {
 
 void main() {
     vec3 n = normalize(v_normal);
-    if (!gl_FrontFacing) { n = -n; }
     vec3 base = v_color.rgb * tint.rgb;
     vec3 to_cam = cam_pos - v_world;
     float dist = length(to_cam);
     vec3 view = to_cam / max(dist, 1e-4);
+    // two-sided lighting for thin geometry, but keep authored normals (grass = up) intact
+    if (!gl_FrontFacing && dot(n, view) < 0.0) { n = -n; }
     float d = dot(n, sun_dir);
     float wrap = clamp((d + 0.25) / 1.25, 0.0, 1.0);
     wrap = mix(wrap, smoothstep(0.15, 0.6, wrap), 0.35);
@@ -152,7 +153,7 @@ void main() {
         vec2 edge = min(sc.xy, 1.0 - sc.xy);
         float inside = clamp(min(edge.x, edge.y) * 14.0, 0.0, 1.0);
         if (inside > 0.0 && sc.z < 1.0) {
-            sh = mix(1.0, shadow_pcf(sc), inside * params2.z);
+            sh = mix(1.0, shadow_pcf(sc, 1.0 + 3.0 * (1.0 - clamp(d, 0.0, 1.0))), inside * params2.z);
         }
     }
     // faces turned away from the sun count as shadowed so the terminator matches cast shadows
@@ -160,16 +161,20 @@ void main() {
     float hemi = n.y * 0.5 + 0.5;
     vec3 amb = mix(ground_amb, sky_amb, hemi) * mix(0.7, 1.12, hemi) * v_ao;
     // shadowed areas pick up a gentle cool sky tint, never black
-    amb *= mix(vec3(0.94, 0.97, 1.08), vec3(1.0), sh);
+    amb *= mix(vec3(1.0, 1.05, 1.2), vec3(1.0), sh);
     vec3 lit = base * (amb + sun_color * direct * 0.85 * mix(1.0, v_ao, 0.5));
     // specular glint (car paint, water-ish props)
     float spec = 0.0;
-    if (params2.x > 0.0) {
+    float gloss = params2.x;
+    if (params4.z > 0.5) {
+        gloss = (1.0 - v_color.a) * 1.25;
+    }
+    if (gloss > 0.0) {
         vec3 h = normalize(sun_dir + view);
         float nh = max(dot(n, h), 0.0);
-        spec = pow(nh, 24.0 + params2.x * 90.0) * params2.x * sh * step(0.0, d);
+        spec = pow(nh, 24.0 + gloss * 90.0) * gloss * sh * step(0.0, d);
         float fres = pow(1.0 - clamp(dot(n, view), 0.0, 1.0), 4.0);
-        lit += sun_color * spec * 1.4 + sky_amb * fres * params2.x * 0.35;
+        lit += sun_color * spec * 1.4 + sky_amb * fres * gloss * 0.35;
     }
     float rim = pow(1.0 - clamp(dot(n, view), 0.0, 1.0), 3.0) * params.w;
     lit += rim * mix(sky_amb, sun_color, 0.6) * 0.3 * (0.5 + 0.5 * sh);
@@ -177,6 +182,7 @@ void main() {
     vec3 col = mix(lit, base, params.y);
     // aerial perspective: fog warms up towards the sun
     float f = 1.0 - exp(-pow(dist * params.x, 1.5));
+    if (params4.w > 0.0) { f = min(f, params4.w); }
     float toward_sun = pow(max(dot(-view, sun_dir), 0.0), 6.0);
     vec3 fogc = mix(fog_color, fog_sun, toward_sun);
     col = mix(col, fogc, clamp(f, 0.0, 1.0));
@@ -185,7 +191,7 @@ void main() {
         a = v_color.a * tint.a;
     } else if (params3.y > 0.5) {
         float emissive = params.y * clamp((max(tint.r, max(tint.g, tint.b)) - 1.0) * 2.5, 0.0, 1.0);
-        a = clamp(emissive + spec * 0.8, 0.0, 1.0) * (1.0 - f);
+        a = clamp(emissive + max(spec - 0.15, 0.0) * 0.5, 0.0, 1.0) * (1.0 - f);
     }
     gl_FragColor = vec4(col, a);
 }
@@ -264,7 +270,7 @@ void main() {
     // warm band right at the horizon, cool haze below it
     col = mix(col, fog_color, smoothstep(0.06, -0.04, y));
     float s = max(dot(d, sun_dir), 0.0);
-    float glow = pow(s, 6.0) * 0.22 + pow(s, 48.0) * 0.35;
+    float glow = pow(s, 10.0) * 0.16 + pow(s, 64.0) * 0.3;
     col += sun_color * glow * params.z * vec3(1.0, 0.92, 0.8);
     float disc = smoothstep(1.0 - params.y * 1.25, 1.0 - params.y, s);
     col = mix(col, vec3(1.0, 0.98, 0.9), disc);

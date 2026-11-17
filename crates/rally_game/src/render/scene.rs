@@ -34,6 +34,7 @@ pub struct Scene {
     pub water_shallow: [f32; 3],
     pub grade: Grade,
     pub biome: Biome,
+    pub time_of_day: TimeOfDay,
 }
 
 /// Draw distance for ground detail (metres)
@@ -63,6 +64,44 @@ pub fn grade_for(biome: Biome) -> Grade {
         Biome::Desert => Grade { lift: [0.98, 0.95, 1.03], gain: [1.04, 1.0, 0.94], saturation: 1.02, warmth: 0.7, threshold: 0.9, knee: 0.45, ..d },
         Biome::Coast => Grade { lift: [0.95, 0.98, 1.05], gain: [1.04, 1.01, 0.96], saturation: 1.1, warmth: 0.45, ..d },
     }
+}
+
+// ---------------------------------------------------------------------------------- mood
+
+/// Time of day for a track. Picked per seed (about one track in three is golden hour);
+/// `COZY_TOD=day|golden` overrides for testing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimeOfDay {
+    Day,
+    Golden,
+}
+
+pub fn time_of_day(track: &Track) -> TimeOfDay {
+    match std::env::var("COZY_TOD").ok().as_deref() {
+        Some("day") => return TimeOfDay::Day,
+        Some("golden") => return TimeOfDay::Golden,
+        _ => {}
+    }
+    // autumn is already a warm late-afternoon palette
+    if track.biome != Biome::Autumn && hash2(track.params.seed as i32, 913, 77) < 0.33 { TimeOfDay::Golden } else { TimeOfDay::Day }
+}
+
+/// The biome palette adjusted for the time of day (sky, sun, fog, ambient).
+pub fn look_for(track: &Track, tod: TimeOfDay) -> BiomeStyle {
+    let mut st = track.style.clone();
+    if tod == TimeOfDay::Golden {
+        let d = Vec3::from(st.sun_dir).normalize();
+        let flat = Vec3::new(d.x, 0.0, d.z).normalize_or_zero();
+        let low = (flat * 0.93 + Vec3::Y * 0.36).normalize();
+        st.sun_dir = low.to_array();
+        st.sun_color = [1.18, 0.84, 0.58];
+        st.sky_top = mix(st.sky_top, [0.42, 0.50, 0.78], 0.5);
+        st.sky_horizon = mix(st.sky_horizon, [1.0, 0.80, 0.62], 0.65);
+        st.fog = mix(st.fog, [0.98, 0.80, 0.66], 0.6);
+        st.ambient = mix(st.ambient, [0.50, 0.44, 0.52], 0.6);
+        st.fog_density *= 1.1;
+    }
+    st
 }
 
 // ---------------------------------------------------------------------------------- terrain
@@ -207,33 +246,162 @@ pub fn terrain_mesh(track: &Track, painter: &GroundPainter) -> MeshBuilder {
 
 // ---------------------------------------------------------------------------------- road
 
-struct Strip {
-    from: f32,
-    to: f32,
-    color: [f32; 3],
-    lift: f32,
+/// Ground-hugging triangle with per-vertex colours, wound counter-clockwise seen from above
+/// and with its geometric (upward) normal.
+fn tri_up(m: &mut MeshBuilder, v: [(Vec3, [u8; 4]); 3]) {
+    let mut n = (v[1].0 - v[0].0).cross(v[2].0 - v[0].0).normalize_or_zero();
+    let (a, b, c) = if n.y < 0.0 {
+        n = -n;
+        (v[0], v[2], v[1])
+    } else {
+        (v[0], v[1], v[2])
+    };
+    m.tri_smooth([(a.0, n, a.1), (b.0, n, b.1), (c.0, n, c.1)]);
 }
 
-fn road_strips(st: &BiomeStyle, hw: f32) -> Vec<Strip> {
-    let road = st.road;
-    let rut = shade(road, 0.86);
-    let edge = st.road_edge;
-    let mut v = vec![Strip { from: -hw, to: -hw + 0.6, color: edge, lift: 0.04 }];
-    if st.road_surface == Surface::Asphalt {
-        v.push(Strip { from: -hw + 0.6, to: -hw + 0.85, color: [0.95, 0.95, 0.92], lift: 0.045 });
-        v.push(Strip { from: -hw + 0.85, to: hw - 0.85, color: road, lift: 0.04 });
-        v.push(Strip { from: hw - 0.85, to: hw - 0.6, color: [0.95, 0.95, 0.92], lift: 0.045 });
-    } else {
-        let r1 = -hw * 0.42;
-        let r2 = hw * 0.42;
-        v.push(Strip { from: -hw + 0.6, to: r1 - 0.45, color: road, lift: 0.04 });
-        v.push(Strip { from: r1 - 0.45, to: r1 + 0.45, color: rut, lift: 0.04 });
-        v.push(Strip { from: r1 + 0.45, to: r2 - 0.45, color: shade(road, 1.04), lift: 0.04 });
-        v.push(Strip { from: r2 - 0.45, to: r2 + 0.45, color: rut, lift: 0.04 });
-        v.push(Strip { from: r2 + 0.45, to: hw - 0.6, color: road, lift: 0.04 });
+/// Surface mix of the road at sample `i`: (surface, next surface, blend 0..1 towards next).
+/// The single place to switch over to the per-sample track fields
+/// (`samples[i].surface`, `surface_next`, `surface_blend`) once they exist.
+pub fn road_mix_at(track: &Track, i: usize) -> (Surface, Surface, f32) {
+    let _ = i;
+    (track.style.road_surface, track.style.road_surface, 0.0)
+}
+
+/// Lerpable visual description of a road cross-section.
+#[derive(Clone, Copy, Debug)]
+pub struct RoadLook {
+    pub base: [f32; 3],
+    pub rut: [f32; 3],
+    pub edge: [f32; 3],
+    /// white edge lines (tarmac)
+    pub lines: f32,
+    /// dashed centre line (tarmac)
+    pub dash: f32,
+    /// specular sheen (ice, wet mud)
+    pub gloss: f32,
+    /// glossy dark puddles in the ruts (mud)
+    pub puddles: f32,
+    /// pale drifts creeping in from the edges (sand, snow)
+    pub drifts: f32,
+    pub drift_color: [f32; 3],
+    /// loose stones scattered on the surface (gravel, dirt)
+    pub stones: f32,
+}
+
+impl RoadLook {
+    pub fn lerp(&self, o: &RoadLook, t: f32) -> RoadLook {
+        let f = |a: f32, b: f32| a + (b - a) * t;
+        RoadLook {
+            base: mix(self.base, o.base, t),
+            rut: mix(self.rut, o.rut, t),
+            edge: mix(self.edge, o.edge, t),
+            lines: f(self.lines, o.lines),
+            dash: f(self.dash, o.dash),
+            gloss: f(self.gloss, o.gloss),
+            puddles: f(self.puddles, o.puddles),
+            drifts: f(self.drifts, o.drifts),
+            drift_color: mix(self.drift_color, o.drift_color, t),
+            stones: f(self.stones, o.stones),
+        }
     }
-    v.push(Strip { from: hw - 0.6, to: hw, color: edge, lift: 0.04 });
-    v
+}
+
+/// The look of a road surface; the biome's own road surface keeps its tuned palette.
+pub fn road_look(surface: Surface, st: &BiomeStyle) -> RoadLook {
+    let l = |base: [f32; 3], rut: [f32; 3], edge: [f32; 3]| RoadLook { base, rut, edge, lines: 0.0, dash: 0.0, gloss: 0.0, puddles: 0.0, drifts: 0.0, drift_color: base, stones: 0.0 };
+    let mut look = match surface {
+        Surface::Asphalt => RoadLook { lines: 1.0, dash: 1.0, gloss: 0.12, ..l([0.38, 0.38, 0.43], [0.34, 0.34, 0.39], [0.55, 0.53, 0.50]) },
+        Surface::Gravel => RoadLook { stones: 1.0, ..l([0.78, 0.69, 0.54], [0.66, 0.57, 0.44], [0.68, 0.59, 0.45]) },
+        Surface::Dirt | Surface::Grass => RoadLook { stones: 0.5, ..l([0.60, 0.45, 0.32], [0.47, 0.34, 0.24], [0.52, 0.39, 0.27]) },
+        Surface::Snow => RoadLook { drifts: 0.6, drift_color: [0.97, 0.98, 1.0], ..l([0.90, 0.92, 0.96], [0.72, 0.79, 0.92], [0.86, 0.89, 0.95]) },
+        Surface::Ice => RoadLook { gloss: 0.9, drifts: 0.4, drift_color: [0.95, 0.97, 1.0], ..l([0.74, 0.86, 0.95], [0.64, 0.79, 0.92], [0.84, 0.90, 0.96]) },
+        Surface::Mud => RoadLook { gloss: 0.25, puddles: 1.0, stones: 0.2, ..l([0.45, 0.33, 0.24], [0.33, 0.24, 0.17], [0.42, 0.32, 0.22]) },
+        Surface::Sand => RoadLook { drifts: 0.8, drift_color: [0.95, 0.86, 0.66], ..l([0.88, 0.76, 0.56], [0.80, 0.67, 0.48], [0.85, 0.72, 0.52]) },
+    };
+    if surface == st.road_surface {
+        look.base = st.road;
+        look.rut = shade(st.road, 0.86);
+        look.edge = st.road_edge;
+        if surface == Surface::Snow {
+            look.rut = mix(st.road, [0.70, 0.78, 0.93], 0.6);
+        }
+    }
+    look
+}
+
+/// Blended road look at sample `i` (smooth over the transition)
+pub fn road_look_at(track: &Track, i: usize) -> RoadLook {
+    let (a, b, t) = road_mix_at(track, i);
+    let la = road_look(a, &track.style);
+    if t <= 0.0 || a == b {
+        return la;
+    }
+    la.lerp(&road_look(b, &track.style), smoothstep(0.0, 1.0, t))
+}
+
+/// Feathered per-vertex look: the transition boundary wanders across the road with noise so
+/// patches get irregular outlines instead of a straight seam.
+fn road_look_vertex(track: &Track, i: usize, lat: f32, seed: u32) -> RoadLook {
+    let (a, b, t) = road_mix_at(track, i);
+    let la = road_look(a, &track.style);
+    if a == b || t <= 0.0 {
+        return la;
+    }
+    let s = i as f32 * 2.0;
+    let wobble = noise::fbm(s * 0.09, lat * 0.35, 3, seed + 61) * 0.45;
+    let tt = smoothstep(0.0, 1.0, ((t - 0.5) * 1.6 + 0.5 + wobble).clamp(0.0, 1.0));
+    la.lerp(&road_look(b, &track.style), tt)
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum StripKind {
+    Edge,
+    Line,
+    Road,
+    Rut,
+}
+
+/// Lateral breakpoints across the road (shared by all surfaces so looks can blend)
+fn road_strips(hw: f32) -> Vec<(f32, f32, StripKind)> {
+    let r1 = -hw * 0.42;
+    let r2 = hw * 0.42;
+    vec![
+        (-hw, -hw + 0.6, StripKind::Edge),
+        (-hw + 0.6, -hw + 0.85, StripKind::Line),
+        (-hw + 0.85, r1 - 0.45, StripKind::Road),
+        (r1 - 0.45, r1 + 0.45, StripKind::Rut),
+        (r1 + 0.45, r2 - 0.45, StripKind::Road),
+        (r2 - 0.45, r2 + 0.45, StripKind::Rut),
+        (r2 + 0.45, hw - 0.85, StripKind::Road),
+        (hw - 0.85, hw - 0.6, StripKind::Line),
+        (hw - 0.6, hw, StripKind::Edge),
+    ]
+}
+
+/// Colour (rgb) and gloss for a road vertex
+fn road_vertex_color(look: &RoadLook, kind: StripKind, s: f32, lat: f32, hw: f32, seed: u32) -> ([f32; 3], f32) {
+    let wear = 0.95 + (noise::fbm(s * 0.05, lat * 0.3, 2, seed + 41) * 0.5 + 0.5) * 0.08;
+    let mut gloss = look.gloss;
+    let mut c = match kind {
+        StripKind::Edge => look.edge,
+        StripKind::Line => mix(look.base, [0.95, 0.95, 0.92], look.lines),
+        StripKind::Road => look.base,
+        StripKind::Rut => look.rut,
+    };
+    c = shade(c, wear);
+    if look.puddles > 0.0 && kind != StripKind::Edge {
+        let p = smoothstep(0.52, 0.66, noise::fbm(s * 0.07, lat * 0.25, 3, seed + 83) * 0.5 + 0.5) * look.puddles;
+        c = mix(c, shade(look.rut, 0.7), p * 0.8);
+        gloss = gloss.max(p * 0.85);
+    }
+    if look.drifts > 0.0 {
+        // drifts creep in from the edges with an organic outline
+        let edge_prox = smoothstep(hw * 0.25, hw, lat.abs());
+        let n = noise::fbm(s * 0.045, lat * 0.2, 3, seed + 97) * 0.5 + 0.5;
+        let d = smoothstep(0.45, 0.7, n * 0.7 + edge_prox * 0.5) * look.drifts;
+        c = mix(c, look.drift_color, d * 0.75);
+    }
+    (c, gloss)
 }
 
 pub fn road_mesh(track: &Track, painter: &GroundPainter) -> MeshBuilder {
@@ -247,41 +415,42 @@ pub fn road_mesh(track: &Track, painter: &GroundPainter) -> MeshBuilder {
         let s = &track.samples[i % n];
         Vec3::new(s.right.x, 0.0, s.right.z).normalize()
     };
-    // colour variation along the road: worn patches and gravel spill
-    let wear = |i: usize, lat: f32| -> f32 {
-        let s = i as f32 * 2.0;
-        let a = noise::fbm(s * 0.05, lat * 0.3, 2, seed + 41) * 0.5 + 0.5;
-        0.95 + a * 0.08
-    };
+    // vertex colour with gloss in alpha (255 = matte); see DrawParams::vertex_gloss
+    let enc = |(c, g): ([f32; 3], f32)| rgba(c, 1.0 - g.clamp(0.0, 1.0) * 0.8);
     for i in 0..n {
         if i % 16 == 0 {
             m.begin_chunk();
         }
+        let ib = (i + 1) % n;
         let a = &track.samples[i];
-        let b = &track.samples[(i + 1) % n];
+        let b = &track.samples[ib];
         let fa = flat_right(i);
-        let fb = flat_right(i + 1);
+        let fb = flat_right(ib);
         let sb_scale = b.half_width / a.half_width;
-        let strips = road_strips(st, a.half_width);
-        for s in &strips {
+        let (sa, sb) = (i as f32 * 2.0, (i + 1) as f32 * 2.0);
+        for (from, to, kind) in road_strips(a.half_width) {
             // subdivide wide strips so the road follows the crowned terrain exactly
-            let pieces = ((s.to - s.from) / 1.1).ceil().max(1.0) as usize;
+            let pieces = ((to - from) / 1.1).ceil().max(1.0) as usize;
             for k in 0..pieces {
-                let l0 = s.from + (s.to - s.from) * k as f32 / pieces as f32;
-                let l1 = s.from + (s.to - s.from) * (k + 1) as f32 / pieces as f32;
-                let a0 = ground(a.pos + fa * l0, s.lift);
-                let a1 = ground(a.pos + fa * l1, s.lift);
-                let b0 = ground(b.pos + fb * l0 * sb_scale, s.lift);
-                let b1 = ground(b.pos + fb * l1 * sb_scale, s.lift);
-                let ca = rgb(shade(s.color, wear(i, l0)));
-                let cb = rgb(shade(s.color, wear(i + 1, l0)));
-                let nrm = (a1 - a0).cross(b0 - a0).normalize_or_zero();
-                let nrm = if nrm.y < 0.0 { -nrm } else { nrm };
-                m.tri_smooth([(a0, nrm, ca), (b1, nrm, cb), (a1, nrm, ca)]);
-                m.tri_smooth([(a0, nrm, ca), (b0, nrm, cb), (b1, nrm, cb)]);
+                let l0 = from + (to - from) * k as f32 / pieces as f32;
+                let l1 = from + (to - from) * (k + 1) as f32 / pieces as f32;
+                let lift = if kind == StripKind::Line { 0.045 } else { 0.04 };
+                let a0 = ground(a.pos + fa * l0, lift);
+                let a1 = ground(a.pos + fa * l1, lift);
+                let b0 = ground(b.pos + fb * l0 * sb_scale, lift);
+                let b1 = ground(b.pos + fb * l1 * sb_scale, lift);
+                let col = |idx: usize, s: f32, l: f32, hw: f32| {
+                    let look = road_look_vertex(track, idx, l, seed);
+                    enc(road_vertex_color(&look, kind, s, l, hw, seed))
+                };
+                let (ca0, ca1) = (col(i, sa, l0, a.half_width), col(i, sa, l1, a.half_width));
+                let (cb0, cb1) = (col(ib, sb, l0, b.half_width), col(ib, sb, l1, b.half_width));
+                tri_up(&mut m, [(a0, ca0), (b1, cb1), (a1, ca1)]);
+                tri_up(&mut m, [(a0, ca0), (b0, cb0), (b1, cb1)]);
             }
         }
         // shoulders: blend from the road edge colour into the painted ground
+        let (la, lb) = (road_look_at(track, i), road_look_at(track, ib));
         for side in [-1.0f32, 1.0] {
             let steps = [0.0, 0.5, 1.2, SHOULDER];
             for k in 0..steps.len() - 1 {
@@ -292,29 +461,27 @@ pub fn road_mesh(track: &Track, painter: &GroundPainter) -> MeshBuilder {
                 let lift = 0.035;
                 let p = [ground(a.pos + fa * la0, lift), ground(a.pos + fa * la1, lift), ground(b.pos + fb * lb1, lift), ground(b.pos + fb * lb0, lift)];
                 let t = |d: f32| smoothstep(0.0, SHOULDER, d);
-                let col = |pt: Vec3, d: f32| {
+                let col = |pt: Vec3, d: f32, look: &RoadLook| {
                     let g = painter.color(pt.x, pt.y, pt.z, 1.0, false);
-                    let sh = mix(st.shoulder, st.road_edge, 0.25 * (1.0 - t(d)));
+                    let sh = mix(st.shoulder, look.edge, 0.35 * (1.0 - t(d)));
                     rgb(mix(sh, g, t(d)))
                 };
-                let c = [col(p[0], steps[k]), col(p[1], steps[k + 1]), col(p[2], steps[k + 1]), col(p[3], steps[k])];
-                let nrm = Vec3::Y;
-                if side > 0.0 {
-                    m.tri_smooth([(p[0], nrm, c[0]), (p[2], nrm, c[2]), (p[1], nrm, c[1])]);
-                    m.tri_smooth([(p[0], nrm, c[0]), (p[3], nrm, c[3]), (p[2], nrm, c[2])]);
-                } else {
-                    m.tri_smooth([(p[0], nrm, c[0]), (p[1], nrm, c[1]), (p[2], nrm, c[2])]);
-                    m.tri_smooth([(p[0], nrm, c[0]), (p[2], nrm, c[2]), (p[3], nrm, c[3])]);
-                }
+                let c = [col(p[0], steps[k], &la), col(p[1], steps[k + 1], &la), col(p[2], steps[k + 1], &lb), col(p[3], steps[k], &lb)];
+                tri_up(&mut m, [(p[0], c[0]), (p[1], c[1]), (p[2], c[2])]);
+                tri_up(&mut m, [(p[0], c[0]), (p[2], c[2]), (p[3], c[3])]);
             }
         }
-        // dashed centre line on asphalt
-        if st.road_surface == Surface::Asphalt && (i / 3) % 2 == 0 {
+        // dashed centre line (tarmac), fading with the look
+        let dash = la.dash.min(lb.dash);
+        if dash > 0.05 && (i / 3) % 2 == 0 {
             let a0 = ground(a.pos - fa * 0.12, 0.05);
             let a1 = ground(a.pos + fa * 0.12, 0.05);
             let b0 = ground(b.pos - fb * 0.12, 0.05);
             let b1 = ground(b.pos + fb * 0.12, 0.05);
-            m.quad(a0, a1, b1, b0, rgb([0.97, 0.9, 0.5]));
+            let ca = rgba(mix(la.base, [0.97, 0.9, 0.5], la.dash), 1.0 - la.gloss * 0.8);
+            let cb = rgba(mix(lb.base, [0.97, 0.9, 0.5], lb.dash), 1.0 - lb.gloss * 0.8);
+            tri_up(&mut m, [(a0, ca), (a1, ca), (b1, cb)]);
+            tri_up(&mut m, [(a0, ca), (b1, cb), (b0, cb)]);
         }
     }
     // chequered start line
@@ -495,6 +662,22 @@ pub fn detail_mesh(track: &Track, painter: &GroundPainter) -> MeshBuilder {
     let mut hint = None;
     for i in 0..n {
         let smp = &track.samples[i];
+        // loose stones on gravel / dirt sections (thinning out across surface transitions)
+        let look = road_look_at(track, i);
+        let stones = (look.stones * 4.0 * rng.f32()).round() as usize;
+        for _ in 0..stones {
+            let fr = Vec3::new(smp.right.x, 0.0, smp.right.z).normalize();
+            let along = Vec3::new(smp.tangent.x, 0.0, smp.tangent.z).normalize();
+            // mostly near the edges and between the ruts, where tyres don't sweep them away
+            let u = rng.range(-1.0, 1.0);
+            let lat = u.signum() * (u.abs().powf(0.6)) * (smp.half_width + 0.3);
+            let p = smp.pos + fr * lat + along * rng.range(-1.0, 1.0);
+            let y = hf.height(p.x, p.z) + 0.03;
+            let key = ((p.x / 32.0).floor() as i32, (p.z / 32.0).floor() as i32);
+            let mut d = Detail { m: tiles.entry(key).or_default(), rng: Rng::new(rng.next_u64()) };
+            let c = mix(look.edge, look.rut, rng.f32());
+            d.pebble(Vec3::new(p.x, y, p.z), rng.range(0.035, 0.075), shade(c, rng.range(0.85, 1.12)));
+        }
         let fr = Vec3::new(smp.right.x, 0.0, smp.right.z).normalize();
         let along = Vec3::new(smp.tangent.x, 0.0, smp.tangent.z).normalize();
         for side in [-1.0f32, 1.0] {
@@ -658,8 +841,7 @@ fn puff(m: &mut MeshBuilder, c: Vec3, s: Vec3, col: impl Fn(Vec3) -> [u8; 4], fl
     }
 }
 
-fn clouds_mesh(track: &Track) -> MeshBuilder {
-    let st = &track.style;
+fn clouds_mesh(track: &Track, st: &BiomeStyle) -> MeshBuilder {
     let mut m = MeshBuilder::new();
     let mut rng = Rng::new(track.params.seed ^ 0xC10D);
     let r = 800.0;
@@ -695,8 +877,7 @@ fn clouds_mesh(track: &Track) -> MeshBuilder {
 }
 
 /// Layered distant hills/mountains with baked aerial perspective (farther = paler).
-fn hills_mesh(track: &Track) -> MeshBuilder {
-    let st = &track.style;
+fn hills_mesh(track: &Track, st: &BiomeStyle) -> MeshBuilder {
     let hf = &track.terrain;
     let size = hf.size();
     let center = Vec3::new(hf.origin.x + size.x * 0.5, 0.0, hf.origin.y + size.y * 0.5);
@@ -707,9 +888,9 @@ fn hills_mesh(track: &Track) -> MeshBuilder {
     let haze = mix(st.fog, st.sky_horizon, 0.5);
     let layers: [(f32, f32, f32, f32); 3] = [
         // (distance, height scale, haze amount, noise freq)
-        (r0 + 420.0, 5.5, 0.62, 2.5),
-        (r0 + 230.0, 3.4, 0.42, 3.4),
-        (r0 + 70.0, 1.6, 0.22, 5.0),
+        (r0 + 420.0, 5.5, 0.42, 2.5),
+        (r0 + 230.0, 3.4, 0.22, 3.4),
+        (r0 + 70.0, 1.6, 0.06, 5.0),
     ];
     let far_c = match track.biome {
         Biome::Snow => [0.80, 0.84, 0.95],
@@ -847,9 +1028,32 @@ fn water_mesh(track: &Track, level: f32) -> MeshBuilder {
 
 // ---------------------------------------------------------------------------------- scene
 
+/// Debug/screenshot helper: a viewpoint on the road looking out over nearby water.
+pub fn water_viewpoint(track: &Track) -> Option<(Vec3, Vec3)> {
+    let level = track.water_level?;
+    let hf = &track.terrain;
+    let n = track.samples.len();
+    for i in (0..n).step_by(5) {
+        let smp = &track.samples[i];
+        let fr = Vec3::new(smp.right.x, 0.0, smp.right.z).normalize();
+        for side in [-1.0f32, 1.0] {
+            for k in 2..14 {
+                let p = smp.pos + fr * side * (k as f32 * 5.0);
+                if hf.contains(p.x, p.z) && hf.height(p.x, p.z) < level - 0.8 {
+                    let eye = smp.pos - fr * side * 4.0 + Vec3::Y * 3.5;
+                    return Some((eye, Vec3::new(p.x, level, p.z) + smp.tangent * 6.0));
+                }
+            }
+        }
+    }
+    None
+}
+
 impl Scene {
     pub fn build(track: &Track, gpu: &mut Gpu) -> Scene {
-        let st = &track.style;
+        let tod = time_of_day(track);
+        let look = look_for(track, tod);
+        let st = &look;
         let painter = GroundPainter::new(track);
         let terrain = gpu.upload(&terrain_mesh(track, &painter));
         let road = gpu.upload(&road_mesh(track, &painter));
@@ -857,8 +1061,8 @@ impl Scene {
         let props = gpu.upload(&props_mesh(track));
         let detail = gpu.upload(&detail_mesh(track, &painter));
         let sky = gpu.upload(&sky_dome());
-        let clouds = gpu.upload(&clouds_mesh(track));
-        let hills = gpu.upload(&hills_mesh(track));
+        let clouds = gpu.upload(&clouds_mesh(track, st));
+        let hills = gpu.upload(&hills_mesh(track, st));
         let water = track.water_level.map(|w| gpu.upload(&water_mesh(track, w)));
         let water_shallow = match track.biome {
             Biome::Snow => [0.62, 0.86, 0.92],
@@ -880,7 +1084,17 @@ impl Scene {
             sky_horizon: st.sky_horizon,
             water_level: track.water_level,
             water_shallow,
-            grade: grade_for(track.biome),
+            grade: {
+                let mut g = grade_for(track.biome);
+                if tod == TimeOfDay::Golden {
+                    g.warmth += 0.4;
+                    g.bloom *= 1.15;
+                    g.softness += 0.1;
+                    g.lift = [g.lift[0] * 0.99, g.lift[1] * 0.97, g.lift[2] * 1.03];
+                }
+                g
+            },
+            time_of_day: tod,
             biome: track.biome,
         }
     }
@@ -899,7 +1113,7 @@ impl Scene {
         let far = DrawParams { fog: false, cast_shadow: false, receive_shadow: false, ..Default::default() };
         let drift = Mat4::from_translation(Vec3::new(view.eye.x, 0.0, view.eye.z)) * Mat4::from_rotation_y(env.time * 0.004);
         gpu.draw(&self.clouds, view, &env, drift, &DrawParams { unlit: 0.55, ..far }, false);
-        gpu.draw(&self.hills, view, &env, Mat4::IDENTITY, &DrawParams { unlit: 0.6, ..far }, false);
+        gpu.draw(&self.hills, view, &env, Mat4::IDENTITY, &DrawParams { unlit: 0.6, fog: true, fog_max: 0.62, ..far }, false);
         let ground = DrawParams { cast_shadow: false, ..Default::default() };
         gpu.draw(&self.terrain, view, &env, Mat4::IDENTITY, &ground, false);
         if std::env::var("COZY_NOWATER").is_err() {
@@ -907,7 +1121,7 @@ impl Scene {
                 gpu.draw_water(w, view, &env, mix(self.sky_horizon, self.sky_top, 0.35), self.water_shallow);
             }
         }
-        gpu.draw(&self.road, view, &env, Mat4::IDENTITY, &DrawParams { depth_bias: ROAD_BIAS, ..ground }, false);
+        gpu.draw(&self.road, view, &env, Mat4::IDENTITY, &DrawParams { depth_bias: ROAD_BIAS, vertex_gloss: true, ..ground }, false);
         gpu.draw(&self.structures, view, &env, Mat4::IDENTITY, &DrawParams { rim: 0.3, ..Default::default() }, false);
         gpu.draw(&self.props, view, &env, Mat4::IDENTITY, &DrawParams { rim: 0.35, ..Default::default() }, false);
         gpu.draw(&self.detail, view, &env, Mat4::IDENTITY, &DrawParams { cull_dist: DETAIL_DIST, ..ground }, false);

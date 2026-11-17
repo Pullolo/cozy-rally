@@ -243,11 +243,16 @@ pub struct DrawParams {
     pub receive_shadow: bool,
     /// Skip chunks farther than this from the eye (0 = no limit)
     pub cull_dist: f32,
+    /// Opaque meshes only: vertex alpha encodes gloss (255 = matte) instead of wind sway.
+    /// Used by the road (ice sheen, mud puddles).
+    pub vertex_gloss: bool,
+    /// Upper limit for the fog amount (0 = none); for distant scenery with baked haze
+    pub fog_max: f32,
 }
 
 impl Default for DrawParams {
     fn default() -> Self {
-        DrawParams { tint: [1.0; 4], unlit: 0.0, rim: 0.0, fog: true, gloss: 0.0, ao_y: [0.0, 0.0], depth_bias: 0.0, cast_shadow: true, receive_shadow: true, cull_dist: 0.0 }
+        DrawParams { tint: [1.0; 4], unlit: 0.0, rim: 0.0, fog: true, gloss: 0.0, ao_y: [0.0, 0.0], depth_bias: 0.0, cast_shadow: true, receive_shadow: true, cull_dist: 0.0, vertex_gloss: false, fog_max: 0.0 }
     }
 }
 
@@ -479,7 +484,7 @@ impl Gpu {
         } else if let Some(p) = self.post.take() {
             p.delete(ctx);
         }
-        self.shadow_map.is_some()
+        self.shadow_map.is_some() && std::env::var("COZY_NOSHADOW").is_err()
     }
 
     /// Start rendering the sun shadow map for `view`. Returns the light view to cull casters
@@ -577,9 +582,9 @@ impl Gpu {
             cam_pos: view.eye.to_array(),
             tint: p.tint,
             params: [if p.fog { env.fog_density } else { 0.0 }, p.unlit, env.time, p.rim],
-            params2: [p.gloss, if blended { 0.0 } else { 1.0 }, shadow_on, if ao { p.ao_y[1] } else { 0.0 }],
+            params2: [p.gloss, if blended || p.vertex_gloss { 0.0 } else { 1.0 }, shadow_on, if ao { p.ao_y[1] } else { 0.0 }],
             params3: [p.depth_bias, out_mode, texel_uv, p.ao_y[0]],
-            params4: [texel_world, sbias, 0.0, 0.0],
+            params4: [texel_world, sbias, if p.vertex_gloss && !blended { 1.0 } else { 0.0 }, p.fog_max],
         }
     }
 

@@ -234,6 +234,13 @@ impl RaceSession {
 
     pub fn view_for(&self, player: usize, vp: &Viewport) -> View {
         let cam = &self.players[player].cam;
+        if std::env::var("COZY_WATER_CAM").is_ok() {
+            if let Some((eye, target)) = crate::render::scene::water_viewpoint(self.track()) {
+                let v = Mat4::look_at_rh(eye, target, Vec3::Y);
+                let p = Mat4::perspective_rh_gl(62f32.to_radians(), vp.w / vp.h.max(1.0), 0.25, 2200.0);
+                return View::new(v, p, eye);
+            }
+        }
         let (v, p) = cam.matrices(vp.w / vp.h.max(1.0));
         View::new(v, p, cam.eye)
     }
@@ -268,6 +275,9 @@ impl RaceSession {
             gpu.end_scene();
         }
         gpu.finish_frame(&self.scene.grade, self.time);
+        if std::env::var("COZY_FPS").is_ok() && (self.time * 2.0) as i32 != ((self.time - macroquad::time::get_frame_time()) * 2.0) as i32 {
+            println!("fps {:.1} quality {:?}", macroquad::time::get_fps(), crate::render::quality());
+        }
     }
 
     /// Draws every car (body + wheels) with its interpolated transform. Also used for the
