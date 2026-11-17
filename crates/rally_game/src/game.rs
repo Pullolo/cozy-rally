@@ -240,26 +240,41 @@ impl RaceSession {
 
     /// Render the 3D world for every local player. Extra per-view drawing (particles etc.)
     /// is done through `extra(gpu, view, viewport_index)`.
+    ///
+    /// Per viewport: sun shadow map (props, structures, cars) -> world into the offscreen
+    /// scene target -> after all viewports, bloom + colour grade + vignette composite to screen.
     pub fn draw_3d(&self, gpu: &mut Gpu, mut extra: impl FnMut(&mut Gpu, &View, usize)) {
         let dpi = macroquad::window::screen_dpi_scale();
         let sw = macroquad::window::screen_width();
         let sh = macroquad::window::screen_height();
         let vps = self.viewports(sw, sh);
+        let shadows = gpu.begin_frame();
         for (i, vp) in vps.iter().enumerate() {
             let view = self.view_for(i, vp);
-            gpu.begin_3d((vp.x * dpi) as i32, (vp.y * dpi) as i32, (vp.w * dpi) as i32, (vp.h * dpi) as i32, true);
+            if shadows {
+                if let Some(light) = gpu.begin_shadow(&view, &self.scene.env) {
+                    self.scene.draw_shadow_casters(gpu, &light);
+                    self.draw_cars(gpu, &light);
+                    gpu.end_shadow();
+                }
+            }
+            gpu.begin_scene((vp.x * dpi) as i32, (vp.y * dpi) as i32, (vp.w * dpi) as i32, (vp.h * dpi) as i32);
             self.scene.draw_opaque(gpu, &view);
             self.draw_cars(gpu, &view);
             self.draw_shadows(gpu, &view);
             self.fx.draw(gpu, &view, &self.scene.env);
             extra(gpu, &view, i);
             self.scene.draw_transparent(gpu, &view);
-            gpu.end_3d();
+            gpu.end_scene();
         }
+        gpu.finish_frame(&self.scene.grade, self.time);
     }
 
+    /// Draws every car (body + wheels) with its interpolated transform. Also used for the
+    /// shadow pass (`gpu.in_shadow_pass()`), where only opaque meshes are rendered.
     fn draw_cars(&self, gpu: &mut Gpu, view: &View) {
         let env = self.scene.env;
+        let shadow_pass = gpu.in_shadow_pass();
         for (i, car) in self.world.cars.iter().enumerate() {
             let (pos, rot) = interp(car, self.alpha);
             if !view.sphere_visible(pos, 3.5) {
@@ -267,22 +282,40 @@ impl RaceSession {
             }
             let ghost = self.world.race.racers[i].ghost > 0.0;
             let blink = ghost && (self.time * 10.0).sin() > 0.0;
-            let p = DrawParams { rim: 0.5, tint: if blink { [1.3, 1.3, 1.3, 1.0] } else { [1.0; 4] }, ..Default::default() };
+            let he = car.spec.half_extents;
+            // glossy paint + soft occlusion towards the underside
+            let p = DrawParams {
+                rim: 0.35,
+                gloss: 0.65,
+                ao_y: [-he.y * 0.9, he.y * 0.4],
+                tint: if blink { [1.3, 1.3, 1.3, 1.0] } else { [1.0; 4] },
+                ..Default::default()
+            };
             let m = Mat4::from_rotation_translation(rot, pos);
             gpu.draw(&self.cars[i].body, view, &env, m, &p, false);
+            let wp = DrawParams { gloss: 0.15, ..Default::default() };
             for w in &car.wheels {
                 let side = if w.local_mount.x < 0.0 { -1.0 } else { 1.0 };
                 let local = w.local_mount - Vec3::Y * w.susp_length + Vec3::X * side * 0.02;
                 let wm = m * Mat4::from_translation(local) * Mat4::from_rotation_y(-w.steer_angle) * Mat4::from_rotation_x(-w.spin_angle);
-                gpu.draw(&self.cars[i].wheel, view, &env, wm, &DrawParams::default(), false);
+                gpu.draw(&self.cars[i].wheel, view, &env, wm, &wp, false);
             }
+            if shadow_pass {
+                continue;
+            }
+            // >>> extra per-car meshes (lights etc.) go here, drawn with the car matrix `m`.
+            // Emissive: DrawParams { unlit: 1.0, tint: [2.0, 0.3, 0.3, 1.0], cast_shadow: false, ..Default::default() }
+            // (tint > 1 with unlit = 1 blooms in its own colour).
         }
     }
 
+    /// Soft contact shadow right under each car (grounds the car even where the shadow map
+    /// is low-res or disabled on Low quality).
     fn draw_shadows(&self, gpu: &mut Gpu, view: &View) {
         let mut verts: Vec<Vertex> = Vec::new();
         let mut idx: Vec<u16> = Vec::new();
         let track = self.track();
+        let strength = if crate::render::quality().shadows() { 0.6 } else { 1.0 };
         for car in &self.world.cars {
             let (pos, rot) = interp(car, self.alpha);
             if pos.distance(view.eye) > 120.0 {
@@ -294,24 +327,32 @@ impl RaceSession {
             let r = Vec3::new(-f.z, 0.0, f.x);
             let gh = track.terrain.height(pos.x, pos.z);
             let height = (pos.y - gh).max(0.0);
-            let a = (0.45 - height * 0.08).clamp(0.05, 0.45);
+            let a = (0.42 - height * 0.08).clamp(0.04, 0.42) * strength;
             let grow = 1.0 + height * 0.1;
-            // soft shadow: inner dark quad + outer fading ring (as a fan of 8 points)
-            let ring = 10;
+            // soft shadow: dark core fading to a transparent ring
+            let ring = 14;
             let base = verts.len() as u16;
-            let c = Vec3::new(pos.x, gh + 0.09, pos.z);
-            verts.push(Vertex { pos: c.to_array(), normal: [0.0, 1.0, 0.0], color: rgba([0.0, 0.0, 0.05], a) });
-            for k in 0..ring {
-                let ang = k as f32 / ring as f32 * std::f32::consts::TAU;
-                let p = pos + (r * ang.cos() * (he.x + 0.25) + f * ang.sin() * (he.z + 0.2)) * grow;
-                let y = track.terrain.height(p.x, p.z) + 0.09;
-                verts.push(Vertex { pos: [p.x, y, p.z], normal: [0.0, 1.0, 0.0], color: rgba([0.0, 0.0, 0.05], 0.0) });
+            let c = Vec3::new(pos.x, gh + 0.08, pos.z);
+            let col = [0.05, 0.04, 0.12];
+            verts.push(Vertex { pos: c.to_array(), normal: [0.0, 1.0, 0.0], color: rgba(col, a) });
+            for (k, (scale, alpha)) in [(0.75, a * 0.9), (1.0, 0.0)].iter().enumerate() {
+                for j in 0..ring {
+                    let ang = j as f32 / ring as f32 * std::f32::consts::TAU;
+                    let p = pos + (r * ang.cos() * (he.x + 0.2) + f * ang.sin() * (he.z + 0.15)) * grow * *scale;
+                    let y = track.terrain.height(p.x, p.z) + 0.08;
+                    verts.push(Vertex { pos: [p.x, y, p.z], normal: [0.0, 1.0, 0.0], color: rgba(col, *alpha) });
+                }
+                let _ = k;
             }
-            for k in 0..ring as u16 {
-                idx.extend_from_slice(&[base, base + 1 + k, base + 1 + (k + 1) % ring as u16]);
+            let ring16 = ring as u16;
+            for j in 0..ring16 {
+                let jn = (j + 1) % ring16;
+                idx.extend_from_slice(&[base, base + 1 + j, base + 1 + jn]);
+                let (i0, i1, o0, o1) = (base + 1 + j, base + 1 + jn, base + 1 + ring16 + j, base + 1 + ring16 + jn);
+                idx.extend_from_slice(&[i0, o0, o1, i0, o1, i1]);
             }
         }
-        gpu.draw_dynamic(&verts, &idx, view, &self.scene.env, Mat4::IDENTITY, &DrawParams { unlit: 1.0, ..Default::default() }, 1);
+        gpu.draw_dynamic(&verts, &idx, view, &self.scene.env, Mat4::IDENTITY, &DrawParams { unlit: 1.0, receive_shadow: false, depth_bias: 4e-6, ..Default::default() }, 1);
     }
 }
 
