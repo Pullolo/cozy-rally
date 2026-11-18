@@ -162,7 +162,10 @@ void main() {
     vec3 amb = mix(ground_amb, sky_amb, hemi) * mix(0.7, 1.12, hemi) * v_ao;
     // shadowed areas pick up a gentle cool sky tint, never black
     amb *= mix(vec3(1.0, 1.05, 1.2), vec3(1.0), sh);
-    vec3 lit = base * (amb + sun_color * direct * 0.85 * mix(1.0, v_ao, 0.5));
+    // soft sky fill from the side opposite the sun lifts self-shadowed faces
+    vec3 fill_dir = normalize(vec3(-sun_dir.x, 0.35, -sun_dir.z));
+    float fill = max(dot(n, fill_dir), 0.0) * 0.22;
+    vec3 lit = base * (amb + sky_amb * fill * v_ao + sun_color * direct * 0.85 * mix(1.0, v_ao, 0.5));
     // specular glint (car paint, water-ish props)
     float spec = 0.0;
     float gloss = params2.x;
