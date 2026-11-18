@@ -518,13 +518,13 @@ impl App {
         let x = 64.0 * s;
         // logo: each letter bounces in, then bobs gently
         let logo_y = sh * 0.24;
-        draw_logo(x, logo_y, 100.0 * s, t, self.screen_t);
         let tag = "cosy procedural rally with friends";
         let tag_a = ((self.screen_t - 0.5) / 0.4).clamp(0.0, 1.0);
         let tw = text_size(tag, 22.0 * s).x;
         rounded_rect(x + 4.0 * s, logo_y + 26.0 * s, tw + 32.0 * s, 38.0 * s, 19.0 * s, with_alpha(CREAM, 0.9 * tag_a));
         text(tag, x + 20.0 * s, mid_baseline(logo_y + 45.0 * s, 22.0 * s), 22.0 * s, with_alpha(INK_SOFT, tag_a));
-
+        draw_logo(x, logo_y, 100.0 * s, t, self.screen_t);
+        
         let bw = 330.0 * s;
         let bh = 56.0 * s;
         let gap = 14.0 * s;
