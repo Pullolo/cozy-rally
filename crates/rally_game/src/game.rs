@@ -146,6 +146,8 @@ impl RaceSession {
     pub fn update(&mut self, dt: f32, touch: Option<CarInput>) {
         self.frame_events.clear();
         if self.paused {
+            // let audio fade engines immediately while paused
+            crate::audio::race_frame(self, dt);
             return;
         }
         self.time += dt;
