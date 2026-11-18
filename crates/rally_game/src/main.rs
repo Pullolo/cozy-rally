@@ -652,7 +652,7 @@ impl App {
         let y = margin;
         let h = sh - 2.0 * margin;
         panel(x, y, w, h);
-        text(if self.setup.split { "Split-screen race" } else { "Solo race" }, x + 26.0 * s, y + 50.0 * s, 38.0 * s, INK);
+        text(if self.setup.mode() == gameplay::GameMode::TimeTrial { if self.setup.split { "Split-screen time trial" } else { "Time trial" } } else if self.setup.split { "Split-screen race" } else { "Solo race" }, x + 26.0 * s, y + 50.0 * s, 38.0 * s, INK);
         let tt = self.setup.mode() == gameplay::GameMode::TimeTrial; // [gameplay] no opponents in time trial
         let rows = players * 2 + 4 + 5 + 2 + 1 - if tt { 2 } else { 0 };
         self.focus.begin(rows);
@@ -790,7 +790,8 @@ impl App {
             pill(drive, px + 22.0 * s + dw * 0.5 + 8.0 * s, dy, 15.0 * s, with_alpha([PEACH, SKY][p], 0.55), INK);
             // stat bars (2x2 grid so they stay compact)
             let stats = [
-                ("Power", spec.peak_torque / 470.0, PEACH),
+                // [gameplay] real peak power (torque x rpm), ~170 kW = full bar
+                ("Power", spec.peak_torque * spec.peak_rpm * std::f32::consts::TAU / 60.0 / 1000.0 / 170.0, PEACH),
                 ("Grip", (spec.tire_grip - 0.9) / 0.3, MINT),
                 ("Weight", spec.mass / 1700.0, SKY),
                 ("Drift", 1.0 - spec.rear_grip_bias.clamp(0.0, 1.0) * 0.5 + if spec.drivetrain == rally_core::vehicle::Drivetrain::Rwd { 0.3 } else { 0.0 }, LAVENDER),

@@ -279,7 +279,8 @@ pub fn pause_pressed() -> bool {
     any_pad_pressed(PadButton::Start)
 }
 
-/// "Back" in menus: Escape or B on any pad
+/// "Back" in menus: Escape or B on any pad (ui::Focus::back already includes the pad)
+#[allow(dead_code)]
 pub fn back_pressed() -> bool {
     is_key_pressed(KeyCode::Escape) || any_pad_pressed(PadButton::B)
 }

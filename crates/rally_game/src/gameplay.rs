@@ -64,7 +64,9 @@ fn data_dir() -> Option<PathBuf> {
 fn ghost_file(cfg: &SessionConfig) -> Option<PathBuf> {
     let t = &cfg.track;
     let biome = t.biome.map(|b| b as u8 + 1).unwrap_or(0);
-    Some(data_dir()?.join("ghosts").join(format!("ghost_s{}_b{}_l{}.bin", t.seed, biome, t.length_class)))
+    // everything that changes the generated stage is part of the key
+    let surface = rally_core::surfacemap::SURFACE_MODES.iter().position(|m| *m == t.surface).unwrap_or(0);
+    Some(data_dir()?.join("ghosts").join(format!("ghost_s{}_b{}_l{}_d{}_m{}.bin", t.seed, biome, t.length_class, t.difficulty, surface)))
 }
 
 fn upload_ghost_meshes(gpu: &mut Gpu) -> Vec<(u8, GpuMesh, GpuMesh)> {
