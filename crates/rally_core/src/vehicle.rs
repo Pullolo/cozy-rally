@@ -111,7 +111,7 @@ pub fn car_specs() -> Vec<CarSpec> {
             peak_rpm: 5600.0,
             idle_rpm: 900.0,
             redline: 7200.0,
-            gears: &[2.6, 1.85, 1.42, 1.15, 0.95],
+            gears: &[2.3, 1.75, 1.38, 1.13, 0.95],
             final_drive: 3.5,
             reverse_ratio: 3.2,
             engine_inertia: 0.10,
@@ -289,6 +289,8 @@ pub struct WheelState {
     pub traction_loss: f32,
     /// Current traction-control torque cut on this wheel (0..1)
     pub tc_cut: f32,
+    /// Traction-control integrator state
+    pub tc_i: f32,
     /// Current ABS brake release on this wheel (0..1)
     pub abs_cut: f32,
 }
@@ -560,6 +562,12 @@ impl Car {
         let limiter = self.rpm >= spec.redline;
         let eff_throttle = if shifting || limiter { 0.0 } else { throttle };
         let mut engine_torque = torque_curve(&spec, self.rpm) * eff_throttle * self.power_scale;
+        if clutch_slip && self.gear.abs() == 1 && !shifting {
+            // dumping the clutch: the spinning flywheel adds a torque spike while it slows
+            // toward the wheels (the launch "chirp")
+            let slip_rpm = (self.rpm - wheel_rpm).max(0.0);
+            engine_torque *= 1.0 + 0.25 * (spec.engine_inertia / 0.18).clamp(0.4, 1.0) * (slip_rpm / 2500.0).min(1.0);
+        }
         if eff_throttle < 0.05 && self.gear != 0 && !clutch_slip {
             engine_torque -= spec.peak_torque * 0.12 * (self.rpm / spec.redline);
         }
@@ -749,13 +757,28 @@ impl Car {
 
             // ---- traction control / ABS (per wheel, filtered)
             let kp = tyre.peak_kappa;
-            let tc_target = if tc > 0.0 && is_driven && drive_t * kappa > 0.0 {
-                let allow = kp * (1.0 + (1.0 - tc) * 3.5);
-                let by_slip = (kappa.abs() - allow) / (kp * 1.2);
-                // combined slip: the tyre is past its peak because of cornering + drive
-                let by_combined = (combined - (1.0 + (1.0 - tc) * 0.9)) / 0.4;
-                by_slip.max(by_combined).clamp(0.0, 1.0) * (0.6 + 0.4 * tc)
+            // TC is a PI controller on slip ratio. The weak proportional part only *limits*
+            // spin on milder settings (bigger surplus torque -> more slip, as in a real car);
+            // the integral part tightens over ~a second of continuous spin, so a launch
+            // gives a burst of wheelspin that TC then reins in. Cozy clamps hard and fast.
+            let spinning_fwd = tc > 0.0 && is_driven && drive_t * kappa > 0.0;
+            let tc_target = if spinning_fwd {
+                let allow = kp * (1.0 + (1.0 - tc) * 2.5);
+                let excess = (kappa.abs() - allow) / kp;
+                let p_cut = excess / (1.2 + (1.0 - tc) * 16.0);
+                // integral settles the tyre just past its peak (efficient, no visible spin)
+                // rate-limited, so the time to rein in a spin grows with how much cut the
+                // surface needs (longer on snow than on gravel)
+                let ki = 0.15 + 1.25 * tc * tc;
+                let i_err = (kappa.abs() / kp - (1.15 + 0.3 * (1.0 - tc))).clamp(-0.6, 1.0);
+                w.tc_i = (w.tc_i + dt * ki * i_err).clamp(0.0, 1.0);
+                // combined slip while cornering: tyre past its peak because of steering + drive
+                let sy = alpha / spec.peak_slip_angle;
+                let lat_frac = if combined > 1e-3 { (sy / combined).powi(2) } else { 0.0 };
+                let by_combined = (combined - (1.0 + (1.0 - tc) * 0.9)) / 0.4 * lat_frac;
+                (p_cut + w.tc_i).max(by_combined).clamp(0.0, 1.0) * (0.6 + 0.4 * tc)
             } else {
+                w.tc_i = (w.tc_i - dt * 1.5).max(0.0);
                 0.0
             };
             let rate = if tc_target > w.tc_cut { 35.0 } else { 10.0 };

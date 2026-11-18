@@ -31,16 +31,17 @@ fn rolling(spec: usize, track: &Track, assist: f32, kmh: f32, gear: i32) -> Car 
 const ASSISTS: [(&str, f32); 4] = [("Cozy", 1.3), ("Normal", 1.0), ("Sport", 0.55), ("Sim", 0.0)];
 
 fn launch_table() {
-    println!("=== LAUNCH (full throttle from standstill): 0-60 / 0-100 km/h, wheelspin seconds (>0.3), peak slip ratio, max rpm in 1st");
+    println!("=== LAUNCH (full throttle from standstill): 0-60 / 0-100 km/h, wheelspin seconds (>0.3), peak slip ratio, tl = peak traction_loss (FX)");
     for surf in [Surface::Asphalt, Surface::Gravel, Surface::Snow, Surface::Ice] {
         let track = Track::flat_for_tests(surf);
         println!("--- {:?}", surf);
         for spec in 0..4 {
             let mut line = format!("{:8}", car_specs()[spec].name);
-            for (aname, a) in [ASSISTS[3], ASSISTS[1], ASSISTS[0]] {
+            for (aname, a) in [ASSISTS[3], ASSISTS[2], ASSISTS[1], ASSISTS[0]] {
                 let mut c = fresh(spec, &track, a);
                 c.input = CarInput { throttle: 1.0, ..Default::default() };
-                let (mut t, mut t60, mut t100, mut spin, mut peak, mut rpm1) = (0.0f32, None, None, 0.0f32, 0.0f32, 0.0f32);
+                let (mut t, mut t60, mut t100, mut spin, mut peak, mut rpm1, mut tl) = (0.0f32, None, None, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
+                let _ = rpm1;
                 let mut nan = false;
                 while t < 25.0 && t100.is_none() {
                     c.step(DT, &track);
@@ -61,10 +62,13 @@ fn launch_table() {
                     if c.gear == 1 {
                         rpm1 = rpm1.max(c.rpm);
                     }
+                    for w in &c.wheels {
+                        tl = tl.max(w.traction_loss);
+                    }
                     nan |= !c.pos.is_finite();
                 }
                 let f = |x: Option<f32>| x.map(|v| format!("{v:4.1}")).unwrap_or(" -- ".into());
-                line += &format!(" | {aname:6} {}/{} spin {:3.1}s slip {:4.2} rpm {:4.0}{}", f(t60), f(t100), spin, peak, rpm1, if nan { " NaN!" } else { "" });
+                line += &format!(" | {aname:6} {}/{} spin {:3.1}s slip {:4.2} tl {:3.1}{}", f(t60), f(t100), spin, peak, tl, if nan { " NaN!" } else { "" });
             }
             println!("{line}");
         }
