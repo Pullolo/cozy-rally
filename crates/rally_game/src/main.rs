@@ -84,7 +84,7 @@ const ASSISTS: [(&str, f32); 4] = [("Cozy", 1.3), ("Normal", 1.0), ("Sport", 0.5
 const LENGTHS: [&str; 3] = ["Short", "Medium", "Long"];
 const SURFACES: [&str; 5] = ["Biome default", "Gravel", "Tarmac", "Snow", "Mixed"];
 const TRACK_DIFFICULTY: [&str; 3] = ["Relaxed", "Rally", "Expert"];
-const PAINT_NAMES: [&str; 8] = ["Strawberry", "Blueberry", "Honey", "Pistachio", "Lilac", "Tangerine", "Coconut", "Lagoon"];
+const PAINT_NAMES: [&str; 9] = ["Strawberry", "Blueberry", "Honey", "Pistachio", "Lilac", "Tangerine", "Coconut", "Lagoon", "Sakura"];
 const TIPS: [&str; 7] = [
     "Lift off and flick the handbrake into hairpins!",
     "Gravel and snow are slippery - be gentle.",
@@ -107,7 +107,7 @@ impl Setup {
             players.push(PlayerSlot { car: self.cars[1], paint: self.paints[1], scheme: Scheme::Arrows, name: "Player 2".into() });
         }
         SessionConfig {
-            track: TrackParams { seed: self.seed, biome: if self.biome == 0 { None } else { Some(ALL_BIOMES[self.biome - 1]) }, length_class: self.length, difficulty: self.track_difficulty.min(2) as u8, surface: rally_core::surfacemap::SURFACE_MODES[self.surface_mode.min(4)] }.with_env_overrides(),
+            track: TrackParams { seed: self.seed, biome: if self.biome == 0 { None } else { Some(ALL_BIOMES[self.biome - 1]) }, length_class: self.length, difficulty: self.track_difficulty.min(2) as u8, surface: rally_core::surfacemap::SURFACE_MODES[self.surface_mode.min(4)], ..TrackParams::default() }.with_env_overrides(),
             laps: self.laps,
             players,
             ai_count: if self.mode() == gameplay::GameMode::TimeTrial { 0 } else { self.opponents },

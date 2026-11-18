@@ -14,6 +14,8 @@ pub trait MeshExt {
     /// Set the wind-sway weight of every vertex appended since `mark` from its position.
     /// Weights must be a pure function of position so shared corners never crack apart.
     fn sway_since(&mut self, mark: Mark, f: impl Fn(Vec3) -> f32);
+    /// Recolour every triangle appended since `mark` from its centroid (keeps sway alpha)
+    fn recolor_tris_since(&mut self, mark: Mark, f: impl Fn(Vec3) -> [u8; 4]);
     /// Transform every vertex appended since `mark` (positions + normals)
     fn transform_since(&mut self, mark: Mark, m: Mat4);
     /// Convex planar polygon (fan triangulated)
@@ -49,6 +51,22 @@ impl MeshExt for MeshBuilder {
             for v in ch.vertices.iter_mut().skip(start) {
                 let w = f(Vec3::from(v.pos));
                 v.color = sway(v.color, w);
+            }
+        }
+    }
+
+    fn recolor_tris_since(&mut self, mark: Mark, f: impl Fn(Vec3) -> [u8; 4]) {
+        for (ci, ch) in self.chunks.iter_mut().enumerate().skip(mark.0) {
+            let start = if ci == mark.0 { mark.1 } else { 0 };
+            // flat-shaded triangles are 3 consecutive vertices
+            let mut k = start;
+            while k + 2 < ch.vertices.len() {
+                let cen = (Vec3::from(ch.vertices[k].pos) + Vec3::from(ch.vertices[k + 1].pos) + Vec3::from(ch.vertices[k + 2].pos)) / 3.0;
+                let c = f(cen);
+                for v in &mut ch.vertices[k..k + 3] {
+                    v.color = [c[0], c[1], c[2], v.color[3]];
+                }
+                k += 3;
             }
         }
     }
@@ -259,7 +277,8 @@ pub fn roundel(m: &mut MeshBuilder, c: Vec3, n: Vec3, up: Vec3, r: f32, number: 
     let n = n.normalize();
     m.disc(c, n, r, 12, rgb(disc_c));
     let right = up.cross(n).normalize();
-    let c2 = c + n * 0.006;
+    // digits sit 1.2 cm off the disc: no coplanar overlap even when the car is far away
+    let c2 = c + n * 0.012;
     if number >= 10 {
         digit(m, c2 - right * r * 0.3, right, up, r * 1.05, number / 10, rgb(ink));
         digit(m, c2 + right * r * 0.3, right, up, r * 1.05, number % 10, rgb(ink));
@@ -272,4 +291,63 @@ pub fn roundel(m: &mut MeshBuilder, c: Vec3, n: Vec3, up: Vec3, r: f32, number: 
 pub fn h01(a: f32, b: f32) -> f32 {
     let v = (a * 12.9898 + b * 78.233).sin() * 43758.547;
     v - v.floor()
+}
+
+/// 5x5 block-letter glyph rows (bit 4 = leftmost); unknown chars render blank.
+fn glyph(c: char) -> [u8; 5] {
+    match c {
+        'A' => [0b01110, 0b10001, 0b11111, 0b10001, 0b10001],
+        'F' => [0b11111, 0b10000, 0b11110, 0b10000, 0b10000],
+        'H' => [0b10001, 0b10001, 0b11111, 0b10001, 0b10001],
+        'I' => [0b11111, 0b00100, 0b00100, 0b00100, 0b11111],
+        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+        'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001],
+        'O' | '0' => [0b01110, 0b10001, 0b10001, 0b10001, 0b01110],
+        'P' => [0b11110, 0b10001, 0b11110, 0b10000, 0b10000],
+        'R' => [0b11110, 0b10001, 0b11110, 0b10100, 0b10011],
+        'S' => [0b01111, 0b10000, 0b01110, 0b00001, 0b11110],
+        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100],
+        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b01110],
+        '2' => [0b11110, 0b00001, 0b01110, 0b10000, 0b11111],
+        '3' => [0b11110, 0b00001, 0b01110, 0b00001, 0b11110],
+        '4' => [0b10010, 0b10010, 0b11111, 0b00010, 0b00010],
+        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b11110],
+        '6' => [0b01110, 0b10000, 0b11110, 0b10001, 0b01110],
+        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b00100],
+        '8' => [0b01110, 0b10001, 0b01110, 0b10001, 0b01110],
+        '9' => [0b01110, 0b10001, 0b01111, 0b00001, 0b01110],
+        '!' => [0b00100, 0b00100, 0b00100, 0b00000, 0b00100],
+        _ => [0; 5],
+    }
+}
+
+/// Block text centred at `c` on a plane (right/up in-plane axes), letter height `h`.
+/// Pixel runs are merged into one quad per row so text stays cheap.
+pub fn block_text(m: &mut MeshBuilder, c: Vec3, right: Vec3, up: Vec3, h: f32, text: &str, color: [u8; 4]) {
+    let px = h / 5.0;
+    let adv = px * 6.0;
+    let n = text.chars().count() as f32;
+    let x0 = -(n * adv - px) * 0.5;
+    for (i, ch) in text.chars().enumerate() {
+        let g = glyph(ch);
+        for (row, bits) in g.iter().enumerate() {
+            let y1 = h * 0.5 - row as f32 * px;
+            let y0 = y1 - px;
+            let mut col = 0;
+            while col < 5 {
+                if bits & (1 << (4 - col)) != 0 {
+                    let start = col;
+                    while col < 5 && bits & (1 << (4 - col)) != 0 {
+                        col += 1;
+                    }
+                    let xa = x0 + i as f32 * adv + start as f32 * px;
+                    let xb = x0 + i as f32 * adv + col as f32 * px;
+                    let p = |x: f32, y: f32| c + right * x + up * y;
+                    m.quad(p(xa, y0), p(xb, y0), p(xb, y1), p(xa, y1), color);
+                } else {
+                    col += 1;
+                }
+            }
+        }
+    }
 }
