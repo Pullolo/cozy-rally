@@ -8,6 +8,7 @@ use macroquad::math::{Mat4, Quat, Vec3};
 #[derive(Clone, Copy)]
 pub struct Mark(usize, usize);
 
+#[allow(dead_code)]
 pub trait MeshExt {
     fn mark(&self) -> Mark;
     /// Set the wind-sway weight of every vertex appended since `mark` from its position.

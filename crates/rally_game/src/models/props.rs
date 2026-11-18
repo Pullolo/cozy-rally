@@ -153,9 +153,9 @@ fn tree(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
         }
     }
     sway_up(m, mk, f.pos.y, 1.8 * f.s, 3.5 * f.s, 0.55);
-    if b == Biome::Autumn {
+    if b == Biome::Autumn && p.variant % 3 == 0 {
         // fallen leaves
-        m.disc(f.p(0.2, 0.04, 0.1), Vec3::Y, 1.7 * f.s, 9, rgb(shade(c, 0.85)));
+        m.disc(f.p(0.2, 0.04, 0.1), Vec3::Y, 1.7 * f.s, 7, rgb(shade(c, 0.85)));
     }
 }
 
@@ -746,8 +746,9 @@ fn chevron(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
         m.cube(f.at(x, 0.7, 0.05), Vec3::new(0.05, 0.7, 0.05), rgb(WHITE));
     }
     let (hw, y0, y1) = (0.85, 1.0, 1.65);
-    m.bevel_box(f.at(0.0, (y0 + y1) * 0.5, 0.0), Vec3::new(hw, (y1 - y0) * 0.5, 0.04), 0.03, rgb(WHITE));
-    let red = rgb([0.92, 0.3, 0.28]);
+    m.bevel_box(f.at(0.0, (y0 + y1) * 0.5, 0.0), Vec3::new(hw + 0.05, (y1 - y0) * 0.5 + 0.05, 0.035), 0.03, rgb(WHITE));
+    m.cube(f.at(0.0, (y0 + y1) * 0.5, -0.02), Vec3::new(hw - 0.02, (y1 - y0) * 0.5 - 0.02, 0.03), rgb([0.99, 0.84, 0.3]));
+    let red = rgb([0.86, 0.24, 0.22]);
     // board front is local -Z, so the viewer's right is local -X
     let dir = if p.variant % 2 == 0 { -1.0 } else { 1.0 };
     let z = -0.05;
@@ -1185,6 +1186,7 @@ pub fn add_prop(m: &mut MeshBuilder, p: &Prop, style: &BiomeStyle) {
     }
 }
 
+#[allow(dead_code)]
 /// Every prop kind/variant worth showing for a biome (dev showroom catalogue)
 pub fn catalogue_kinds(b: Biome) -> Vec<(PropKind, u8)> {
     use PropKind::*;

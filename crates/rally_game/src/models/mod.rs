@@ -5,6 +5,7 @@ mod props;
 
 #[allow(unused_imports)]
 pub use car::{car_model, wheel_mesh, CarModel};
+#[allow(unused_imports)]
 pub use props::{add_prop, catalogue_kinds};
 
 /// Car paint palette (players can pick)

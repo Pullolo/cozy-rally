@@ -82,6 +82,7 @@ async fn main() {
     let lights = std::env::var("LIGHTS").is_ok();
     for frame in 0..3 {
         clear_background(Color::new(0.80, 0.89, 0.95, 1.0));
+        let _ = vec2(0.0, 0.0);
         let (sw, sh) = (screen_width(), screen_height());
         match show.as_str() {
             "cars" | "closeup" => {
@@ -111,6 +112,64 @@ async fn main() {
                         gpu.end_3d();
                     }
                 }
+            }
+            "corner" => {
+                // driver's-eye view of a real track corner with chevrons (terrain + road strip + props)
+                let b: usize = std::env::var("BIOME").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
+                let k: usize = std::env::var("K").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+                let what = std::env::var("KIND").unwrap_or_else(|_| "ArrowSign".into());
+                let t = Track::generate(&TrackParams { seed: 3, biome: Some(Biome::from_index(b.max(1) - 1)), length_class: 1 });
+                let st = &t.style;
+                let target = t.props.iter().filter(|p| format!("{:?}", p.kind) == what).nth(k).cloned();
+                let Some(sign) = target else {
+                    println!("no {what} #{k}");
+                    return;
+                };
+                let q = t.query(sign.pos, None);
+                let s = t.samples[q.index];
+                let back = s.pos - s.tangent * 18.0 + Vec3::Y * 3.0;
+                let eye = back;
+                let look = s.pos + s.tangent * 25.0;
+                let mut m = MeshBuilder::new();
+                let hf = &t.terrain;
+                let c = vec2(eye.x, eye.z);
+                for iz in 0..hf.nz - 1 {
+                    for ix in 0..hf.nx - 1 {
+                        let p00 = hf.vertex_pos(ix, iz);
+                        if vec2(p00.x, p00.z).distance(c) > 220.0 {
+                            continue;
+                        }
+                        let p10 = hf.vertex_pos(ix + 1, iz);
+                        let p01 = hf.vertex_pos(ix, iz + 1);
+                        let p11 = hf.vertex_pos(ix + 1, iz + 1);
+                        let col = render::mesh::rgb(st.ground_a);
+                        m.tri(p00, p11, p10, col);
+                        m.tri(p00, p01, p11, col);
+                    }
+                }
+                let n = t.samples.len();
+                for i in 0..n {
+                    let a = t.samples[i];
+                    let bb = t.samples[(i + 1) % n];
+                    if vec2(a.pos.x, a.pos.z).distance(c) > 220.0 {
+                        continue;
+                    }
+                    let g = |p: Vec3| vec3(p.x, hf.height(p.x, p.z) + 0.06, p.z);
+                    let (ra, rb) = (vec3(a.right.x, 0.0, a.right.z).normalize(), vec3(bb.right.x, 0.0, bb.right.z).normalize());
+                    m.quad(g(a.pos - ra * a.half_width), g(a.pos + ra * a.half_width), g(bb.pos + rb * bb.half_width), g(bb.pos - rb * bb.half_width), render::mesh::rgb(st.road));
+                }
+                for p in &t.props {
+                    if vec2(p.pos.x, p.pos.z).distance(c) < 260.0 {
+                        models::add_prop(&mut m, p, st);
+                    }
+                }
+                viewport(&mut gpu, 0.0, 0.0, sw, sh);
+                let view = Mat4::look_at_rh(eye, look, Vec3::Y);
+                let proj = Mat4::perspective_rh_gl(55f32.to_radians(), sw / sh, 0.3, 600.0);
+                let v = View::new(view, proj, eye);
+                let e = Environment { sun_dir: Vec3::from(st.sun_dir).normalize(), sun_color: st.sun_color, ambient: st.ambient, fog_color: st.fog, fog_density: st.fog_density, time: 0.0 };
+                gpu.draw_builder(&m, &v, &e, Mat4::IDENTITY, &DrawParams { rim: 0.4, fog: true, ..Default::default() }, 0);
+                gpu.end_3d();
             }
             "props" => {
                 let b: usize = std::env::var("BIOME").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
@@ -167,6 +226,11 @@ async fn main() {
                                 models::add_prop(&mut m, p, &t.style);
                             }
                             println!("{:?} len{}: {} props, {} verts", t.biome, len, t.props.len(), m.vertex_count());
+                            let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+                            for p in &t.props {
+                                *counts.entry(format!("{:?}", p.kind)).or_default() += 1;
+                            }
+                            println!("    {:?}", counts);
                         }
                     }
                 }

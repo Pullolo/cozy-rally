@@ -10,6 +10,7 @@ use macroquad::math::{Mat4, Quat, Vec3};
 use rally_core::vehicle::CarSpec;
 use std::f32::consts::{FRAC_PI_2, PI};
 
+#[allow(dead_code)] // light/glass meshes are wired up by the renderer at merge time
 pub struct CarModel {
     pub body: MeshBuilder,
     /// Wheel centred at the origin, rolling around local X; symmetric so it serves both sides.
@@ -920,7 +921,7 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
                 let y = -0.02 + k as f32 * 0.21;
                 m.beam(Vec3::new(0.5, y, 2.15), Vec3::new(0.74, y, 2.15), 0.03, rgb(DARK));
             }
-            let spare = wheel_mesh(spec, WHITE, [0.9, 0.3, 0.3], 5, true);
+            let spare = wheel_mesh(spec, WHITE, [0.9, 0.3, 0.3], 5, false);
             let sz = 2.13 + spec.wheel_width * 0.5;
             m.append_transformed(&spare, trs(Vec3::new(-0.12, -0.02, sz), Quat::from_rotation_y(FRAC_PI_2), Vec3::ONE));
             m.disc(Vec3::new(-0.12, -0.02, sz + spec.wheel_width * 0.5 + 0.005), Vec3::Z, r * 0.66, 12, rgb(paint));

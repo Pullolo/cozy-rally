@@ -961,9 +961,9 @@ impl<'a> PropPlacer<'a> {
             let s = self.smp(i);
             let outside = if s.curvature > 0.0 { 1.0 } else { -1.0 };
             let variant = if s.curvature > 0.0 { 1 } else { 0 };
-            if c > 1.0 / 42.0 {
+            if c > 1.0 / 52.0 {
                 // chevrons around the apex, facing the approaching driver
-                let span = if c > 1.0 / 25.0 { 3 } else { 2 };
+                let span = if c > 1.0 / 25.0 { 3 } else if c > 1.0 / 38.0 { 2 } else { 1 };
                 for k in -span..=span {
                     let j = i + k * 3;
                     let sj = self.smp(j);
@@ -974,7 +974,7 @@ impl<'a> PropPlacer<'a> {
                     let t = Vec3::new(sj.tangent.x, 0.0, sj.tangent.z).normalize();
                     let face = (-t - Self::flat_right(&sj) * outside * 0.35).normalize();
                     // board front is local -Z
-                    self.push(PropKind::Chevron, p, yaw_facing(-face), 1.0, 0.0, variant);
+                    self.push(PropKind::Chevron, p, yaw_facing(-face), 1.3, 0.0, variant);
                 }
                 // wooden arrow before the bend
                 let j = i - 20;
@@ -1127,7 +1127,7 @@ impl<'a> PropPlacer<'a> {
                     self.around(rng, c, Deer, 2, 10.0, 16.0, 0.0, (0.9, 1.1), 12.0);
                 }
                 (Biome::Snow, _) => {
-                    if let Some(y) = self.footprint(c, 5.5, 0.7) {
+                    if let Some(y) = self.footprint(c, 5.0, 1.1) {
                         self.push(FrozenPond, Vec3::new(c.x, y, c.z), rng.range(0.0, 6.28), 1.0, 0.0, v);
                         self.around(rng, c, Snowman, 1, 7.0, 9.0, 0.5, (0.9, 1.1), 10.0);
                     } else {
@@ -1272,7 +1272,7 @@ impl<'a> PropPlacer<'a> {
                 let q = t.query(Vec3::new(x, 0.0, z), None);
                 let hw = t.samples[q.index].half_width;
                 // thinner far from the road, where only fog sees it
-                density *= 1.0 - 0.45 * smoothstep(90.0, 170.0, q.dist);
+                density *= 1.0 - 0.55 * smoothstep(70.0, 160.0, q.dist);
                 if !rng.chance(density) {
                     continue;
                 }
