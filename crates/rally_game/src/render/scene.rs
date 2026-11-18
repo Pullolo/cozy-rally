@@ -27,6 +27,8 @@ pub struct Scene {
     pub sky: GpuMesh,
     pub clouds: GpuMesh,
     pub hills: GpuMesh,
+    /// ground beyond the terrain edge (dry biomes only)
+    pub apron: Option<GpuMesh>,
     pub env: Environment,
     pub sky_top: [f32; 3],
     pub sky_horizon: [f32; 3],
@@ -946,6 +948,40 @@ fn hills_mesh(track: &Track, st: &BiomeStyle) -> MeshBuilder {
     m
 }
 
+/// Flat fogged ground beyond the terrain edge (dry biomes have no sea there), so the far
+/// hills sit on land instead of floating over the sky dome's haze.
+fn apron_mesh(track: &Track) -> MeshBuilder {
+    let hf = &track.terrain;
+    let size = hf.size();
+    let center = Vec3::new(hf.origin.x + size.x * 0.5, 0.0, hf.origin.y + size.y * 0.5);
+    let mut edge_min = f32::MAX;
+    for ix in 0..hf.nx {
+        edge_min = edge_min.min(hf.get(ix, 0)).min(hf.get(ix, hf.nz - 1));
+    }
+    for iz in 0..hf.nz {
+        edge_min = edge_min.min(hf.get(0, iz)).min(hf.get(hf.nx - 1, iz));
+    }
+    let y = edge_min - 1.5;
+    let r_in = size.x.min(size.y) * 0.45;
+    let r_out = size.x.max(size.y) * 0.5 + 900.0;
+    let st = &track.style;
+    let c_in = rgb(mix(st.ground_a, st.ground_b, 0.5));
+    let c_out = rgb(mix(mix(st.ground_a, st.ground_b, 0.5), st.fog, 0.5));
+    let mut m = MeshBuilder::new();
+    let segs = 48;
+    for i in 0..segs {
+        let a0 = i as f32 / segs as f32 * std::f32::consts::TAU;
+        let a1 = (i + 1) as f32 / segs as f32 * std::f32::consts::TAU;
+        let d0 = Vec3::new(a0.cos(), 0.0, a0.sin());
+        let d1 = Vec3::new(a1.cos(), 0.0, a1.sin());
+        let (i0, i1) = (center + d0 * r_in + Vec3::Y * y, center + d1 * r_in + Vec3::Y * y);
+        let (o0, o1) = (center + d0 * r_out + Vec3::Y * y, center + d1 * r_out + Vec3::Y * y);
+        tri_up(&mut m, [(i0, c_in), (o1, c_out), (o0, c_out)]);
+        tri_up(&mut m, [(i0, c_in), (i1, c_in), (o1, c_out)]);
+    }
+    m
+}
+
 // ---------------------------------------------------------------------------------- water
 
 /// Water surface over the terrain grid (5 m cells, only where it can be seen) plus a coarse
@@ -1064,6 +1100,7 @@ impl Scene {
         let clouds = gpu.upload(&clouds_mesh(track, st));
         let hills = gpu.upload(&hills_mesh(track, st));
         let water = track.water_level.map(|w| gpu.upload(&water_mesh(track, w)));
+        let apron = if track.water_level.is_none() { Some(gpu.upload(&apron_mesh(track))) } else { None };
         let water_shallow = match track.biome {
             Biome::Snow => [0.62, 0.86, 0.92],
             Biome::Autumn => [0.48, 0.72, 0.68],
@@ -1079,6 +1116,7 @@ impl Scene {
             sky,
             clouds,
             hills,
+            apron,
             env: Environment { sun_dir: n3(st.sun_dir), sun_color: st.sun_color, ambient: st.ambient, fog_color: st.fog, fog_density: st.fog_density, time: 0.0 },
             sky_top: st.sky_top,
             sky_horizon: st.sky_horizon,
@@ -1115,6 +1153,9 @@ impl Scene {
         gpu.draw(&self.clouds, view, &env, drift, &DrawParams { unlit: 0.55, ..far }, false);
         gpu.draw(&self.hills, view, &env, Mat4::IDENTITY, &DrawParams { unlit: 0.6, fog: true, fog_max: 0.62, ..far }, false);
         let ground = DrawParams { cast_shadow: false, ..Default::default() };
+        if let Some(a) = &self.apron {
+            gpu.draw(a, view, &env, Mat4::IDENTITY, &DrawParams { receive_shadow: false, ..ground }, false);
+        }
         gpu.draw(&self.terrain, view, &env, Mat4::IDENTITY, &ground, false);
         if std::env::var("COZY_NOWATER").is_err() {
             if let Some(w) = &self.water {
@@ -1138,6 +1179,9 @@ impl Scene {
         gpu.free(self.sky);
         gpu.free(self.clouds);
         gpu.free(self.hills);
+        if let Some(a) = self.apron {
+            gpu.free(a);
+        }
         if let Some(w) = self.water {
             gpu.free(w);
         }

@@ -161,7 +161,7 @@ void main() {
     float hemi = n.y * 0.5 + 0.5;
     vec3 amb = mix(ground_amb, sky_amb, hemi) * mix(0.7, 1.12, hemi) * v_ao;
     // shadowed areas pick up a gentle cool sky tint, never black
-    amb *= mix(vec3(1.0, 1.05, 1.2), vec3(1.0), sh);
+    amb *= mix(vec3(1.02, 1.04, 1.13), vec3(1.0), sh);
     // soft sky fill from the side opposite the sun lifts self-shadowed faces
     vec3 fill_dir = normalize(vec3(-sun_dir.x, 0.35, -sun_dir.z));
     float fill = max(dot(n, fill_dir), 0.0) * 0.22;
