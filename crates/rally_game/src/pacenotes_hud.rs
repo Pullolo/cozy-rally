@@ -204,12 +204,16 @@ fn draw_strip(state: &mut HudState, player: usize, s: f32, speed: f32, biome: ra
     }
     if u0.distance > 0.0 {
         let d = format!("{:.0}m", (u0.distance / 5.0).round() * 5.0);
-        text_outlined_centered(&d, bx + bw * 0.5, by + bh + 17.0 * k * cs, 18.0 * k * cs, CREAM);
+        text_outlined_centered(&d, bx + bw + 22.0 * k * cs, by + bh * 0.9, 17.0 * k * cs, CREAM);
     }
     // the call as a co-driver would read it
     let call = note0.text();
-    let fs = 20.0 * k * cs;
-    text_outlined_centered(&call, x0 + strip_w * 0.5, by + bh + 40.0 * k * cs, fs, with_alpha(CREAM, 0.95));
+    let fs = 22.0 * k * cs;
+    let cy = by + bh + 26.0 * k * cs;
+    let tw = text_size(&call, fs).x + 22.0 * k * cs;
+    let cx = x0 + strip_w * 0.5;
+    rounded_rect(cx - tw * 0.5, cy, tw, 28.0 * k * cs, 14.0 * k * cs, Color::new(0.24, 0.20, 0.27, 0.62));
+    text_centered(&call, cx, cy + 20.0 * k * cs, fs, CREAM);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -232,10 +236,7 @@ fn draw_card(n: &PaceNote, x: f32, y: f32, size: f32, alpha: f32, inside: bool, 
     let gy = y + size * 0.16;
     let gs = size * 0.52;
     let number: Option<String> = match n.kind {
-        NoteKind::Corner | NoteKind::Square => Some(match n.exit_severity {
-            Some(e) if e != n.severity => format!("{}>{}", n.severity, e),
-            _ => n.severity.to_string(),
-        }),
+        NoteKind::Corner | NoteKind::Square => Some(n.severity.to_string()),
         NoteKind::Hairpin => Some("1".into()),
         NoteKind::Kink => Some("K".into()),
         _ => None,
@@ -247,9 +248,12 @@ fn draw_card(n: &PaceNote, x: f32, y: f32, size: f32, alpha: f32, inside: bool, 
             let glyph_x = if left { gx } else { x + size - size * 0.08 - gs };
             draw_turn_glyph(n, glyph_x, gy, gs, gs * 1.05, size * 0.075, with_alpha(col_dark(col), alpha));
             if let Some(num) = number {
-                let fs = if num.len() > 1 { size * 0.34 } else { size * 0.46 };
                 let nx = if left { x + size * 0.76 } else { x + size * 0.26 };
-                text_centered(&num, nx, gy + gs * 0.78, fs, ink);
+                text_centered(&num, nx, gy + gs * 0.72, size * 0.46, ink);
+                // exit grade of tightening / opening corners
+                if let Some(e) = n.exit_severity.filter(|e| *e != n.severity) {
+                    text_centered(&format!("> {e}"), nx, gy + gs * 1.05, size * 0.2, with_alpha(INK_SOFT, alpha));
+                }
             }
         }
         NoteKind::Crest => draw_crest(x + size * 0.5, gy + gs * 0.85, gs * 0.9, ink, false),
@@ -302,7 +306,7 @@ fn draw_card(n: &PaceNote, x: f32, y: f32, size: f32, alpha: f32, inside: bool, 
         badges.push(Badge::OffCamber);
     }
     badges.truncate(4);
-    let br = size * 0.085;
+    let br = size * 0.1;
     let total = badges.len() as f32 * br * 2.3;
     let mut bx = x + (size - total) * 0.5 + br * 1.15;
     let byc = y + size - br * 1.35;

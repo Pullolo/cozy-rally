@@ -402,7 +402,13 @@ pub fn notes_for(track: &Track) -> PaceNotes {
 
     // ---- 2. corner notes
     let mut notes: Vec<PaceNote> = Vec::new();
-    for r in &split {
+    split.sort_by_key(|r| r.i0);
+    let ns = split.len();
+    for (ri, r) in split.iter().enumerate() {
+        // linked corners (S-bends, "into"): the line cannot use the full width on both
+        let gap_prev = if ns > 1 { (r.i0 + n - split[(ri + ns - 1) % ns].i1 % n) % n } else { n };
+        let gap_next = if ns > 1 { (split[(ri + 1) % ns].i0 % n + n - r.i1 % n) % n } else { n };
+        let linked = (gap_prev.min(gap_next) as f32) * ds < 14.0;
         let angle: f32 = (r.i0..=r.i1).map(|i| ksig[i % n].abs() * ds).sum();
         let angle_deg = angle.to_degrees();
         if angle_deg < 8.0 {
@@ -423,7 +429,7 @@ pub fn notes_for(track: &Track) -> PaceNotes {
         let mu = REF_GRIP * (a.saturating_sub(5)..=b).map(|i| track.samples[i % n].surface.props().grip).fold(f32::MAX, f32::min);
         let bank_into = (a..=b).map(|i| track.samples[i % n].bank).sum::<f32>() / (b - a + 1) as f32 * r.sign;
         let w_use = (2.0 * hw_min - 2.2).max(1.0);
-        let line_gain = 0.55 * w_use / (1.0 - (angle.min(std::f32::consts::PI) * 0.5).cos()).max(1e-3);
+        let line_gain = if linked { 0.3 } else { 0.55 } * w_use / (1.0 - (angle.min(std::f32::consts::PI) * 0.5).cos()).max(1e-3);
         let speed_for = |k: f32| corner_speed(1.0 / (1.0 / k.max(1e-5) + line_gain), bank_into, mu) * 3.6;
         let v = speed_for(peak);
         let mut sev = grade_for_speed(v);
@@ -479,7 +485,7 @@ pub fn notes_for(track: &Track) -> PaceNotes {
             distance_to_next: 0,
             angle_deg,
             min_radius,
-            speed_kmh: v.min(200.0),
+            speed_kmh: v.min(160.0),
             text: String::new(),
         });
     }
@@ -622,12 +628,18 @@ pub fn notes_for(track: &Track) -> PaceNotes {
         for k in (0..=span).step_by(2) {
             let smp = at(a + k);
             let inside = if nt.direction == Direction::Left { -1.0 } else { 1.0 };
-            let p = smp.pos + smp.right * inside * (smp.half_width + SHOULDER * 0.5 + 1.0);
-            track.for_each_prop_near(p, 4.0, |pr| {
-                if pr.radius > 0.25 && glam::Vec2::new(pr.pos.x - p.x, pr.pos.z - p.z).length() < 2.5 + pr.radius {
+            let p = smp.pos + smp.right * inside * (smp.half_width + SHOULDER + 2.5);
+            track.for_each_prop_near(p, 6.0, |pr| {
+                if pr.radius > 0.25 && glam::Vec2::new(pr.pos.x - p.x, pr.pos.z - p.z).length() < 3.0 + pr.radius {
                     hit = true;
                 }
             });
+            // a ditch or a bank right on the inside
+            let road_h = smp.pos.y;
+            let q = smp.pos + smp.right * inside * (smp.half_width + SHOULDER + 1.5);
+            if (track.terrain.height(q.x, q.z) - road_h).abs() > 1.4 {
+                hit = true;
+            }
             if hit {
                 break;
             }
