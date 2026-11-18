@@ -374,6 +374,9 @@ pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
     let ms = (190.0 * k).min(vp.h * 0.36);
     draw_minimap(s, player, vp.x + pad, vp.y + vp.h - pad - ms, ms);
 
+    // ---------------------------------------------------------------- pace notes (top centre; N / settings)
+    crate::pacenotes_hud::draw_pace_notes(s, player, vp);
+
     // ---------------------------------------------------------------- centre messages
     let mx = vp.x + vp.w * 0.5;
     let my = vp.y + vp.h * 0.40;

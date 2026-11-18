@@ -29,6 +29,23 @@ pub struct SurfaceProps {
     pub loose: bool,
 }
 
+impl SurfaceProps {
+    /// Linear blend between two surfaces' properties (t = weight of `b`). `loose` follows the
+    /// dominant side.
+    pub fn lerp(a: SurfaceProps, b: SurfaceProps, t: f32) -> SurfaceProps {
+        let t = t.clamp(0.0, 1.0);
+        let l = |x: f32, y: f32| x + (y - x) * t;
+        SurfaceProps {
+            grip: l(a.grip, b.grip),
+            slide_grip: l(a.slide_grip, b.slide_grip),
+            rolling: l(a.rolling, b.rolling),
+            bumpiness: l(a.bumpiness, b.bumpiness),
+            dust: [l(a.dust[0], b.dust[0]), l(a.dust[1], b.dust[1]), l(a.dust[2], b.dust[2])],
+            loose: if t < 0.5 { a.loose } else { b.loose },
+        }
+    }
+}
+
 impl Surface {
     pub fn props(self) -> SurfaceProps {
         use Surface::*;

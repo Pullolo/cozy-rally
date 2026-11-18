@@ -13,7 +13,7 @@ fn main() {
     let laps: u32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(2);
     for seed in 1..=seeds {
         let t0 = Instant::now();
-        let track = Arc::new(Track::generate(&TrackParams { seed, biome: None, length_class: 1 }));
+        let track = Arc::new(Track::generate(&TrackParams { seed, biome: None, length_class: 1, ..Default::default() }.with_env_overrides()));
         let gen_ms = t0.elapsed().as_millis();
         let max_jump = track.samples.windows(2).map(|w| (w[1].pos.y - w[0].pos.y).abs()).fold(0.0f32, f32::max);
         println!(

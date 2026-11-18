@@ -6,7 +6,7 @@ fn main() {
     let seed: u64 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(1);
     let secs: f32 = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(12.0);
     let car: usize = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(0);
-    let track = Arc::new(Track::generate(&TrackParams { seed, biome: None, length_class: 1 }));
+    let track = Arc::new(Track::generate(&TrackParams { seed, biome: None, length_class: 1, ..Default::default() }));
     let racers: Vec<RacerSetup> = (0..4).map(|i| RacerSetup { car_spec: i, controller: Controller::Ai }).collect();
     let mut world = World::new(track.clone(), &racers, 2);
     let mut ai = AiDriver::new(0.9, 0.0);

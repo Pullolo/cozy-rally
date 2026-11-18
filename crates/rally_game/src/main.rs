@@ -8,6 +8,7 @@ mod game;
 mod hud;
 mod input;
 mod models;
+mod pacenotes_hud;
 mod render;
 mod settings;
 mod ui;
@@ -68,7 +69,7 @@ struct Setup {
     opponents: usize,
     difficulty: usize,
     assists: usize,
-    /// Track surface preset (index into SURFACES), wired to TrackParams by the tracks work
+    /// Track surface preset (index into SURFACES == rally_core::surfacemap::SURFACE_MODES order)
     surface_mode: usize,
     /// Track difficulty (index into TRACK_DIFFICULTY)
     track_difficulty: usize,
@@ -96,7 +97,7 @@ impl Setup {
             players.push(PlayerSlot { car: self.cars[1], paint: self.paints[1], scheme: Scheme::Arrows, name: "Player 2".into() });
         }
         SessionConfig {
-            track: TrackParams { seed: self.seed, biome: if self.biome == 0 { None } else { Some(ALL_BIOMES[self.biome - 1]) }, length_class: self.length },
+            track: TrackParams { seed: self.seed, biome: if self.biome == 0 { None } else { Some(ALL_BIOMES[self.biome - 1]) }, length_class: self.length, difficulty: self.track_difficulty.min(2) as u8, surface: rally_core::surfacemap::SURFACE_MODES[self.surface_mode.min(4)] }.with_env_overrides(),
             laps: self.laps,
             players,
             ai_count: self.opponents,
@@ -356,7 +357,7 @@ impl App {
             if self.attract_wait > 2 && std::env::var("COZY_NO_ATTRACT").is_err() {
                 let seed = random_seed();
                 let cfg = SessionConfig {
-                    track: TrackParams { seed, biome: None, length_class: 1 },
+                    track: TrackParams { seed, biome: None, length_class: 1, ..Default::default() },
                     laps: 99,
                     players: vec![],
                     ai_count: 6,

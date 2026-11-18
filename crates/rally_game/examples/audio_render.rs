@@ -618,7 +618,7 @@ fn sim_race(ck: &mut Checks, dir: &std::path::Path) {
     use rally_core::world::{Controller, RacerSetup, World, TICK};
     use std::sync::Arc;
     println!("\n== real simulation through the game bridge (5 cars, local = Thistle, 40 s) ==");
-    let track = Arc::new(Track::generate(&TrackParams { seed: 3, biome: None, length_class: 0 }));
+    let track = Arc::new(Track::generate(&TrackParams { seed: 3, biome: None, length_class: 0, ..Default::default() }));
     let racers: Vec<RacerSetup> = (0..5)
         .map(|i| RacerSetup { car_spec: if i == 4 { 2 } else { i % 4 }, controller: if i == 4 { Controller::Local(0) } else { Controller::Ai } })
         .collect();

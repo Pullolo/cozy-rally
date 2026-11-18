@@ -119,7 +119,7 @@ async fn main() {
                 let b: usize = std::env::var("BIOME").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
                 let k: usize = std::env::var("K").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
                 let what = std::env::var("KIND").unwrap_or_else(|_| "ArrowSign".into());
-                let t = Track::generate(&TrackParams { seed: 3, biome: Some(Biome::from_index(b.max(1) - 1)), length_class: 1 });
+                let t = Track::generate(&TrackParams { seed: 3, biome: Some(Biome::from_index(b.max(1) - 1)), length_class: 1, ..Default::default() });
                 let st = &t.style;
                 let target = t.props.iter().filter(|p| format!("{:?}", p.kind) == what).nth(k).cloned();
                 let Some(sign) = target else {
@@ -221,7 +221,7 @@ async fn main() {
                     }
                     for b in 0..5 {
                         for len in [1u8, 2] {
-                            let t = Track::generate(&TrackParams { seed: 3, biome: Some(Biome::from_index(b)), length_class: len });
+                            let t = Track::generate(&TrackParams { seed: 3, biome: Some(Biome::from_index(b)), length_class: len, ..Default::default() });
                             let mut m = MeshBuilder::new();
                             for p in &t.props {
                                 models::add_prop(&mut m, p, &t.style);

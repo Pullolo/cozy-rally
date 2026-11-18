@@ -311,8 +311,8 @@ fn tri_up(m: &mut MeshBuilder, v: [(Vec3, [u8; 4]); 3]) {
 /// The single place to switch over to the per-sample track fields
 /// (`samples[i].surface`, `surface_next`, `surface_blend`) once they exist.
 pub fn road_mix_at(track: &Track, i: usize) -> (Surface, Surface, f32) {
-    let _ = i;
-    (track.style.road_surface, track.style.road_surface, 0.0)
+    let smp = &track.samples[i % track.samples.len()];
+    (smp.surface, smp.surface_next, smp.surface_blend)
 }
 
 /// Lerpable visual description of a road cross-section.
@@ -390,7 +390,9 @@ pub fn road_look_at(track: &Track, i: usize) -> RoadLook {
 /// Feathered per-vertex look: the transition boundary wanders across the road with noise so
 /// patches get irregular outlines instead of a straight seam.
 fn road_look_vertex(track: &Track, i: usize, lat: f32, seed: u32) -> RoadLook {
-    let (a, b, t) = road_mix_at(track, i);
+    // exact (organic) patch / transition shape across the road
+    let m = track.surface_mix_at(i as f32 * rally_core::track::SAMPLE_SPACING, lat);
+    let (a, b, t) = (m.a, m.b, m.t);
     let la = road_look(a, &track.style);
     if a == b || t <= 0.0 {
         return la;

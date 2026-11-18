@@ -14,12 +14,17 @@ generated **in code** — no asset files unless absolutely necessary.
 ```
 crates/rally_core/   headless simulation (no graphics). glam 0.27 shared with macroquad.
   vehicle.rs   raycast car physics (suspension, tyres, drivetrain, assists). Local frame: +X right, +Y up, -Z forward
-  track.rs     procedural closed-loop track + heightfield terrain + props placement
+  track.rs     procedural closed-loop track + heightfield terrain + props placement;
+               TrackParams { difficulty 0..2, surface: SurfaceMode }, Track::ground_at (blended surface)
+  layout.rs    rally layout planner (corner complexes, exact loop closure), crests/jumps
+  surfacemap.rs surface sections + organic patches with smooth transitions, road_color
+  pacenotes.rs rally pace notes from the centre line (UI-agnostic, serialisable)
   biome.rs     5 biomes: palette + surfaces + terrain character
   race.rs      countdown, checkpoints, laps, placings, respawns
   world.rs     fixed 120 Hz tick (2 physics substeps), collisions, WorldEvent stream
   ai.rs        AI driver
-  examples/    sim.rs (AI races, stats), dyno.rs (physics characterisation), trace.rs
+  examples/    sim.rs (AI races, stats), dyno.rs (physics characterisation), trace.rs,
+               stagesim.rs (stats per track difficulty), pacenotes.rs, surfaces.rs, trackstats.rs
 crates/rally_game/   macroquad app
   render/gpu.rs    miniquad pipelines (opaque / alpha / overlay), lit+fogged vertex-colour shader,
                    static GpuMesh with frustum culling, stream buffer for dynamic geometry
@@ -30,6 +35,7 @@ crates/rally_game/   macroquad app
   camera.rs        chase camera
   input.rs         keyboard -> CarInput
   hud.rs           in-race HUD
+  pacenotes_hud.rs pace-notes strip (top centre), N toggles, PACE_NOTES_ENABLED / settings.pace_notes
   ui.rs            immediate-mode cozy UI widgets
   audio.rs         audio facade (API used by the game)
   fx.rs            particle/effects system (owned by RaceSession)
