@@ -11,7 +11,7 @@ use super::mesh::{MeshBuilder, Vertex};
 use super::post::{Grade, PostPipes, PostTargets, PxRect};
 use super::shaders;
 use super::shadow::{light_view, ShadowMap, SHADOW_RADIUS};
-use super::{quality, Quality};
+use super::quality::Quality;
 use macroquad::math::{Mat4, Vec3, Vec4};
 use macroquad::miniquad::*;
 use macroquad::window::get_internal_gl;
@@ -438,13 +438,12 @@ impl Gpu {
 
     // ------------------------------------------------------------------ frame structure
 
-    /// Start a 3D frame for the race view. Creates / resizes offscreen targets as needed
-    /// for the current quality. Returns true when shadows are enabled this frame.
-    pub fn begin_frame(&mut self) -> bool {
+    /// Start a 3D frame for the race view at quality `q` (usually `render::quality()`).
+    /// Creates / resizes offscreen targets as needed. Returns true when shadows are on.
+    pub fn begin_frame(&mut self, q: Quality) -> bool {
         unsafe {
             get_internal_gl().flush();
         }
-        let q = quality();
         self.frame_quality = q;
         self.frame_viewports.clear();
         self.shadow = None;

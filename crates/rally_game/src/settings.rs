@@ -1,0 +1,186 @@
+//! Player settings: global, cheap to read from any module (`settings::get()`), persisted
+//! to a small key=value file in the per-user config dir (falls back to the exe dir).
+//! Saving never panics; an unwritable location just means settings don't persist.
+use std::path::PathBuf;
+use std::sync::RwLock;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Quality {
+    Low,
+    High,
+}
+
+impl Quality {
+    pub fn name(self) -> &'static str {
+        match self {
+            Quality::Low => "Low",
+            Quality::High => "High",
+        }
+    }
+}
+
+/// Default chase camera mode for new races: 0 = Chase, 1 = Far, 2 = Hood
+pub const CAMERA_NAMES: [&str; 3] = ["Chase", "Far", "Hood"];
+/// Assist presets (index into main.rs ASSISTS): Cozy / Normal / Sport / Sim
+pub const ASSIST_NAMES: [&str; 4] = ["Cozy", "Normal", "Sport", "Sim"];
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Settings {
+    /// 0..1 volumes, passed to `audio::set_volumes`
+    pub master: f32,
+    pub music: f32,
+    pub sfx: f32,
+    /// Default assist preset for new races (index into ASSIST_NAMES)
+    pub assists: usize,
+    /// Default camera mode (index into CAMERA_NAMES)
+    pub camera: usize,
+    pub fullscreen: bool,
+    pub show_fps: bool,
+    /// Rendering quality; the renderer reads it via `settings::quality()`
+    pub quality: Quality,
+    /// Show the tyre-grip widget next to the speedo
+    pub show_traction: bool,
+    /// Rally pace-notes strip at the top of the race HUD (key N toggles in race)
+    pub pace_notes: bool,
+}
+
+impl Settings {
+    pub const DEFAULT: Settings = Settings { master: 0.8, music: 0.7, sfx: 0.9, assists: 1, camera: 0, fullscreen: false, show_fps: false, quality: Quality::High, show_traction: true, pace_notes: true };
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings::DEFAULT
+    }
+}
+
+static SETTINGS: RwLock<Settings> = RwLock::new(Settings::DEFAULT);
+
+/// Current settings (a cheap copy)
+pub fn get() -> Settings {
+    SETTINGS.read().map(|s| *s).unwrap_or_default()
+}
+
+/// Current graphics quality (convenience for the renderer)
+#[allow(dead_code)]
+pub fn quality() -> Quality {
+    get().quality
+}
+
+/// Replace the settings and apply the side effects that are live (audio volumes).
+pub fn set(s: Settings) {
+    if let Ok(mut g) = SETTINGS.write() {
+        *g = s;
+    }
+    apply_audio();
+}
+
+/// Modify the settings in place
+pub fn update(f: impl FnOnce(&mut Settings)) {
+    let mut s = get();
+    f(&mut s);
+    set(s);
+}
+
+pub fn apply_audio() {
+    let s = get();
+    crate::audio::set_volumes(s.master, s.music, s.sfx);
+}
+
+fn config_dir() -> Option<PathBuf> {
+    let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    if cfg!(windows) {
+        env("APPDATA").map(|p| p.join("CozyRally"))
+    } else if cfg!(target_os = "macos") {
+        env("HOME").map(|p| p.join("Library/Application Support/CozyRally"))
+    } else if cfg!(target_os = "android") {
+        None
+    } else {
+        env("XDG_CONFIG_HOME").or_else(|| env("HOME").map(|h| h.join(".config"))).map(|p| p.join("cozy-rally"))
+    }
+}
+
+fn exe_dir() -> Option<PathBuf> {
+    std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.to_path_buf()))
+}
+
+/// Candidate settings files, preferred first
+fn paths() -> Vec<PathBuf> {
+    if let Some(p) = std::env::var_os("COZY_SETTINGS") {
+        return vec![PathBuf::from(p)];
+    }
+    config_dir().into_iter().chain(exe_dir()).map(|d| d.join("settings.txt")).collect()
+}
+
+fn parse(text: &str) -> Settings {
+    let mut s = Settings::DEFAULT;
+    for line in text.lines() {
+        let Some((k, v)) = line.split_once('=') else { continue };
+        let (k, v) = (k.trim(), v.trim());
+        let f = || v.parse::<f32>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 1.0));
+        let b = || matches!(v, "1" | "true" | "yes" | "on");
+        match k {
+            "master" => s.master = f().unwrap_or(s.master),
+            "music" => s.music = f().unwrap_or(s.music),
+            "sfx" => s.sfx = f().unwrap_or(s.sfx),
+            "assists" => s.assists = v.parse::<usize>().unwrap_or(s.assists).min(ASSIST_NAMES.len() - 1),
+            "camera" => s.camera = v.parse::<usize>().unwrap_or(s.camera).min(CAMERA_NAMES.len() - 1),
+            "fullscreen" => s.fullscreen = b(),
+            "show_fps" => s.show_fps = b(),
+            "show_traction" => s.show_traction = b(),
+            "pace_notes" => s.pace_notes = b(),
+            "quality" => s.quality = if v.eq_ignore_ascii_case("low") { Quality::Low } else { Quality::High },
+            _ => {}
+        }
+    }
+    s
+}
+
+fn serialize(s: &Settings) -> String {
+    format!(
+        "# Cozy Rally settings\nmaster={:.2}\nmusic={:.2}\nsfx={:.2}\nassists={}\ncamera={}\nfullscreen={}\nshow_fps={}\nshow_traction={}\npace_notes={}\nquality={}\n",
+        s.master,
+        s.music,
+        s.sfx,
+        s.assists,
+        s.camera,
+        s.fullscreen,
+        s.show_fps,
+        s.show_traction,
+        s.pace_notes,
+        s.quality.name().to_lowercase()
+    )
+}
+
+/// Load settings from disk into the global (defaults if missing/unreadable). Does not touch audio.
+pub fn load() -> Settings {
+    let s = paths().iter().find_map(|p| std::fs::read_to_string(p).ok()).map(|t| parse(&t)).unwrap_or_default();
+    if let Ok(mut g) = SETTINGS.write() {
+        *g = s;
+    }
+    s
+}
+
+/// Persist the current settings. Errors are ignored (read-only installs still work).
+pub fn save() {
+    let text = serialize(&get());
+    for p in paths() {
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if std::fs::write(&p, &text).is_ok() {
+            return;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn roundtrip() {
+        let s = Settings { master: 0.3, music: 0.0, sfx: 1.0, assists: 3, camera: 2, fullscreen: true, show_fps: true, quality: Quality::Low, show_traction: false, pace_notes: false };
+        assert_eq!(parse(&serialize(&s)), s);
+        assert_eq!(parse("garbage\nmaster=nan\nassists=99"), Settings { assists: 3, ..Settings::DEFAULT });
+    }
+}

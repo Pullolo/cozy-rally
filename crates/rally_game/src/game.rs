@@ -45,6 +45,10 @@ pub struct LocalPlayer {
 pub struct CarRender {
     pub body: GpuMesh,
     pub wheel: GpuMesh,
+    pub glass: GpuMesh,
+    pub head_lights: GpuMesh,
+    pub brake_lights: GpuMesh,
+    pub reverse_lights: GpuMesh,
 }
 
 pub struct RaceSession {
@@ -61,6 +65,11 @@ pub struct RaceSession {
     pub frame_events: Vec<WorldEvent>,
     pub paused: bool,
     pub fx: Fx,
+    /// Paint index per car (for UI colour coding: minimap dots, standings, results)
+    pub paints: Vec<usize>,
+    /// Cinematic camera override (title attract mode, results): (eye, target, fov radians).
+    /// When set, a single full-screen viewport is rendered from this camera.
+    pub cam_override: Option<(Vec3, Vec3, f32)>,
 }
 
 const AI_NAMES: [&str; 8] = ["Hazel", "Juniper", "Basil", "Clover", "Fern", "Rowan", "Maple", "Pebble"];
@@ -105,7 +114,14 @@ impl RaceSession {
             .zip(paints.iter())
             .map(|(c, &p)| {
                 let m = car_model(&c.spec, PAINTS[p % PAINTS.len()]);
-                CarRender { body: gpu.upload(&m.body), wheel: gpu.upload(&m.wheel) }
+                CarRender {
+                    body: gpu.upload(&m.body),
+                    wheel: gpu.upload(&m.wheel),
+                    glass: gpu.upload(&m.glass),
+                    head_lights: gpu.upload(&m.head_lights),
+                    brake_lights: gpu.upload(&m.brake_lights),
+                    reverse_lights: gpu.upload(&m.reverse_lights),
+                }
             })
             .collect();
         let ais = world
@@ -127,7 +143,7 @@ impl RaceSession {
             .map(|(i, p)| LocalPlayer { car: n_ai + i, input: PlayerInput::new(p.scheme), cam: ChaseCam::new(), name: p.name.clone() })
             .collect();
         let fx = Fx::new(&world);
-        RaceSession { config, world, scene, cars, names, ais, players, alpha: 0.0, time: 0.0, frame_events: Vec::new(), paused: false, fx }
+        RaceSession { config, world, scene, cars, names, ais, players, alpha: 0.0, time: 0.0, frame_events: Vec::new(), paused: false, fx, paints, cam_override: None }
     }
 
     pub fn free(self, gpu: &mut Gpu) {
@@ -135,6 +151,10 @@ impl RaceSession {
         for c in self.cars {
             gpu.free(c.body);
             gpu.free(c.wheel);
+            gpu.free(c.glass);
+            gpu.free(c.head_lights);
+            gpu.free(c.brake_lights);
+            gpu.free(c.reverse_lights);
         }
     }
 
@@ -146,6 +166,8 @@ impl RaceSession {
     pub fn update(&mut self, dt: f32, touch: Option<CarInput>) {
         self.frame_events.clear();
         if self.paused {
+            // let audio fade engines immediately while paused
+            crate::audio::race_frame(self, dt);
             return;
         }
         self.time += dt;
@@ -206,7 +228,9 @@ impl RaceSession {
             p.cam.update(pos, &self.world.cars[p.car], &track, dt);
         }
         self.fx.update(&self.world, &self.frame_events, self.alpha, dt);
-        crate::audio::race_frame(self, dt);
+        if !self.players.is_empty() {
+            crate::audio::race_frame(self, dt);
+        }
     }
 
     pub fn is_over(&self) -> bool {
@@ -215,6 +239,9 @@ impl RaceSession {
 
     /// Viewports in logical pixels for each local player
     pub fn viewports(&self, sw: f32, sh: f32) -> Vec<Viewport> {
+        if self.cam_override.is_some() {
+            return vec![Viewport { x: 0.0, y: 0.0, w: sw, h: sh }];
+        }
         match self.players.len() {
             0 | 1 => vec![Viewport { x: 0.0, y: 0.0, w: sw, h: sh }],
             2 => {
@@ -233,6 +260,11 @@ impl RaceSession {
     }
 
     pub fn view_for(&self, player: usize, vp: &Viewport) -> View {
+        if let Some((eye, target, fov)) = self.cam_override {
+            let view = Mat4::look_at_rh(eye, target, Vec3::Y);
+            let proj = Mat4::perspective_rh_gl(fov, vp.w / vp.h.max(1.0), 0.25, 2200.0);
+            return View::new(view, proj, eye);
+        }
         let cam = &self.players[player].cam;
         if std::env::var("COZY_WATER_CAM").is_ok() {
             if let Some((eye, target)) = crate::render::scene::water_viewpoint(self.track()) {
@@ -255,7 +287,7 @@ impl RaceSession {
         let sw = macroquad::window::screen_width();
         let sh = macroquad::window::screen_height();
         let vps = self.viewports(sw, sh);
-        let shadows = gpu.begin_frame();
+        let shadows = gpu.begin_frame(crate::render::quality());
         for (i, vp) in vps.iter().enumerate() {
             let view = self.view_for(i, vp);
             if shadows {
@@ -313,9 +345,19 @@ impl RaceSession {
             if shadow_pass {
                 continue;
             }
-            // >>> extra per-car meshes (lights etc.) go here, drawn with the car matrix `m`.
-            // Emissive: DrawParams { unlit: 1.0, tint: [2.0, 0.3, 0.3, 1.0], cast_shadow: false, ..Default::default() }
-            // (tint > 1 with unlit = 1 blooms in its own colour).
+            // lights: emissive lenses (unlit, over-bright tint so they glow / bloom).
+            // Extra per-car meshes go here too, drawn with the car matrix `m`.
+            let cr = &self.cars[i];
+            let lamp = |tint: [f32; 4]| DrawParams { unlit: 1.0, tint, cast_shadow: false, receive_shadow: false, ..Default::default() };
+            gpu.draw(&cr.head_lights, view, &env, m, &lamp([1.35, 1.3, 1.15, 1.0]), false);
+            if car.telemetry.brake > 0.05 || car.frozen {
+                gpu.draw(&cr.brake_lights, view, &env, m, &lamp([2.4, 0.28, 0.22, 1.0]), false);
+            }
+            if car.gear < 0 {
+                gpu.draw(&cr.reverse_lights, view, &env, m, &lamp([1.6, 1.6, 1.6, 1.0]), false);
+            }
+            // translucent glass last so the drivers show through (with a sky/sun glint)
+            gpu.draw(&cr.glass, view, &env, m, &DrawParams { rim: 0.8, gloss: 0.8, ..Default::default() }, true);
         }
     }
 

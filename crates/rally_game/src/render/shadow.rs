@@ -44,7 +44,7 @@ pub fn light_view(view: &View, sun_dir: Vec3, size: u32, radius: f32) -> (View, 
     let up = if l.y.abs() > 0.98 { Vec3::Z } else { Vec3::Y };
     let lv = Mat4::look_at_rh(Vec3::ZERO, -l, up);
     // camera forward = inward normal of the near plane
-    let fwd = view.planes[4].truncate().normalize_or_zero();
+    let fwd = view.forward();
     let flat = Vec3::new(fwd.x, 0.0, fwd.z).normalize_or_zero();
     let center = view.eye + flat * radius * 0.62 + Vec3::new(0.0, -2.0, 0.0);
     let mut c = lv.transform_point3(center);
