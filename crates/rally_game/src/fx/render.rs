@@ -251,13 +251,26 @@ pub fn bit(b: &mut Batches, bs: &Basis, p: &Particle, dist: f32) {
     let c = col(p.color, a);
     match p.shape {
         Shape::Chunk => {
-            let (ax, by) = tumble_axes(p);
-            let n = ax.cross(by);
-            let batch = b.room(3);
-            let i0 = batch.vert(p.pos + ax * s, n, c);
-            let i1 = batch.vert(p.pos - ax * (s * 0.5) + by * (s * 0.85), n, c);
-            let i2 = batch.vert(p.pos - ax * (s * 0.6) - by * (s * 0.75), n, c);
-            batch.tri(i0, i1, i2);
+            // a small rounded pebble: lumpy octagon facing the camera, sphere-ish normals and
+            // a lit top / shaded underside; the lumpy rim spins so it reads as tumbling
+            let r = s.max(dist * 0.0018);
+            let (sr, cr) = p.rot.sin_cos();
+            let ax = bs.right * cr + bs.up * sr;
+            let ay = bs.up * cr - bs.right * sr;
+            let batch = b.room(9);
+            let top = [p.color[0] * 1.08 + 0.03, p.color[1] * 1.08 + 0.03, p.color[2] * 1.08 + 0.03];
+            let base = batch.vert(p.pos, (bs.toward + Vec3::Y * 0.6).normalize(), col(top, a));
+            for k in 0..8 {
+                let ang = k as f32 / 8.0 * TAU;
+                let lump = 0.82 + 0.18 * ((k as f32) * 2.7 + p.seed * 23.0).sin();
+                let d = ax * (ang.cos() * lump) + ay * (ang.sin() * lump * 0.8);
+                let y = d.dot(bs.up);
+                let f = if y < 0.0 { 1.0 + y * 0.35 } else { 1.0 + y * 0.08 };
+                batch.vert(p.pos + d * r, (bs.toward * 0.5 + d).normalize(), col([p.color[0] * f, p.color[1] * f, p.color[2] * f], a));
+            }
+            for k in 0..8u16 {
+                batch.tri(base, base + 1 + k, base + 1 + (k + 1) % 8);
+            }
         }
         Shape::Flake => {
             let (ax, by) = tumble_axes(p);
@@ -403,30 +416,45 @@ pub fn critter(b: &mut Batches, p: &Particle, dist: f32) {
     let flap = p.rot.sin();
     let c = col(p.color, a);
     if p.shape == Shape::Butterfly {
-        let ang = flap * 1.1 + 0.2;
-        let batch = b.room(14);
+        // rounded fore + hind wings fanned from the body, paler towards the tips
+        const FORE: [(f32, f32); 5] = [(0.3, 0.5), (0.7, 0.62), (0.98, 0.42), (1.0, 0.1), (0.72, -0.08)];
+        const HIND: [(f32, f32); 4] = [(0.6, -0.12), (0.7, -0.4), (0.52, -0.62), (0.22, -0.66)];
+        // readability floor: far butterflies never shrink below a few pixels
+        let s = s.max(dist * 0.007);
+        let ang = flap * 1.15 + 0.3;
+        // deeper wing edges + pale wing roots give a crisp two-tone silhouette on grass
+        let tip = col([p.color[0] * 0.78, p.color[1] * 0.74, p.color[2] * 0.8], a);
+        let c = col([p.color[0] * 0.5 + 0.5, p.color[1] * 0.5 + 0.5, p.color[2] * 0.5 + 0.5], a);
+        let hind_c = col([p.color[0] * 0.9, p.color[1] * 0.9, p.color[2] * 0.9], a);
+        let batch = b.room(24);
         for sgn in [-1.0f32, 1.0] {
-            let w = (side * (sgn * ang.cos()) + Vec3::Y * ang.sin()) * s;
+            let w = side * (sgn * ang.cos()) + Vec3::Y * ang.sin();
             let n = h.cross(w).normalize_or(Vec3::Y);
-            // fore wing (bigger) + hind wing
-            let b0 = batch.vert(p.pos + h * (s * 0.15), n, c);
-            let b1 = batch.vert(p.pos - h * (s * 0.1), n, c);
-            let t0 = batch.vert(p.pos + w + h * (s * 0.55), n, c);
-            let t1 = batch.vert(p.pos + w * 0.85 - h * (s * 0.05), n, c);
-            batch.tri(b0, b1, t1);
-            batch.tri(b0, t1, t0);
-            let hc = col([p.color[0] * 0.85, p.color[1] * 0.85, p.color[2] * 0.85], a);
-            let t2 = batch.vert(p.pos + w * 0.6 - h * (s * 0.5), n, hc);
-            let b2 = batch.vert(p.pos - h * (s * 0.12), n, hc);
-            let b3 = batch.vert(p.pos + w * 0.75 - h * (s * 0.05), n, hc);
-            batch.tri(b2, t2, b3);
+            let root = batch.vert(p.pos + h * (s * 0.1), n, c);
+            let mut prev: Option<u16> = None;
+            for &(o, f) in FORE.iter() {
+                let v = batch.vert(p.pos + w * (o * s) + h * (f * s), n, tip);
+                if let Some(pv) = prev {
+                    batch.tri(root, pv, v);
+                }
+                prev = Some(v);
+            }
+            let root2 = batch.vert(p.pos - h * (s * 0.1), n, hind_c);
+            let mut prev: Option<u16> = None;
+            for &(o, f) in HIND.iter() {
+                let v = batch.vert(p.pos + w * (o * s) + h * (f * s), n, hind_c);
+                if let Some(pv) = prev {
+                    batch.tri(root2, pv, v);
+                }
+                prev = Some(v);
+            }
         }
-        // body
-        let dark = col([0.25, 0.2, 0.22], a);
+        // slim body
+        let dark = col([0.32, 0.26, 0.28], a);
         let n = Vec3::Y;
-        let i0 = batch.vert(p.pos + h * (s * 0.3), n, dark);
-        let i1 = batch.vert(p.pos - h * (s * 0.35) + side * (s * 0.04), n, dark);
-        let i2 = batch.vert(p.pos - h * (s * 0.35) - side * (s * 0.04), n, dark);
+        let i0 = batch.vert(p.pos + h * (s * 0.32), n, dark);
+        let i1 = batch.vert(p.pos - h * (s * 0.4) + side * (s * 0.05), n, dark);
+        let i2 = batch.vert(p.pos - h * (s * 0.4) - side * (s * 0.05), n, dark);
         batch.tri(i0, i1, i2);
     } else {
         // gull: gull-wing "M" with dihedral inner panel and drooping tips

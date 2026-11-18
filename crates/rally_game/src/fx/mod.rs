@@ -271,7 +271,8 @@ impl Fx {
         let mut i = 0;
         while i < self.parts.len() {
             let p = &self.parts[i];
-            let kill = p.dead() || (p.ambient && self.nearest_local(p.pos) > ambient::KILL_RADIUS);
+            let kill_r = if p.ambient { ambient::kill_radius(p.group) } else { 0.0 };
+            let kill = p.dead() || (p.ambient && self.nearest_local(p.pos) > kill_r);
             if kill {
                 self.parts.swap_remove(i);
             } else {
@@ -346,6 +347,7 @@ impl Fx {
                 Shape::Puff => 170.0,
                 Shape::Gull | Shape::Tumbleweed => 200.0,
                 Shape::Glow | Shape::Star | Shape::Spark => 140.0,
+                Shape::Twinkle => 170.0,
                 _ => 90.0,
             };
             if d > reach || !view.sphere_visible(p.pos, p.size().max(p.size1) + 0.5) {

@@ -9,6 +9,21 @@ use rally_core::world::World;
 
 /// Ambient particles further than this from every player are removed
 pub const KILL_RADIUS: f32 = 48.0;
+/// Sea sparkle lives on the open water, often well away from the road
+pub const SPARKLE_KILL_RADIUS: f32 = 130.0;
+pub const SPARKLE_GROUP: u8 = Group::Sparkle as u8;
+
+/// Despawn radius per ambient group: small critters recycle quickly so a few always
+/// flutter close to the player's car instead of being left far behind
+pub fn kill_radius(group: u8) -> f32 {
+    if group == SPARKLE_GROUP {
+        SPARKLE_KILL_RADIUS
+    } else if group == Group::Butterfly as u8 {
+        26.0
+    } else {
+        KILL_RADIUS
+    }
+}
 const SPAWN_RADIUS: f32 = 30.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -167,7 +182,9 @@ impl Fx {
                 p.aspect = 0.62;
             }
             Group::Butterfly => {
-                let at = self.disc(centre, 2.0, SPAWN_RADIUS * 0.45);
+                // beside the road just ahead of the car, where the chase camera sees them up close
+                let side = Vec3::new(-f.z, 0.0, f.x) * (if self.rng.f() < 0.5 { -1.0 } else { 1.0 });
+                let at = car_pos + f * self.rng.r(0.0, 10.0) + side * self.rng.r(2.5, 7.0);
                 let gh = track.visual_height(at.x, at.z);
                 if track.water_level.is_some_and(|w| gh < w + 0.2) {
                     return true;
@@ -175,9 +192,9 @@ impl Fx {
                 p.pos = Vec3::new(at.x, gh + self.rng.r(0.9, 2.2), at.z);
                 p.home = p.pos;
                 p.life = self.rng.r(25.0, 40.0);
-                p.size0 = self.rng.r(0.34, 0.42);
+                p.size0 = self.rng.r(0.11, 0.13);
                 p.size1 = p.size0;
-                p.color = self.rng.pick(&[[1.0, 0.86, 0.36], [0.62, 0.80, 1.0], [1.0, 0.72, 0.82], [1.0, 0.99, 0.95], [1.0, 0.64, 0.38], [0.78, 0.66, 1.0]]);
+                p.color = self.rng.pick(&[[1.0, 0.82, 0.3], [0.5, 0.72, 1.0], [1.0, 0.6, 0.76], [0.98, 0.6, 0.36], [0.72, 0.58, 1.0], [1.0, 0.97, 0.9]]);
                 p.shape = Shape::Butterfly;
                 p.yaw = self.rng.r(0.0, 6.28);
                 p.vel = Vec3::new(p.yaw.cos(), 0.0, p.yaw.sin());
@@ -256,8 +273,8 @@ impl Fx {
                 let Some(wl) = track.water_level else { return true };
                 // try a few spots for open water
                 let mut found = None;
-                for _ in 0..6 {
-                    let at = self.disc(centre, 2.0, SPAWN_RADIUS * 1.5);
+                for _ in 0..8 {
+                    let at = self.disc(centre, 4.0, 115.0);
                     if track.terrain.height(at.x, at.z) < wl - 0.3 {
                         found = Some(at);
                         break;
@@ -266,7 +283,9 @@ impl Fx {
                 let Some(at) = found else { return true };
                 p.pos = Vec3::new(at.x, wl + self.rng.r(0.05, 0.3), at.z);
                 p.life = self.rng.r(0.6, 1.6);
-                p.size0 = self.rng.r(0.32, 0.48);
+                // grow with distance so the glitter still reads from the road
+                let d = at.distance(car_pos);
+                p.size0 = self.rng.r(0.32, 0.48) + d * 0.006;
                 p.size1 = p.size0 * 0.6;
                 p.color = [1.0, 1.0, 0.97];
                 p.alpha = 0.95;

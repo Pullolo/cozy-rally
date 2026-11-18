@@ -208,14 +208,14 @@ impl Fx {
                     }
                     if !hard {
                         let acc = &mut self.cars[ci].acc[wi][1];
-                        *acc += 90.0 * tr.spin * dt * lod;
+                        *acc += 150.0 * tr.spin * dt * lod;
                         let n = acc.floor() as usize;
                         *acc -= n as f32;
-                        for _ in 0..n.min(14) {
+                        for _ in 0..n.min(22) {
                             let u = self.rng.f();
                             // a rooster-tail fountain: backwards and up in a tight arc
                             let v = car.vel * 0.5 + back * self.rng.r(4.5, 9.0) + Vec3::Y * self.rng.r(3.0, 6.5) + self.rng.ball() * 0.7;
-                            let sc = self.rng.r(1.3, 2.0);
+                            let sc = self.rng.r(0.9, 1.2);
                             self.spawn_debris_s(surface, prev.lerp(cp, 1.0 - u) + Vec3::Y * 0.15 + v * (u * dt), v, Prio::Spray, sc);
                         }
                     }
@@ -542,13 +542,13 @@ impl Fx {
                 let g = self.rng.pick(&[[0.42, 0.66, 0.28], [0.52, 0.74, 0.32], [0.36, 0.58, 0.26], [0.62, 0.78, 0.38]]);
                 (Shape::Flake, g, self.rng.r(0.05, 0.09), 0.55, 1.4, Ground::Settle)
             }
-            Surface::Snow => (Shape::Chunk, [0.97, 0.98, 1.0], self.rng.r(0.06, 0.12), 0.9, 0.6, Ground::Bounce),
-            Surface::Sand => (Shape::Chunk, shade(dust, self.rng.r(0.85, 1.0)), self.rng.r(0.03, 0.05), 1.0, 0.5, Ground::Die),
-            Surface::Mud => (Shape::Chunk, shade(dust, self.rng.r(0.8, 1.1)), self.rng.r(0.05, 0.09), 1.0, 0.3, Ground::Bounce),
+            Surface::Snow => (Shape::Chunk, [0.97, 0.98, 1.0], self.rng.r(0.035, 0.06), 0.9, 0.6, Ground::Bounce),
+            Surface::Sand => (Shape::Chunk, shade(dust, self.rng.r(0.88, 1.02)), self.rng.r(0.025, 0.035), 1.0, 0.5, Ground::Die),
+            Surface::Mud => (Shape::Chunk, shade(dust, self.rng.r(0.85, 1.1)), self.rng.r(0.03, 0.05), 1.0, 0.3, Ground::Bounce),
             _ => {
-                // pebbles: a few pastel greys/browns
-                let base = mix(dust, [0.6, 0.58, 0.56], self.rng.r(0.0, 0.6));
-                (Shape::Chunk, shade(base, self.rng.r(0.7, 0.95)), self.rng.r(0.04, 0.08), 1.0, 0.25, Ground::Bounce)
+                // pebbles 5-12 cm: gravel tan/warm grey, dirt brown (surface coloured)
+                let base = if surface == Surface::Gravel { mix(dust, [0.72, 0.7, 0.66], self.rng.r(0.0, 0.45)) } else { dust };
+                (Shape::Chunk, shade(base, self.rng.r(0.82, 1.02)), self.rng.r(0.028, 0.05), 1.0, 0.25, Ground::Bounce)
             }
         };
         let p = Particle {
