@@ -112,9 +112,28 @@ pub fn session_start(cfg: &SessionConfig, player_cars: &[usize], gpu: &mut Gpu) 
     (cfg.mode == GameMode::TimeTrial).then(|| TimeTrialState::new(cfg, player_cars, gpu))
 }
 
+thread_local! {
+    /// (message, until) for the racing-line toggle toast
+    static LINE_TOAST: std::cell::Cell<(f64, crate::line_assist::LineMode)> = const { std::cell::Cell::new((0.0, crate::line_assist::LineMode::Full)) };
+}
+
+/// World-space gameplay overlays for one viewport (called from RaceSession::draw_3d):
+/// the racing-line ribbon and the time-trial ghost.
+pub fn draw_world_overlays(sess: &RaceSession, gpu: &mut Gpu, view: &View, player: usize) {
+    crate::line_assist::draw(sess, gpu, view, player);
+    draw_ghost(sess, gpu, view, player);
+}
+
 /// Per-frame gameplay update after the world step (called from RaceSession::update):
-/// ghost recording / delta / saving, and rumble for players on pads.
+/// ghost recording / delta / saving, racing-line toggle (L / pad LB), rumble for players on pads.
 pub fn frame(sess: &mut RaceSession, dt: f32) {
+    if let Some(p0) = sess.players.first() {
+        let pad_lb = p0.input.pad.and_then(crate::input::pad).is_some_and(|p| p.pressed(crate::input::PadButton::Lb));
+        if !sess.paused && (is_key_pressed(KeyCode::L) || pad_lb) {
+            let m = crate::line_assist::cycle(&sess.world.cars[p0.car]);
+            LINE_TOAST.with(|t| t.set((get_time() + 1.6, m)));
+        }
+    }
     // rumble on hits / landings
     for e in &sess.frame_events {
         match *e {
@@ -184,6 +203,11 @@ pub fn draw_ghost(sess: &RaceSession, gpu: &mut Gpu, view: &View, player: usize)
 
 /// Small time-trial HUD line under the timer panel: live delta to the ghost, last lap result
 pub fn draw_hud(sess: &RaceSession, player: usize, vp: &Viewport) {
+    let (until, mode) = LINE_TOAST.with(|t| t.get());
+    if get_time() < until && player == 0 {
+        let k = scale() * (vp.h / screen_height()).max(0.6);
+        text_outlined_centered(mode.name(), vp.x + vp.w * 0.5, vp.y + vp.h * 0.68, 30.0 * k, CREAM);
+    }
     let Some(t) = sess.tt.as_ref() else { return };
     let k = scale() * (vp.h / screen_height()).max(0.6);
     let pad = 16.0 * k;

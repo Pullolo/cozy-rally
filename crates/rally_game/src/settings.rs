@@ -23,6 +23,8 @@ impl Quality {
 pub const CAMERA_NAMES: [&str; 3] = ["Chase", "Far", "Hood"];
 /// Assist presets (index into main.rs ASSISTS): Cozy / Normal / Sport / Sim
 pub const ASSIST_NAMES: [&str; 4] = ["Cozy", "Normal", "Sport", "Sim"];
+/// Racing-line assist: 0 Auto (Full, or Off with Sim assists), 1 Off, 2 Braking only, 3 Full
+pub const RACING_LINE_NAMES: [&str; 4] = ["Auto", "Off", "Braking only", "Full"];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Settings {
@@ -42,10 +44,12 @@ pub struct Settings {
     pub show_traction: bool,
     /// Rally pace-notes strip at the top of the race HUD (key N toggles in race)
     pub pace_notes: bool,
+    /// Racing-line assist (index into RACING_LINE_NAMES; key L cycles in race)
+    pub racing_line: usize,
 }
 
 impl Settings {
-    pub const DEFAULT: Settings = Settings { master: 0.8, music: 0.7, sfx: 0.9, assists: 1, camera: 0, fullscreen: false, show_fps: false, quality: Quality::High, show_traction: true, pace_notes: true };
+    pub const DEFAULT: Settings = Settings { master: 0.8, music: 0.7, sfx: 0.9, assists: 1, camera: 0, fullscreen: false, show_fps: false, quality: Quality::High, show_traction: true, pace_notes: true, racing_line: 0 };
 }
 
 impl Default for Settings {
@@ -129,6 +133,7 @@ fn parse(text: &str) -> Settings {
             "show_fps" => s.show_fps = b(),
             "show_traction" => s.show_traction = b(),
             "pace_notes" => s.pace_notes = b(),
+            "racing_line" => s.racing_line = v.parse::<usize>().unwrap_or(s.racing_line).min(RACING_LINE_NAMES.len() - 1),
             "quality" => s.quality = if v.eq_ignore_ascii_case("low") { Quality::Low } else { Quality::High },
             _ => {}
         }
@@ -138,7 +143,7 @@ fn parse(text: &str) -> Settings {
 
 fn serialize(s: &Settings) -> String {
     format!(
-        "# Cozy Rally settings\nmaster={:.2}\nmusic={:.2}\nsfx={:.2}\nassists={}\ncamera={}\nfullscreen={}\nshow_fps={}\nshow_traction={}\npace_notes={}\nquality={}\n",
+        "# Cozy Rally settings\nmaster={:.2}\nmusic={:.2}\nsfx={:.2}\nassists={}\ncamera={}\nfullscreen={}\nshow_fps={}\nshow_traction={}\npace_notes={}\nracing_line={}\nquality={}\n",
         s.master,
         s.music,
         s.sfx,
@@ -148,6 +153,7 @@ fn serialize(s: &Settings) -> String {
         s.show_fps,
         s.show_traction,
         s.pace_notes,
+        s.racing_line,
         s.quality.name().to_lowercase()
     )
 }
@@ -179,7 +185,7 @@ mod tests {
     use super::*;
     #[test]
     fn roundtrip() {
-        let s = Settings { master: 0.3, music: 0.0, sfx: 1.0, assists: 3, camera: 2, fullscreen: true, show_fps: true, quality: Quality::Low, show_traction: false, pace_notes: false };
+        let s = Settings { master: 0.3, music: 0.0, sfx: 1.0, assists: 3, camera: 2, fullscreen: true, show_fps: true, quality: Quality::Low, show_traction: false, pace_notes: false, racing_line: 2 };
         assert_eq!(parse(&serialize(&s)), s);
         assert_eq!(parse("garbage\nmaster=nan\nassists=99"), Settings { assists: 3, ..Settings::DEFAULT });
     }

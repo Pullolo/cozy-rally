@@ -198,7 +198,7 @@ pub fn car_specs() -> Vec<CarSpec> {
             rear_grip_bias: 0.99,
             max_steer: 0.60,
             drivetrain: Drivetrain::Awd,
-            awd_front_split: 0.4,
+            awd_front_split: 0.28,
             peak_torque: 320.0,
             peak_rpm: 4500.0,
             idle_rpm: 900.0,
@@ -242,7 +242,7 @@ pub fn car_specs() -> Vec<CarSpec> {
             rear_grip_bias: 1.02,
             max_steer: 0.58,
             drivetrain: Drivetrain::Awd,
-            awd_front_split: 0.5,
+            awd_front_split: 0.35,
             peak_torque: 420.0,
             peak_rpm: 3600.0,
             idle_rpm: 750.0,
@@ -586,7 +586,9 @@ impl Car {
                 let lower = spec.gears[(self.gear - 2) as usize] * spec.final_drive;
                 let body_omega = v_long_body.abs() / spec.wheel_radius;
                 let rpm_if_lower = body_omega * lower * 60.0 / std::f32::consts::TAU;
-                if rpm_if_lower < spec.redline * 0.72 && (self.rpm < spec.peak_rpm * 0.62 || (brake > 0.3 && rpm_if_lower < spec.redline * 0.8)) {
+                // kickdown: flooring it drops a gear when the engine has room to rev
+                let kickdown = throttle > 0.92 && rpm_if_lower < spec.redline * 0.84 && self.rpm < spec.peak_rpm * 1.05;
+                if kickdown || (rpm_if_lower < spec.redline * 0.72 && (self.rpm < spec.peak_rpm * 0.62 || (brake > 0.3 && rpm_if_lower < spec.redline * 0.8))) {
                     self.gear -= 1;
                     self.shift_timer = 0.18;
                 }
@@ -809,7 +811,9 @@ impl Car {
                 // combined slip while cornering: tyre past its peak because of steering + drive
                 let sy = alpha / spec.peak_slip_angle;
                 let lat_frac = if combined > 1e-3 { (sy / combined).powi(2) } else { 0.0 };
-                let by_combined = (combined - (1.0 + (1.0 - tc) * 0.9)) / 0.4 * lat_frac;
+                // (relaxed on lower assist levels so power oversteer can happen: Normal lets the rear
+                // step out into a catchable slide, Cozy keeps it tidy)
+                let by_combined = (combined - (1.0 + (1.0 - tc) * 2.6)) / 0.5 * lat_frac;
                 (p_cut + w.tc_i).max(by_combined).clamp(0.0, 1.0) * (0.6 + 0.4 * tc)
             } else {
                 w.tc_i = (w.tc_i - dt * 1.5).max(0.0);
@@ -904,7 +908,8 @@ impl Car {
             let excess = (beta.abs() - lim).max(0.0);
             let hb_fade = ((self.handbrake_age - 0.4) / 0.8).clamp(0.0, 1.0);
             if excess > 0.0 {
-                let m = (excess * 22.0 + rot_into * excess.min(0.2) * 25.0) * spec.mass * tc * hb_fade;
+                // progressive: lets a slide develop, firmly stops it growing past ~25 deg
+                let m = (excess * 22.0 + excess * excess * 90.0 + rot_into * excess.min(0.2) * 25.0) * spec.mass * tc * hb_fade;
                 torque -= up * beta.signum() * m;
             }
         }

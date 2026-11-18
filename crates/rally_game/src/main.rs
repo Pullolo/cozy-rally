@@ -6,6 +6,7 @@ mod cinematic;
 mod fx;
 mod game;
 mod gameplay;
+mod line_assist;
 mod hud;
 mod input;
 mod models;
@@ -587,12 +588,13 @@ impl App {
         let y = (screen_height() - h) * 0.5 + (1.0 - pop_k) * 40.0 * s;
         panel(x, y, w, h);
         text_mid("How to play", x + w * 0.5, y + 48.0 * s, 44.0 * s, INK);
-        let rows: [(&str, &[&str], &[&str]); 7] = [
+        let rows: [(&str, &[&str], &[&str]); 8] = [
             ("Drive", &["W", "A", "S", "D"], &["Up", "Left", "Down", "Right"]),
             ("Handbrake", &["Space"], &["R-Shift"]),
             ("Respawn on track", &["R"], &["Backspace"]),
             ("Change camera", &["C"], &["R-Ctrl"]),
             ("Pace notes on/off", &["N"], &[]),
+            ("Racing line", &["L"], &["LB"]),
             ("Pause", &["Esc"], &["P"]),
             ("Menus", &["Enter"], &["Esc"]),
         ];
@@ -603,9 +605,9 @@ impl App {
         text("Also solo  /  Player 2", col3, y + 104.0 * s, 18.0 * s, INK_SOFT);
         let ks = 32.0 * s;
         for (i, (label, a, b)) in rows.iter().enumerate() {
-            let ry = y + 140.0 * s + i as f32 * 46.0 * s;
+            let ry = y + 140.0 * s + i as f32 * 41.0 * s;
             if i % 2 == 0 {
-                rounded_rect(x + 24.0 * s, ry - 21.0 * s, w - 48.0 * s, 42.0 * s, 12.0 * s, with_alpha(CREAM_DEEP, 0.6));
+                rounded_rect(x + 24.0 * s, ry - 19.0 * s, w - 48.0 * s, 38.0 * s, 12.0 * s, with_alpha(CREAM_DEEP, 0.6));
             }
             text(label, col1, mid_baseline(ry, 22.0 * s), 22.0 * s, INK);
             let mut kx = col2;
@@ -847,7 +849,7 @@ impl App {
         text_mid("Settings", x + w * 0.5, y + 46.0 * s, 42.0 * s, INK);
         let mut st = settings::get();
         let before = st;
-        self.focus.begin(12);
+        self.focus.begin(13);
         let cw = (w - 3.0 * 32.0 * s) * 0.5;
         let lx = x + 32.0 * s;
         let rx = lx + cw + 32.0 * s;
@@ -892,6 +894,10 @@ impl App {
         toggle(&mut self.focus, "Grip widget", &mut st.show_traction, rx, ry, cw, rh, BUTTER);
         ry += step;
         toggle(&mut self.focus, "Pace notes", &mut st.pace_notes, rx, ry, cw, rh, BUTTER);
+        ry += step;
+        // [gameplay] racing-line assist (key L in race)
+        let d = selector(&mut self.focus, "Racing line", settings::RACING_LINE_NAMES[st.racing_line], rx, ry, cw, rh, BUTTER);
+        st.racing_line = ((st.racing_line as i32 + d).rem_euclid(settings::RACING_LINE_NAMES.len() as i32)) as usize;
         ry += step + 30.0 * s;
         header("Help", rx, ry);
         ry += 14.0 * s;
@@ -962,6 +968,29 @@ impl App {
                 self.settings_from = Screen::Race;
                 self.switch_now(Screen::Settings);
                 return;
+            }
+        }
+        // [gameplay] test hook: COZY_WARP=<seconds> fast-forwards the race once (autopilot drives)
+        if self.hooks.autoplay {
+            if let Some(w) = std::env::var("COZY_WARP").ok().and_then(|v| v.parse::<f32>().ok()).filter(|_| sess.time < 0.5) {
+                let step = 1.0 / 60.0;
+                for _ in 0..(w / step) as usize {
+                    let i = sess.players[0].car;
+                    let t = self.autopilots[0].drive(&sess.world.cars[i], &sess.world.track, step);
+                    let n_ap = self.autopilots.len();
+                    for k in 1..sess.players.len() {
+                        let c = sess.players[k].car;
+                        let inp = self.autopilots[k.min(n_ap - 1)].drive(&sess.world.cars[c], &sess.world.track, step);
+                        sess.world.set_input(c, inp);
+                    }
+                    sess.update(step, Some(t));
+                    // (player inputs are re-sampled inside update: re-apply P2's autopilot)
+                    for k in 1..sess.players.len() {
+                        let c = sess.players[k].car;
+                        let inp = self.autopilots[k.min(n_ap - 1)].drive(&sess.world.cars[c], &sess.world.track, step);
+                        sess.world.set_input(c, inp);
+                    }
+                }
             }
         }
         // autopilot for automated playtests
