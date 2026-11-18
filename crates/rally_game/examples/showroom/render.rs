@@ -1,7 +1,13 @@
+#[path = "../../src/render/bench.rs"]
+pub mod bench;
+#[path = "../../src/render/debug.rs"]
+pub mod debug;
 #[path = "../../src/render/gpu.rs"]
 pub mod gpu;
 #[path = "../../src/render/mesh.rs"]
 pub mod mesh;
+#[path = "../../src/render/perf.rs"]
+pub mod perf;
 #[path = "../../src/render/post.rs"]
 pub mod post;
 #[path = "../../src/render/quality.rs"]

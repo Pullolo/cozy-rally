@@ -132,6 +132,20 @@ float shadow_pcf(vec3 sc, float slope) {
     return sum / 16.0;
 }
 
+// 2x2 bilinear-weighted compare (4 taps): cheap filter for distant fragments
+float shadow_bilinear(vec3 sc, float slope) {
+    float texel = params3.z;
+    vec2 t = sc.xy / texel - 0.5;
+    vec2 f = fract(t);
+    vec2 base = (floor(t) + 0.5) * texel;
+    float z = sc.z - params4.y * slope;
+    float a = shadow_tap(base, z);
+    float b = shadow_tap(base + vec2(texel, 0.0), z);
+    float c = shadow_tap(base + vec2(0.0, texel), z);
+    float e = shadow_tap(base + vec2(texel, texel), z);
+    return mix(mix(a, b, f.x), mix(c, e, f.x), f.y);
+}
+
 vec3 soft_clip(vec3 c) {
     // gentle highlight shoulder so bright surfaces (snow, sand) keep their shading
     vec3 x = max(c - 0.78, 0.0);
@@ -155,7 +169,15 @@ void main() {
         vec2 edge = min(sc.xy, 1.0 - sc.xy);
         float inside = clamp(min(edge.x, edge.y) * 14.0, 0.0, 1.0);
         if (inside > 0.0 && sc.z < 1.0) {
-            sh = mix(1.0, shadow_pcf(sc, 1.0 + 3.0 * (1.0 - clamp(d, 0.0, 1.0))), inside * params2.z);
+            float slope = 1.0 + 3.0 * (1.0 - clamp(d, 0.0, 1.0));
+            // full soft filter up close; far away a 2x2 bilinear tap is indistinguishable
+            float s;
+            if (dist < 45.0) {
+                s = shadow_pcf(sc, slope);
+            } else {
+                s = shadow_bilinear(sc, slope * 1.5);
+            }
+            sh = mix(1.0, s, inside * params2.z);
         }
     }
     // faces turned away from the sun count as shadowed so the terminator matches cast shadows

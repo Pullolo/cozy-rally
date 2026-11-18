@@ -9,6 +9,7 @@
 //! `begin_3d`/`end_3d` still draw straight to the screen (menus, car preview).
 use super::mesh::{MeshBuilder, Vertex};
 use super::post::{Grade, PostPipes, PostTargets, PxRect};
+use super::perf::{self, Sec};
 use super::shaders;
 use super::shadow::{light_view, ShadowMap, SHADOW_RADIUS};
 use super::quality::Quality;
@@ -281,8 +282,7 @@ pub struct Gpu {
     shadow_pipe: Pipeline,
     sky_pipe: Pipeline,
     water_pipe: Pipeline,
-    stream_vb: BufferId,
-    stream_ib: BufferId,
+    stream: StreamRing,
     stream_cap: usize,
     white: TextureId,
     target: Target,
@@ -300,6 +300,50 @@ pub struct Gpu {
 }
 
 pub const STREAM_VERTS: usize = 60_000;
+/// Small stream buffers (most dynamic draws: shadows, ribbons, small fx batches)
+const SMALL_STREAM_VERTS: usize = 4096;
+const SMALL_STREAM_N: usize = 48;
+const LARGE_STREAM_N: usize = 10;
+
+/// Rings of streaming vertex/index buffers. Every `draw_dynamic` takes the next buffer of the
+/// right size class instead of overwriting one shared buffer, so the driver never has to wait
+/// for (or copy) a buffer that earlier draws in the same frame are still reading.
+struct StreamRing {
+    small: Vec<(BufferId, BufferId)>,
+    large: Vec<(BufferId, BufferId)>,
+    si: usize,
+    li: usize,
+}
+
+impl StreamRing {
+    fn new(ctx: &mut dyn RenderingBackend) -> StreamRing {
+        let mk = |ctx: &mut dyn RenderingBackend, verts: usize| {
+            (
+                ctx.new_buffer(BufferType::VertexBuffer, BufferUsage::Stream, BufferSource::empty::<Vertex>(verts)),
+                ctx.new_buffer(BufferType::IndexBuffer, BufferUsage::Stream, BufferSource::empty::<u16>(verts * 2)),
+            )
+        };
+        StreamRing {
+            small: (0..SMALL_STREAM_N).map(|_| mk(ctx, SMALL_STREAM_VERTS)).collect(),
+            large: (0..LARGE_STREAM_N).map(|_| mk(ctx, STREAM_VERTS)).collect(),
+            si: 0,
+            li: 0,
+        }
+    }
+
+    fn next(&mut self, verts: usize, indices: usize) -> (BufferId, BufferId) {
+        if super::debug::perf_legacy() {
+            return self.large[0];
+        }
+        if verts <= SMALL_STREAM_VERTS && indices <= SMALL_STREAM_VERTS * 2 {
+            self.si = (self.si + 1) % self.small.len();
+            self.small[self.si]
+        } else {
+            self.li = (self.li + 1) % self.large.len();
+            self.large[self.li]
+        }
+    }
+}
 
 /// miniquad 0.4 only enables GL_DEPTH_TEST for pipelines that also write depth; transparent
 /// pipelines still need depth testing (without writing), so re-enable it by hand.
@@ -356,8 +400,7 @@ impl Gpu {
         let sky_pipe = ctx.new_pipeline(&layout, &attrs, sky, PipelineParams { depth_test: Comparison::LessOrEqual, depth_write: true, cull_face: CullFace::Nothing, ..Default::default() });
         let water = ctx.new_shader(ShaderSource::Glsl { vertex: shaders::WATER_VS, fragment: shaders::WATER_FS }, water_meta()).unwrap_or_else(|e| panic!("water shader compile failed: {e:?}"));
         let water_pipe = ctx.new_pipeline(&layout, &attrs, water, PipelineParams { depth_test: Comparison::LessOrEqual, depth_write: true, cull_face: CullFace::Nothing, ..Default::default() });
-        let stream_vb = ctx.new_buffer(BufferType::VertexBuffer, BufferUsage::Stream, BufferSource::empty::<Vertex>(STREAM_VERTS));
-        let stream_ib = ctx.new_buffer(BufferType::IndexBuffer, BufferUsage::Stream, BufferSource::empty::<u16>(STREAM_VERTS * 2));
+        let stream = StreamRing::new(ctx);
         // packed depth 1.0 everywhere = never in shadow
         let white = ctx.new_texture_from_rgba8(1, 1, &[255, 255, 255, 255]);
         ctx.texture_set_filter(white, FilterMode::Nearest, MipmapFilterMode::None);
@@ -368,8 +411,7 @@ impl Gpu {
             shadow_pipe,
             sky_pipe,
             water_pipe,
-            stream_vb,
-            stream_ib,
+            stream,
             stream_cap: STREAM_VERTS,
             white,
             target: Target::Screen,
@@ -494,6 +536,8 @@ impl Gpu {
     pub fn begin_shadow(&mut self, view: &View, env: &Environment) -> Option<View> {
         let sm = self.shadow_map.as_ref()?;
         let (lv, texel) = light_view(view, env.sun_dir, sm.size, SHADOW_RADIUS);
+        perf::begin(Sec::Shadow);
+        perf::gpu_begin(0);
         let ctx = ctx();
         ctx.begin_pass(Some(sm.pass), PassAction::Nothing);
         ctx.apply_viewport(0, 0, sm.size as i32, sm.size as i32);
@@ -512,11 +556,15 @@ impl Gpu {
         let ctx = ctx();
         ctx.end_render_pass();
         self.target = Target::Screen;
+        perf::gpu_end(0);
+        perf::end(Sec::Shadow);
     }
 
     /// Start drawing the 3D world for one viewport (physical pixels, origin top-left).
     /// Draws into the offscreen scene target when post-processing is on.
     pub fn begin_scene(&mut self, x: i32, y: i32, w: i32, h: i32) {
+        perf::begin(Sec::Scene);
+        perf::gpu_begin(1);
         let ctx = ctx();
         let (_, sh) = macroquad::miniquad::window::screen_size();
         let gl_y = sh as i32 - (y + h);
@@ -539,6 +587,8 @@ impl Gpu {
         depth_mask_on();
         let ctx = ctx();
         ctx.end_render_pass();
+        perf::gpu_end(1);
+        perf::end(Sec::Scene);
     }
 
     /// Bloom, grade and composite all viewports drawn this frame onto the screen.
@@ -548,7 +598,11 @@ impl Gpu {
         let (Some(pipes), Some(t)) = (&self.post_pipes, &self.post) else {
             return;
         };
+        perf::begin(Sec::Post);
+        perf::gpu_begin(2);
         pipes.finish(ctx(), t, &self.frame_viewports, grade, time);
+        perf::gpu_end(2);
+        perf::end(Sec::Post);
     }
 
     /// Globally allow/suppress shadow-map sampling for subsequent draws (default: allowed).
@@ -566,7 +620,7 @@ impl Gpu {
 
     fn uniforms(&self, view: &View, env: &Environment, model: Mat4, p: &DrawParams, blended: bool) -> Uniforms {
         let (shadow_mat, shadow_on, texel_uv, texel_world, sbias) = match (&self.shadow, p.receive_shadow && self.shadow_receive) {
-            (Some(s), true) => (s.mat, 1.0, s.texel_uv, s.texel_world, s.depth_bias),
+            (Some(s), true) if !super::debug::debug_skip("pcf") => (s.mat, 1.0, s.texel_uv, s.texel_world, s.depth_bias),
             _ => (Mat4::IDENTITY, 0.0, 0.0, 0.0, 0.0),
         };
         let out_mode = if blended {
@@ -655,6 +709,7 @@ impl Gpu {
             }
             ctx.apply_bindings(&Bindings { vertex_buffers: vec![c.vb], index_buffer: c.ib, images: images.clone() });
             ctx.draw(0, c.count, 1);
+            perf::count_draw(c.count, shadow_pass);
         }
         if alpha {
             depth_mask_on();
@@ -671,14 +726,18 @@ impl Gpu {
             return;
         }
         let n = verts.len().min(self.stream_cap);
+        perf::count_upload(n * std::mem::size_of::<Vertex>() + indices.len().min(self.stream_cap * 2) * 2);
+        perf::count_draw(indices.len().min(self.stream_cap * 2) as i32, shadow_pass);
         let ctx = ctx();
-        ctx.buffer_update(self.stream_vb, BufferSource::slice(&verts[..n]));
         let ni = indices.len().min(self.stream_cap * 2);
-        ctx.buffer_update(self.stream_ib, BufferSource::slice(&indices[..ni]));
+        // never rewrite a buffer the GPU may still be reading this frame (implicit sync stalls)
+        let (svb, sib) = self.stream.next(n, ni);
+        ctx.buffer_update(svb, BufferSource::slice(&verts[..n]));
+        ctx.buffer_update(sib, BufferSource::slice(&indices[..ni]));
         if shadow_pass {
             ctx.apply_pipeline(&self.shadow_pipe);
             ctx.apply_uniforms(UniformsSource::table(&ShadowUniforms { view_proj: view.view_proj, model, params: [0.0, 1.0, env.time, 0.0] }));
-            ctx.apply_bindings(&Bindings { vertex_buffers: vec![self.stream_vb], index_buffer: self.stream_ib, images: vec![] });
+            ctx.apply_bindings(&Bindings { vertex_buffers: vec![svb], index_buffer: sib, images: vec![] });
             ctx.draw(0, ni as i32, 1);
             return;
         }
@@ -695,7 +754,7 @@ impl Gpu {
         }
         let u = self.uniforms(view, env, model, p, pipeline != 0);
         ctx.apply_uniforms(UniformsSource::table(&u));
-        ctx.apply_bindings(&Bindings { vertex_buffers: vec![self.stream_vb], index_buffer: self.stream_ib, images: vec![self.shadow_image()] });
+        ctx.apply_bindings(&Bindings { vertex_buffers: vec![svb], index_buffer: sib, images: vec![self.shadow_image()] });
         ctx.draw(0, ni as i32, 1);
         depth_mask_on();
     }

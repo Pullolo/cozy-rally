@@ -1,5 +1,9 @@
+pub mod bench;
+pub mod debug;
+pub use debug::{debug_skip, perf_legacy};
 pub mod gpu;
 pub mod mesh;
+pub mod perf;
 pub mod quality;
 pub mod post;
 pub mod scene;
@@ -28,3 +32,4 @@ pub fn quality() -> Quality {
         crate::settings::Quality::High => Quality::High,
     }
 }
+

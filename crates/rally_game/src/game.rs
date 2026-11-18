@@ -4,6 +4,7 @@ use crate::camera::ChaseCam;
 use crate::fx::Fx;
 use crate::input::{PlayerInput, Scheme};
 use crate::models::{car_model, PAINTS};
+use crate::render::perf::{self, Sec};
 use crate::render::gpu::{DrawParams, Gpu, GpuMesh, View};
 use crate::render::mesh::{rgba, Vertex};
 use crate::render::scene::Scene;
@@ -112,6 +113,7 @@ impl RaceSession {
             }
         }
         let scene = Scene::build(&track, gpu);
+        crate::render::bench::setup(&track, &format!("{} seed {}", track.style.name, config.track.seed));
         let cars = world
             .cars
             .iter()
@@ -170,6 +172,16 @@ impl RaceSession {
 
     /// `touch` provides extra input for player 0 (on-screen controls)
     pub fn update(&mut self, dt: f32, touch: Option<CarInput>) {
+        perf::begin(Sec::Update);
+        self.update_inner(dt, touch);
+        perf::end(Sec::Update);
+        if let Some(p) = self.players.first() {
+            let idx = self.world.cars[p.car].track_hint.unwrap_or(0);
+            crate::render::bench::set_position(idx, self.time);
+        }
+    }
+
+    fn update_inner(&mut self, dt: f32, touch: Option<CarInput>) {
         self.frame_events.clear();
         if self.paused {
             // let audio fade engines immediately while paused
@@ -268,6 +280,11 @@ impl RaceSession {
             return View::new(view, proj, eye);
         }
         let cam = &self.players[player].cam;
+        if let Some((eye, target)) = crate::render::bench::pose() {
+            let v = Mat4::look_at_rh(eye, target, Vec3::Y);
+            let p = Mat4::perspective_rh_gl(64f32.to_radians(), vp.w / vp.h.max(1.0), 0.25, 2200.0);
+            return View::new(v, p, eye);
+        }
         if let Ok(spec) = std::env::var("COZY_ROAD_CAM") {
             let (eye, target) = crate::render::scene::road_viewpoint(self.track(), &spec);
             let v = Mat4::look_at_rh(eye, target, Vec3::Y);
@@ -300,7 +317,7 @@ impl RaceSession {
             let view = self.view_for(i, vp);
             if shadows {
                 if let Some(light) = gpu.begin_shadow(&view, &self.scene.env) {
-                    self.scene.draw_shadow_casters(gpu, &light);
+                    self.scene.draw_shadow_casters(gpu, &light, view.eye);
                     self.draw_cars(gpu, &light);
                     gpu.end_shadow();
                 }
@@ -310,17 +327,20 @@ impl RaceSession {
             self.draw_cars(gpu, &view);
             self.draw_shadows(gpu, &view);
             gpu.set_shadow_receive(false);
+            perf::end(Sec::Scene);
+            perf::begin(Sec::Fx);
             self.fx.draw(gpu, &view, &self.scene.env);
             crate::gameplay::draw_world_overlays(self, gpu, &view, i); // [gameplay] racing line + ghost
+            perf::end(Sec::Fx);
+            perf::begin(Sec::Scene);
             gpu.set_shadow_receive(true);
             extra(gpu, &view, i);
             self.scene.draw_transparent(gpu, &view);
             gpu.end_scene();
         }
         gpu.finish_frame(&self.scene.grade, self.time);
-        if std::env::var("COZY_FPS").is_ok() && (self.time * 2.0) as i32 != ((self.time - macroquad::time::get_frame_time()) * 2.0) as i32 {
-            println!("fps {:.1} quality {:?}", macroquad::time::get_fps(), crate::render::quality());
-        }
+        // everything drawn after the 3D (HUD, menus) is attributed to the HUD section
+        perf::begin(Sec::Hud);
     }
 
     /// Draws every car (body + wheels) with its interpolated transform. Also used for the

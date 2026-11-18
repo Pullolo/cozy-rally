@@ -1287,6 +1287,7 @@ impl App {
 
     fn draw_overlays(&mut self) {
         let st = settings::get();
+        render::perf::overlay(&format!("{:?}", render::quality())); // [visuals] F3 perf overlay
         if get_frame_time() > 0.0 {
             self.fps = approach(self.fps, 1.0 / get_frame_time().max(1e-4), 3.0, get_frame_time().min(0.1));
         }

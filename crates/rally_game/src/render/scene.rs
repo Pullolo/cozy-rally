@@ -15,12 +15,14 @@ use rally_core::track::{PropKind, Track, SHOULDER};
 use std::collections::HashMap;
 
 pub struct Scene {
-    pub terrain: GpuMesh,
+    /// terrain tiles with distance LOD
+    pub terrain: Vec<TerrainTile>,
     /// road surface decals (drawn with a depth bias, no shadow casting)
     pub road: GpuMesh,
     /// start arch, balloons, checkpoint flags
     pub structures: GpuMesh,
-    pub props: GpuMesh,
+    /// props in spatial tiles with far LOD
+    pub props: Vec<PropTile>,
     /// grass tufts / flowers / pebbles near the road (distance culled)
     pub detail: GpuMesh,
     pub water: Option<GpuMesh>,
@@ -264,32 +266,115 @@ pub fn road_sink(track: &Track) -> Vec<f32> {
         .collect()
 }
 
-pub fn terrain_mesh(track: &Track, painter: &GroundPainter) -> MeshBuilder {
+/// One terrain tile (24 x 24 heightfield cells) with up to three LODs: 2.5 m, 5 m and 10 m
+/// cells. Fine LODs are only built near the road (the "corridor"); the rest of the map only
+/// ever needs the coarse ones. Each LOD has skirts along the tile border to hide cracks.
+pub struct TerrainTile {
+    pub lods: [Option<GpuMesh>; 3],
+    pub min: Vec3,
+    pub max: Vec3,
+}
+
+const TERRAIN_TILE: usize = 24;
+/// Camera distance (to the tile box) up to which each LOD is used
+pub const TERRAIN_LOD_DIST: [f32; 2] = [170.0, 420.0];
+/// Tiles farther than this from the road never get the finest LOD (corridor)
+const CORRIDOR: f32 = 260.0;
+
+fn terrain_tile_mesh(track: &Track, painter: &GroundPainter, sink: &[f32], tx: usize, tz: usize, step: usize) -> MeshBuilder {
     let hf = &track.terrain;
-    let sink = road_sink(track);
-    let vpos = |ix: usize, iz: usize| hf.vertex_pos(ix, iz) - Vec3::Y * sink[iz.min(hf.nz - 1) * hf.nx + ix.min(hf.nx - 1)];
-    let mut m = MeshBuilder::new();
-    let tile = 24usize;
-    for tz in (0..hf.nz - 1).step_by(tile) {
-        for tx in (0..hf.nx - 1).step_by(tile) {
-            m.begin_chunk();
-            for iz in tz..(tz + tile).min(hf.nz - 1) {
-                for ix in tx..(tx + tile).min(hf.nx - 1) {
-                    let p00 = vpos(ix, iz);
-                    let p10 = vpos(ix + 1, iz);
-                    let p01 = vpos(ix, iz + 1);
-                    let p11 = vpos(ix + 1, iz + 1);
-                    for (a, b, c) in [(p00, p11, p10), (p00, p01, p11)] {
-                        let n = (b - a).cross(c - a).normalize();
-                        let cen = (a + b + c) / 3.0;
-                        let col = painter.color(cen.x, cen.y, cen.z, n.y, true);
-                        m.tri_n(a, b, c, n, rgb(col));
-                    }
+    let ix1 = (tx + TERRAIN_TILE).min(hf.nx - 1);
+    let iz1 = (tz + TERRAIN_TILE).min(hf.nz - 1);
+    // coarse vertices near the road take the lowest fine height around them, so coarse
+    // triangles stay under the road ribbon
+    let h_at = |ix: usize, iz: usize| -> f32 {
+        let k = iz * hf.nx + ix;
+        let mut h = hf.get(ix, iz) - sink[k];
+        if step > 1 && sink[k] > 0.0 {
+            let r = step as isize;
+            for dz in -r..=r {
+                for dx in -r..=r {
+                    let (x, z) = ((ix as isize + dx).clamp(0, hf.nx as isize - 1) as usize, (iz as isize + dz).clamp(0, hf.nz as isize - 1) as usize);
+                    h = h.min(hf.get(x, z) - sink[z * hf.nx + x]);
                 }
             }
         }
+        h
+    };
+    let pos = |ix: usize, iz: usize| Vec3::new(hf.origin.x + ix as f32 * hf.cell, h_at(ix, iz), hf.origin.y + iz as f32 * hf.cell);
+    let mut m = MeshBuilder::new();
+    let xs: Vec<usize> = (tx..=ix1).step_by(step).chain(std::iter::once(ix1)).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    let zs: Vec<usize> = (tz..=iz1).step_by(step).chain(std::iter::once(iz1)).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    let mut edge_cols: HashMap<(usize, usize), [u8; 4]> = HashMap::new();
+    for zi in 0..zs.len() - 1 {
+        for xi in 0..xs.len() - 1 {
+            let (x0, x1, z0, z1) = (xs[xi], xs[xi + 1], zs[zi], zs[zi + 1]);
+            let p00 = pos(x0, z0);
+            let p10 = pos(x1, z0);
+            let p01 = pos(x0, z1);
+            let p11 = pos(x1, z1);
+            for (a, b, c) in [(p00, p11, p10), (p00, p01, p11)] {
+                let n = (b - a).cross(c - a).normalize();
+                let cen = (a + b + c) / 3.0;
+                let col = rgb(painter.color(cen.x, cen.y, cen.z, n.y, true));
+                m.tri_n(a, b, c, n, col);
+                edge_cols.insert((xi, zi), col);
+            }
+        }
+    }
+    // skirts: hang a strip below every border edge so LOD seams never show sky/background
+    let depth = 0.6 + step as f32 * 0.7;
+    let skirt = |m: &mut MeshBuilder, a: Vec3, b: Vec3, col: [u8; 4]| {
+        let n = Vec3::Y;
+        let (a2, b2) = (a - Vec3::Y * depth, b - Vec3::Y * depth);
+        m.tri_smooth([(a, n, col), (b, n, col), (b2, n, col)]);
+        m.tri_smooth([(a, n, col), (b2, n, col), (a2, n, col)]);
+    };
+    let (nxs, nzs) = (xs.len() - 1, zs.len() - 1);
+    for xi in 0..nxs {
+        skirt(&mut m, pos(xs[xi], zs[0]), pos(xs[xi + 1], zs[0]), edge_cols[&(xi, 0)]);
+        skirt(&mut m, pos(xs[xi], zs[nzs]), pos(xs[xi + 1], zs[nzs]), edge_cols[&(xi, nzs - 1)]);
+    }
+    for zi in 0..nzs {
+        skirt(&mut m, pos(xs[0], zs[zi]), pos(xs[0], zs[zi + 1]), edge_cols[&(0, zi)]);
+        skirt(&mut m, pos(xs[nxs], zs[zi]), pos(xs[nxs], zs[zi + 1]), edge_cols[&(nxs - 1, zi)]);
     }
     m
+}
+
+pub fn terrain_tiles(track: &Track, painter: &GroundPainter, gpu: &mut Gpu) -> Vec<TerrainTile> {
+    let hf = &track.terrain;
+    let sink = road_sink(track);
+    // distance from each tile centre to the road (coarse; for the corridor)
+    let pts: Vec<macroquad::math::Vec2> = track.samples.iter().step_by(4).map(|s| macroquad::math::Vec2::new(s.pos.x, s.pos.z)).collect();
+    let mut out = Vec::new();
+    let mut verts = [0usize; 3];
+    for tz in (0..hf.nz - 1).step_by(TERRAIN_TILE) {
+        for tx in (0..hf.nx - 1).step_by(TERRAIN_TILE) {
+            let c = macroquad::math::Vec2::new(hf.origin.x + (tx as f32 + TERRAIN_TILE as f32 * 0.5) * hf.cell, hf.origin.y + (tz as f32 + TERRAIN_TILE as f32 * 0.5) * hf.cell);
+            let road_d = pts.iter().map(|p| p.distance(c)).fold(f32::MAX, f32::min) - TERRAIN_TILE as f32 * hf.cell * 0.71;
+            let mut lods: [Option<GpuMesh>; 3] = [None, None, None];
+            let mut min = Vec3::splat(f32::MAX);
+            let mut max = Vec3::splat(f32::MIN);
+            for (li, step) in [1usize, 2, 4].into_iter().enumerate() {
+                if li == 0 && road_d > CORRIDOR && !super::perf_legacy() {
+                    continue;
+                }
+                let m = terrain_tile_mesh(track, painter, &sink, tx, tz, step);
+                verts[li] += m.vertex_count();
+                for ch in &m.chunks {
+                    min = min.min(ch.min);
+                    max = max.max(ch.max);
+                }
+                lods[li] = Some(gpu.upload(&m));
+            }
+            out.push(TerrainTile { lods, min, max });
+        }
+    }
+    if super::bench::enabled() {
+        println!("terrain: {} tiles, verts per LOD {}k / {}k / {}k", out.len(), verts[0] / 1000, verts[1] / 1000, verts[2] / 1000);
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------------- road
@@ -607,32 +692,152 @@ pub fn structures_mesh(track: &Track) -> MeshBuilder {
 
 // ---------------------------------------------------------------------------------- props
 
-pub fn props_mesh(track: &Track) -> MeshBuilder {
-    // tile props spatially for culling
-    let mut tiles: HashMap<(i32, i32), MeshBuilder> = HashMap::new();
-    for p in &track.props {
-        let key = ((p.pos.x / 64.0).floor() as i32, (p.pos.z / 64.0).floor() as i32);
-        models::add_prop(tiles.entry(key).or_default(), p, &track.style);
-    }
+/// Props of one spatial tile: full detail near the camera, a generic low-poly stand-in far away.
+pub struct PropTile {
+    pub near: GpuMesh,
+    pub far: Option<GpuMesh>,
+    pub min: Vec3,
+    pub max: Vec3,
+}
+
+/// Props tile size (m)
+const PROP_TILE: f32 = 48.0;
+/// Tiles whose closest point is within this distance draw full-detail props
+pub const PROP_LOD_DIST: f32 = 150.0;
+
+/// Baked ambient occlusion: darken & cool everything close to the ground
+fn bake_ground_ao(m: &mut MeshBuilder, track: &Track) {
     let hf = &track.terrain;
-    let mut m = MeshBuilder::new();
-    let mut keys: Vec<_> = tiles.keys().cloned().collect();
-    keys.sort();
-    for k in keys {
-        let tile = tiles.get_mut(&k).unwrap();
-        // baked ambient occlusion: darken & cool everything close to the ground
-        for ch in tile.chunks.iter_mut() {
-            for v in ch.vertices.iter_mut() {
-                let h = v.pos[1] - hf.height(v.pos[0], v.pos[2]);
-                let ao = lerp(0.68, 1.0, smoothstep(-0.05, 0.9, h));
-                let c = v.color;
-                v.color = [(c[0] as f32 * ao) as u8, (c[1] as f32 * ao) as u8, (c[2] as f32 * (ao * 0.9 + 0.1)) as u8, c[3]];
+    for ch in m.chunks.iter_mut() {
+        for v in ch.vertices.iter_mut() {
+            let h = v.pos[1] - hf.height(v.pos[0], v.pos[2]);
+            let ao = lerp(0.68, 1.0, smoothstep(-0.05, 0.9, h));
+            let c = v.color;
+            v.color = [(c[0] as f32 * ao) as u8, (c[1] as f32 * ao) as u8, (c[2] as f32 * (ao * 0.9 + 0.1)) as u8, c[3]];
+        }
+    }
+}
+
+/// Far stand-in for any prop, derived from its full mesh: small props vanish, tree-like
+/// shapes become trunk + crown blob (or cone for pines), everything else a tapered block,
+/// all in the prop's own average colours. ~10x fewer vertices.
+fn add_far_prop(far: &mut MeshBuilder, near: &MeshBuilder, base: Vec3) {
+    let mut min = Vec3::splat(f32::MAX);
+    let mut max = Vec3::splat(f32::MIN);
+    let mut count = 0usize;
+    for ch in &near.chunks {
+        for v in &ch.vertices {
+            let p = Vec3::from(v.pos);
+            min = min.min(p);
+            max = max.max(p);
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return;
+    }
+    let size = max - min;
+    let h = size.y;
+    // tiny things (flowers, cones, pebbles, small signs) are invisible from far away
+    if h < 1.1 && size.x.max(size.z) < 1.6 {
+        return;
+    }
+    let split = min.y + h * 0.42;
+    let (mut lo_c, mut hi_c) = ([0.0f32; 3], [0.0f32; 3]);
+    let (mut lo_n, mut hi_n) = (0.0f32, 0.0f32);
+    let (mut lo_min, mut lo_max) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    let (mut hi_min, mut hi_max) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    let (mut top_min, mut top_max) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    for ch in &near.chunks {
+        for v in &ch.vertices {
+            let p = Vec3::from(v.pos);
+            let c = [v.color[0] as f32 / 255.0, v.color[1] as f32 / 255.0, v.color[2] as f32 / 255.0];
+            if p.y < split {
+                lo_n += 1.0;
+                lo_c = [lo_c[0] + c[0], lo_c[1] + c[1], lo_c[2] + c[2]];
+                lo_min = lo_min.min(p);
+                lo_max = lo_max.max(p);
+            } else {
+                hi_n += 1.0;
+                hi_c = [hi_c[0] + c[0], hi_c[1] + c[1], hi_c[2] + c[2]];
+                hi_min = hi_min.min(p);
+                hi_max = hi_max.max(p);
+            }
+            if p.y > min.y + h * 0.8 {
+                top_min = top_min.min(p);
+                top_max = top_max.max(p);
             }
         }
-        m.begin_chunk();
-        m.append(tile);
     }
-    m
+    let avg = |c: [f32; 3], n: f32| [c[0] / n.max(1.0), c[1] / n.max(1.0), c[2] / n.max(1.0)];
+    let all_c = avg([lo_c[0] + hi_c[0], lo_c[1] + hi_c[1], lo_c[2] + hi_c[2]], lo_n + hi_n);
+    let width = |a: Vec3, b: Vec3| (b.x - a.x).max(b.z - a.z).max(0.0);
+    let crown_w = if hi_n > 0.0 { width(hi_min, hi_max) } else { 0.0 };
+    let base_w = if lo_n > 0.0 { width(lo_min, lo_max) } else { 0.0 };
+    let tree_like = h > 2.2 && hi_n > 0.0 && crown_w > base_w * 1.8;
+    let center = Vec3::new((min.x + max.x) * 0.5, 0.0, (min.z + max.z) * 0.5);
+    if tree_like {
+        let trunk_top = split + (max.y - split) * 0.2;
+        let tc = if lo_n > 0.0 { avg(lo_c, lo_n) } else { all_c };
+        let tw = (base_w * 0.35).clamp(0.12, 0.5);
+        far.box_tapered(Mat4::from_translation(Vec3::new(base.x, (min.y + trunk_top) * 0.5, base.z)), Vec3::new(tw, (trunk_top - min.y) * 0.5, tw), 0.8, rgb(tc));
+        let cc = avg(hi_c, hi_n);
+        let crown_c = Vec3::new((hi_min.x + hi_max.x) * 0.5, 0.0, (hi_min.z + hi_max.z) * 0.5);
+        let cy0 = hi_min.y.max(split);
+        let pointy = top_max.x > top_min.x && width(top_min, top_max) < crown_w * 0.45;
+        if pointy {
+            // pine: cone
+            let half = (max.y - cy0) * 0.5;
+            far.frustum(Mat4::from_translation(Vec3::new(crown_c.x, cy0 + half, crown_c.z)), crown_w * 0.5, 0.0, half, 6, rgb(cc), rgb(shade(cc, 0.8)));
+        } else {
+            let r = Vec3::new((hi_max.x - hi_min.x) * 0.5, (max.y - cy0) * 0.5, (hi_max.z - hi_min.z) * 0.5);
+            far.blob(Mat4::from_translation(Vec3::new(crown_c.x, cy0 + r.y, crown_c.z)), r, 3, 6, rgb(cc));
+        }
+    } else {
+        let top_scale = if hi_n > 0.0 && base_w > 0.01 { (crown_w / base_w.max(crown_w)).clamp(0.45, 1.0) } else { 0.8 };
+        far.box_tapered(Mat4::from_translation(Vec3::new(center.x, min.y + h * 0.5, center.z)), Vec3::new(size.x * 0.42, h * 0.5, size.z * 0.42), top_scale, rgb(all_c));
+    }
+}
+
+pub fn prop_tiles(track: &Track, gpu: &mut Gpu) -> Vec<PropTile> {
+    let mut tiles: HashMap<(i32, i32), (MeshBuilder, MeshBuilder)> = HashMap::new();
+    let mut one = MeshBuilder::new();
+    for p in &track.props {
+        let key = ((p.pos.x / PROP_TILE).floor() as i32, (p.pos.z / PROP_TILE).floor() as i32);
+        one.chunks.clear();
+        models::add_prop(&mut one, p, &track.style);
+        let t = tiles.entry(key).or_default();
+        t.0.append(&one);
+        add_far_prop(&mut t.1, &one, p.pos);
+    }
+    let mut keys: Vec<_> = tiles.keys().cloned().collect();
+    keys.sort();
+    let mut out = Vec::with_capacity(keys.len());
+    let (mut nv, mut fv) = (0usize, 0usize);
+    for k in keys {
+        let (mut near, mut far) = tiles.remove(&k).unwrap();
+        bake_ground_ao(&mut near, track);
+        bake_ground_ao(&mut far, track);
+        nv += near.vertex_count();
+        fv += far.vertex_count();
+        let mut min = Vec3::splat(f32::MAX);
+        let mut max = Vec3::splat(f32::MIN);
+        for c in near.chunks.iter().chain(far.chunks.iter()) {
+            if !c.vertices.is_empty() {
+                min = min.min(c.min);
+                max = max.max(c.max);
+            }
+        }
+        if min.x > max.x {
+            continue;
+        }
+        let far = if far.vertex_count() > 0 { Some(gpu.upload(&far)) } else { None };
+        out.push(PropTile { near: gpu.upload(&near), far, min, max });
+    }
+    if super::bench::enabled() {
+        println!("props: {} tiles, {}k verts full detail, {}k verts far LOD", out.len(), nv / 1000, fv / 1000);
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------------- detail
@@ -1161,10 +1366,10 @@ impl Scene {
         let look = look_for(track, tod);
         let st = &look;
         let painter = GroundPainter::new(track);
-        let terrain = gpu.upload(&terrain_mesh(track, &painter));
+        let terrain = terrain_tiles(track, &painter, gpu);
         let road = gpu.upload(&road_mesh(track, &painter));
         let structures = gpu.upload(&structures_mesh(track));
-        let props = gpu.upload(&props_mesh(track));
+        let props = prop_tiles(track, gpu);
         let detail = gpu.upload(&detail_mesh(track, &painter));
         let sky = gpu.upload(&sky_dome());
         let clouds = gpu.upload(&clouds_mesh(track, st));
@@ -1208,43 +1413,111 @@ impl Scene {
     }
 
     /// Opaque shadow casters (call between `gpu.begin_shadow` / `end_shadow` with the light view)
-    pub fn draw_shadow_casters(&self, gpu: &mut Gpu, light: &View) {
+    /// `cam_eye` = the viewing camera (props LOD must match what the camera sees)
+    pub fn draw_shadow_casters(&self, gpu: &mut Gpu, light: &View, cam_eye: Vec3) {
         let env = self.env;
         let p = DrawParams::default();
         gpu.draw(&self.structures, light, &env, Mat4::IDENTITY, &p, false);
-        gpu.draw(&self.props, light, &env, Mat4::IDENTITY, &p, false);
+        self.draw_props(gpu, light, cam_eye, &p);
     }
 
     pub fn draw_opaque(&self, gpu: &mut Gpu, view: &View) {
         let env = self.env;
-        gpu.draw_sky(&self.sky, view, &env, self.sky_top, self.sky_horizon);
+        let skip = super::debug_skip;
+        if !skip("sky") {
+            gpu.draw_sky(&self.sky, view, &env, self.sky_top, self.sky_horizon);
+        }
         let far = DrawParams { fog: false, cast_shadow: false, receive_shadow: false, ..Default::default() };
         let drift = Mat4::from_translation(Vec3::new(view.eye.x, 0.0, view.eye.z)) * Mat4::from_rotation_y(env.time * 0.004);
-        gpu.draw(&self.clouds, view, &env, drift, &DrawParams { unlit: 0.55, ..far }, false);
-        gpu.draw(&self.hills, view, &env, Mat4::IDENTITY, &DrawParams { unlit: 0.6, fog: true, fog_max: 0.62, ..far }, false);
+        if !skip("clouds") {
+            gpu.draw(&self.clouds, view, &env, drift, &DrawParams { unlit: 0.55, ..far }, false);
+        }
+        if !skip("hills") {
+            gpu.draw(&self.hills, view, &env, Mat4::IDENTITY, &DrawParams { unlit: 0.6, fog: true, fog_max: 0.62, ..far }, false);
+        }
         let ground = DrawParams { cast_shadow: false, ..Default::default() };
         if let Some(a) = &self.apron {
             gpu.draw(a, view, &env, Mat4::IDENTITY, &DrawParams { receive_shadow: false, ..ground }, false);
         }
-        gpu.draw(&self.terrain, view, &env, Mat4::IDENTITY, &ground, false);
-        if std::env::var("COZY_NOWATER").is_err() {
+        if !skip("terrain") {
+            let mut vis: Vec<(f32, usize)> = Vec::with_capacity(96);
+            for (i, t) in self.terrain.iter().enumerate() {
+                if view.aabb_visible(t.min, t.max) {
+                    vis.push((view.eye.clamp(t.min, t.max).distance(view.eye), i));
+                }
+            }
+            vis.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            for (d, i) in vis {
+                let t = &self.terrain[i];
+                let want = if super::perf_legacy() { 0 } else if d < TERRAIN_LOD_DIST[0] { 0 } else if d < TERRAIN_LOD_DIST[1] { 1 } else { 2 };
+                // finest available LOD at or above the wanted one
+                if let Some(m) = (want..3).chain((0..want).rev()).find_map(|l| t.lods[l].as_ref()) {
+                    gpu.draw(m, view, &env, Mat4::IDENTITY, &ground, false);
+                }
+            }
+        }
+        if !skip("water") {
             if let Some(w) = &self.water {
                 gpu.draw_water(w, view, &env, mix(self.sky_horizon, self.sky_top, 0.35), self.water_shallow);
             }
         }
-        gpu.draw(&self.road, view, &env, Mat4::IDENTITY, &DrawParams { depth_bias: ROAD_BIAS, vertex_gloss: true, ..ground }, false);
-        gpu.draw(&self.structures, view, &env, Mat4::IDENTITY, &DrawParams { rim: 0.3, ..Default::default() }, false);
-        gpu.draw(&self.props, view, &env, Mat4::IDENTITY, &DrawParams { rim: 0.35, ..Default::default() }, false);
-        gpu.draw(&self.detail, view, &env, Mat4::IDENTITY, &DrawParams { cull_dist: DETAIL_DIST, ..ground }, false);
+        if !skip("road") {
+            gpu.draw(&self.road, view, &env, Mat4::IDENTITY, &DrawParams { depth_bias: ROAD_BIAS, vertex_gloss: true, ..ground }, false);
+        }
+        if !skip("structures") {
+            gpu.draw(&self.structures, view, &env, Mat4::IDENTITY, &DrawParams { rim: 0.3, ..Default::default() }, false);
+        }
+        if !skip("props") {
+            self.draw_props(gpu, view, view.eye, &DrawParams { rim: 0.35, ..Default::default() });
+        }
+        if !skip("detail") {
+            gpu.draw(&self.detail, view, &env, Mat4::IDENTITY, &DrawParams { cull_dist: DETAIL_DIST, ..ground }, false);
+        }
+    }
+
+    /// Props: per tile, full detail within `PROP_LOD_DIST` of `lod_eye`, far stand-ins beyond,
+    /// nothing past the distance where fog has swallowed them.
+    pub fn draw_props(&self, gpu: &mut Gpu, view: &View, lod_eye: Vec3, p: &DrawParams) {
+        let env = self.env;
+        let fog_out = if env.fog_density > 0.0 { 2.7 / env.fog_density } else { 5000.0 };
+        // front-to-back so early depth testing rejects hidden canopy fragments (dense forests
+        // seen across a valley otherwise shade many layers of trees)
+        let mut vis: Vec<(f32, usize)> = Vec::with_capacity(64);
+        for (i, t) in self.props.iter().enumerate() {
+            if !view.aabb_visible(t.min, t.max) {
+                continue;
+            }
+            vis.push((lod_eye.clamp(t.min, t.max).distance(lod_eye), i));
+        }
+        vis.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        for (d, i) in vis {
+            let t = &self.props[i];
+            if d < PROP_LOD_DIST || super::perf_legacy() {
+                gpu.draw(&t.near, view, &env, Mat4::IDENTITY, p, false);
+            } else if d < fog_out {
+                if let Some(f) = &t.far {
+                    gpu.draw(f, view, &env, Mat4::IDENTITY, p, false);
+                }
+            }
+        }
     }
 
     pub fn draw_transparent(&self, _gpu: &mut Gpu, _view: &View) {}
 
     pub fn free(self, gpu: &mut Gpu) {
-        gpu.free(self.terrain);
+        for t in self.terrain {
+            for m in t.lods.into_iter().flatten() {
+                gpu.free(m);
+            }
+        }
         gpu.free(self.road);
         gpu.free(self.structures);
-        gpu.free(self.props);
+        for t in self.props {
+            gpu.free(t.near);
+            if let Some(f) = t.far {
+                gpu.free(f);
+            }
+        }
         gpu.free(self.detail);
         gpu.free(self.sky);
         gpu.free(self.clouds);
