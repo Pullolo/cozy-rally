@@ -342,7 +342,7 @@ impl App {
         }
         self.screen = Screen::Results;
         self.results_cine = Cinematic::orbit(s.players[0].car);
-        self.results_cine.frame = vec2(-0.46, 0.32);
+        self.results_cine.frame = vec2(-0.45, 0.42);
         self.set_music(audio::Music::Results);
     }
 
@@ -944,7 +944,7 @@ impl App {
         } else if sess.is_over() {
             let car = sess.players.first().map(|p| p.car).unwrap_or(0);
             self.results_cine = Cinematic::orbit(car);
-            self.results_cine.frame = vec2(-0.46, 0.32);
+            self.results_cine.frame = vec2(-0.45, 0.42);
             self.switch_now(Screen::Results);
             self.set_music(audio::Music::Results);
         }

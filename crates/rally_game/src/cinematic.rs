@@ -120,8 +120,8 @@ impl Cinematic {
         let (eye, target, fov, smooth) = match self.shot {
             Shot::Orbit => {
                 self.angle += dt * if self.orbit_only { 0.22 } else { 0.16 };
-                let d = if self.orbit_only { 10.5 } else { 9.0 };
-                let eye = pos + vec3(self.angle.cos() * d, 2.6, self.angle.sin() * d);
+                let (d, hgt) = if self.orbit_only { (14.0, 4.0) } else { (9.0, 2.6) };
+                let eye = pos + vec3(self.angle.cos() * d, hgt, self.angle.sin() * d);
                 // the orbit itself is smooth: follow the (moving) car without lag
                 (eye, pos + Vec3::Y * 0.6, 46f32.to_radians(), 40.0)
             }

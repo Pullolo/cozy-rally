@@ -260,7 +260,7 @@ impl HudState {
 pub fn hud_scale(vp: &Viewport) -> f32 {
     let full = (screen_height() / 720.0).min(screen_width() / 1280.0);
     let own = (vp.h / 720.0).min(vp.w / 1280.0);
-    own.max(full * 0.74).clamp(0.4, 4.0)
+    own.max(full * 0.74).max(0.62).clamp(0.4, 4.0)
 }
 
 pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
@@ -497,7 +497,7 @@ fn draw_standings(s: &RaceSession, hud: &HudState, player: usize, x: f32, y: f32
         circle(x + rh * 0.5, yy + rh * 0.5, rh * 0.42, col);
         text_mid(&format!("{}", row + 1), x + rh * 0.5, yy + rh * 0.5, 14.0 * k, INK);
         let name = &s.names[c];
-        let fs = 15.0 * k;
+        let fs = 16.0 * k;
         text(name, x + rh + 6.0 * k, mid_baseline(yy + rh * 0.5, fs), fs, if is_local { INK } else { INK_SOFT });
         let gap = if race.clock < 3.0 && !race.racers[c].finished {
             None
