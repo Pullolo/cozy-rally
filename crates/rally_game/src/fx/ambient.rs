@@ -30,11 +30,11 @@ const GROUPS: usize = 11;
 
 fn population(b: Biome) -> &'static [(Group, u16)] {
     match b {
-        Biome::Meadow => &[(Group::Petal, 70), (Group::Butterfly, 10), (Group::Firefly, 6), (Group::Sparkle, 14)],
-        Biome::Autumn => &[(Group::Leaf, 120), (Group::Firefly, 16), (Group::Butterfly, 3), (Group::Sparkle, 10)],
+        Biome::Meadow => &[(Group::Petal, 110), (Group::Butterfly, 14), (Group::Firefly, 6), (Group::Sparkle, 14)],
+        Biome::Autumn => &[(Group::Leaf, 150), (Group::Firefly, 16), (Group::Butterfly, 3), (Group::Sparkle, 10)],
         Biome::Snow => &[(Group::Snow, 360), (Group::Diamond, 40)],
-        Biome::Desert => &[(Group::Mote, 70), (Group::Tumbleweed, 3), (Group::Butterfly, 2)],
-        Biome::Coast => &[(Group::Sparkle, 60), (Group::Gull, 6), (Group::Petal, 20), (Group::Butterfly, 3)],
+        Biome::Desert => &[(Group::Mote, 70), (Group::Tumbleweed, 5), (Group::Butterfly, 2)],
+        Biome::Coast => &[(Group::Sparkle, 90), (Group::Gull, 8), (Group::Petal, 30), (Group::Butterfly, 4)],
     }
 }
 
@@ -82,9 +82,12 @@ impl Fx {
         for k in 0..nl {
             let ci = self.locals[k];
             let car = &world.cars[ci];
-            let (pos, _) = self.poses[ci];
-            let ahead = Vec3::new(car.vel.x, 0.0, car.vel.z) * 1.4;
-            let centre = pos + ahead.clamp_length_max(22.0);
+            let (pos, rot) = self.poses[ci];
+            // centre the life in front of the car, where the chase camera looks
+            let f = rot * Vec3::NEG_Z;
+            let f = Vec3::new(f.x, 0.0, f.z).normalize_or(Vec3::X);
+            let ahead = Vec3::new(car.vel.x, 0.0, car.vel.z) * 1.0;
+            let centre = pos + f * 12.0 + ahead.clamp_length_max(18.0);
             for &(g, target) in pop {
                 let have = self.ambient_counts[k][g as usize];
                 if have >= target {
@@ -93,7 +96,7 @@ impl Fx {
                 // refill gradually (fills up within a few frames at the start)
                 let n = (target - have).min(target / 5 + 1);
                 for _ in 0..n {
-                    if !self.spawn_ambient(&track, g, centre, pos) {
+                    if !self.spawn_ambient(&track, g, centre, pos, f) {
                         break;
                     }
                 }
@@ -108,7 +111,7 @@ impl Fx {
         centre + d * r
     }
 
-    fn spawn_ambient(&mut self, track: &Track, g: Group, centre: Vec3, car_pos: Vec3) -> bool {
+    fn spawn_ambient(&mut self, track: &Track, g: Group, centre: Vec3, car_pos: Vec3, f: Vec3) -> bool {
         let mut p = Particle { ambient: true, group: g as u8, seed: self.rng.f(), fade_in: 1.2, ..Default::default() };
         match g {
             Group::Petal => {
@@ -117,7 +120,7 @@ impl Fx {
                 p.pos = Vec3::new(at.x, gh + self.rng.r(0.6, 6.0), at.z);
                 p.vel = self.wind;
                 p.life = self.rng.r(9.0, 15.0);
-                p.size0 = self.rng.r(0.09, 0.13);
+                p.size0 = self.rng.r(0.13, 0.18);
                 p.size1 = p.size0;
                 p.color = if self.biome == Biome::Coast {
                     self.rng.pick(&[[1.0, 0.92, 0.5], [1.0, 1.0, 0.95], [1.0, 0.85, 0.6]])
@@ -162,7 +165,7 @@ impl Fx {
                 p.aspect = 0.62;
             }
             Group::Butterfly => {
-                let at = self.disc(centre, 5.0, SPAWN_RADIUS * 0.8);
+                let at = self.disc(centre, 3.0, SPAWN_RADIUS * 0.65);
                 let gh = track.visual_height(at.x, at.z);
                 if track.water_level.is_some_and(|w| gh < w + 0.2) {
                     return true;
@@ -170,7 +173,7 @@ impl Fx {
                 p.pos = Vec3::new(at.x, gh + self.rng.r(0.6, 1.8), at.z);
                 p.home = p.pos;
                 p.life = self.rng.r(25.0, 40.0);
-                p.size0 = self.rng.r(0.13, 0.18);
+                p.size0 = self.rng.r(0.26, 0.34);
                 p.size1 = p.size0;
                 p.color = self.rng.pick(&[[1.0, 0.86, 0.36], [0.62, 0.80, 1.0], [1.0, 0.72, 0.82], [1.0, 0.99, 0.95], [1.0, 0.64, 0.38], [0.78, 0.66, 1.0]]);
                 p.shape = Shape::Butterfly;
@@ -230,9 +233,10 @@ impl Fx {
             Group::Tumbleweed => {
                 let wdir = self.wind.normalize_or(Vec3::X);
                 let side = Vec3::new(-wdir.z, 0.0, wdir.x);
-                let at = centre - wdir * self.rng.r(18.0, 28.0) + side * self.rng.r(-18.0, 18.0);
+                // start upwind of a spot in front of the car so they roll across the view
+                let at = centre + side * self.rng.r(-10.0, 10.0) + self.rng.hdir() * self.rng.r(0.0, 10.0) - wdir * self.rng.r(8.0, 18.0);
                 let gh = track.visual_height(at.x, at.z);
-                p.size0 = self.rng.r(0.45, 0.7);
+                p.size0 = self.rng.r(0.55, 0.85);
                 p.size1 = p.size0;
                 p.pos = Vec3::new(at.x, gh + p.size0 + 0.5, at.z);
                 p.vel = self.wind;
@@ -250,8 +254,8 @@ impl Fx {
                 let Some(wl) = track.water_level else { return true };
                 // try a few spots for open water
                 let mut found = None;
-                for _ in 0..4 {
-                    let at = self.disc(centre, 2.0, SPAWN_RADIUS);
+                for _ in 0..6 {
+                    let at = self.disc(centre, 2.0, SPAWN_RADIUS * 1.5);
                     if track.terrain.height(at.x, at.z) < wl - 0.3 {
                         found = Some(at);
                         break;
@@ -260,7 +264,7 @@ impl Fx {
                 let Some(at) = found else { return true };
                 p.pos = Vec3::new(at.x, wl + self.rng.r(0.05, 0.3), at.z);
                 p.life = self.rng.r(0.6, 1.6);
-                p.size0 = self.rng.r(0.12, 0.22);
+                p.size0 = self.rng.r(0.2, 0.32);
                 p.size1 = p.size0 * 0.6;
                 p.color = [1.0, 1.0, 0.97];
                 p.alpha = 0.95;
@@ -269,12 +273,12 @@ impl Fx {
                 p.fade_in = 0.2;
             }
             Group::Gull => {
-                let at = self.disc(centre, 4.0, SPAWN_RADIUS);
+                let at = self.disc(centre + f * 10.0, 4.0, SPAWN_RADIUS);
                 let gh = track.visual_height(at.x, at.z);
-                p.home = Vec3::new(at.x, gh + self.rng.r(11.0, 20.0), at.z);
+                p.home = Vec3::new(at.x, gh.max(track.water_level.unwrap_or(gh)) + self.rng.r(6.0, 11.0), at.z);
                 p.pos = p.home;
                 p.life = self.rng.r(35.0, 50.0);
-                p.size0 = self.rng.r(0.8, 1.0);
+                p.size0 = self.rng.r(1.3, 1.6);
                 p.size1 = p.size0;
                 p.color = [0.98, 0.98, 0.96];
                 p.shape = Shape::Gull;

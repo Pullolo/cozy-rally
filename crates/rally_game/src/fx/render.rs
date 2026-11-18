@@ -104,6 +104,7 @@ pub fn col(c: [f32; 3], a: f32) -> [u8; 4] {
 /// Precomputed unit circle (12 steps) so puffs don't call sin/cos per vertex.
 pub struct Circle {
     pub pts: [(f32, f32); 12],
+    pub pts16: [(f32, f32); 16],
 }
 
 impl Circle {
@@ -113,74 +114,106 @@ impl Circle {
             let a = k as f32 / 12.0 * TAU;
             *p = (a.cos(), a.sin());
         }
-        Circle { pts }
+        let mut pts16 = [(0.0, 0.0); 16];
+        for (k, p) in pts16.iter_mut().enumerate() {
+            let a = k as f32 / 16.0 * TAU;
+            *p = (a.cos(), a.sin());
+        }
+        Circle { pts, pts16 }
     }
 }
 
-/// Fade particles that are very close to the camera (avoid screen-filling blobs).
+/// Fade particles that are very close to the camera (never block the player's view of
+/// the road; big clouds start fading further away).
 #[inline]
 fn near_fade(dist: f32, size: f32) -> f32 {
-    ((dist - 0.8 - size * 0.6) / (1.5 + size)).clamp(0.0, 1.0)
+    ((dist - 1.0 - size * 0.5) / (1.0 + size * 0.8)).clamp(0.0, 1.0)
 }
 
-/// Soft lit cloud: centre -> inner ring -> transparent rim, normals bulge like a sphere.
-pub fn puff(b: &mut Batches, bs: &Basis, circ: &Circle, p: &Particle, dist: f32) {
+/// Keep the followed car readable: clouds between the camera and the car fade where they
+/// overlap the car on screen; clouds beside/above it (and everything beyond it) stay.
+#[inline]
+fn car_clearance(bs: &Basis, focus: Vec3, pos: Vec3, r: f32) -> f32 {
+    let to_car = focus - bs.eye;
+    let fd = to_car.length();
+    if fd < 0.1 {
+        return 1.0;
+    }
+    let dir = to_car / fd;
+    let v = pos - bs.eye;
+    let along = v.dot(dir);
+    if along > fd + 1.5 || along < 0.1 {
+        return 1.0;
+    }
+    // where the puff lands on screen, measured in metres at the car's distance
+    let q = v * (fd / along) - to_car;
+    let lateral = (q - dir * q.dot(dir)).length();
+    let r_proj = r * (fd / along);
+    ((lateral - 0.9) / (r_proj * 0.7 + 0.6)).clamp(0.12, 1.0)
+}
+
+/// Soft lit cloud: a dense rounded core that rolls off to a transparent, slightly lumpy rim.
+/// Vertex colours are brighter on top and a touch shaded underneath so every puff reads as
+/// a soft round volume rather than a flat smear.
+pub fn puff(b: &mut Batches, bs: &Basis, circ: &Circle, p: &Particle, dist: f32, focus: Option<Vec3>) {
     let r = p.size();
-    let a = p.opacity() * near_fade(dist, r);
+    let mut a = p.opacity() * near_fade(dist, r);
+    if let Some(f) = focus {
+        a *= car_clearance(bs, f, p.pos, r);
+    }
     if a < 0.01 {
         return;
     }
     // pull towards the camera so clouds don't slice into the ground behind them
-    let c = p.pos + bs.toward * (r * 0.55).min(dist * 0.3);
+    let c = p.pos + bs.toward * (r * 0.25).min(dist * 0.15);
     // spin the billboard slowly so the low-poly rim never looks static
     let (sr, cr) = p.rot.sin_cos();
     let ax = bs.right * cr + bs.up * sr;
     let ay = bs.up * cr - bs.right * sr;
+    // normals bulge like a sphere but lean upwards, so clouds are lit from the sky
+    let fwd = (bs.toward + Vec3::Y * 0.9).normalize();
+    let tone = |d: Vec3, k: f32| {
+        let y = d.dot(bs.up);
+        let f = 1.0 + (0.07 * y.max(0.0) - 0.13 * (-y).max(0.0)) * k;
+        [p.color[0] * f, p.color[1] * f, p.color[2] * f]
+    };
     let detailed = r / dist.max(0.1) > 0.012;
     if detailed {
-        let batch = b.room(13);
-        let c0 = col(p.color, a);
-        let c1 = col(p.color, a * 0.62);
-        let c2 = col(p.color, 0.0);
-        // normals bulge like a sphere but lean upwards, so clouds are lit from the sky
-        // like the ground they sit on (never darker than the road behind them)
-        let fwd = (bs.toward + Vec3::Y * 0.9).normalize();
-        let base = batch.vert(c, fwd, c0);
-        // 6 inner + 6 outer, irregular cauliflower rim
-        for k in 0..6 {
-            let (x, y) = circ.pts[k * 2];
+        let batch = b.room(17);
+        let base = batch.vert(c + bs.up * (r * 0.06), fwd, col(tone(bs.up, 0.6), a));
+        // 8 inner (dense core, 92% opacity) + 8 outer (transparent, lumpy) vertices
+        for k in 0..8 {
+            let (x, y) = circ.pts16[k * 2];
             let d = ax * x + ay * y;
-            let wob = 1.0 + 0.13 * ((k as f32) * 2.3 + p.seed * 31.0).sin();
-            batch.vert(c + d * (r * 0.5 * wob), (fwd + d * 0.8).normalize(), c1);
+            let wob = 1.0 + 0.1 * ((k as f32) * 2.3 + p.seed * 31.0).sin();
+            batch.vert(c + d * (r * 0.58 * wob), (fwd + d * 0.8).normalize(), col(tone(d, 1.0), a * 0.92));
         }
-        for k in 0..6 {
-            let (x, y) = circ.pts[k * 2 + 1];
+        for k in 0..8 {
+            let (x, y) = circ.pts16[k * 2 + 1];
             let d = ax * x + ay * y;
-            let wob = 1.0 + 0.16 * ((k as f32) * 1.7 + p.seed * 17.0).sin();
-            batch.vert(c + d * (r * wob), (fwd * 0.4 + d).normalize(), c2);
+            let wob = 1.0 + 0.14 * ((k as f32) * 1.7 + p.seed * 17.0).sin();
+            batch.vert(c + d * (r * wob), (fwd * 0.4 + d).normalize(), col(tone(d, 1.0), 0.0));
         }
-        for k in 0..6u16 {
+        for k in 0..8u16 {
             let i0 = base + 1 + k;
-            let i1 = base + 1 + (k + 1) % 6;
-            let o0 = base + 7 + k;
-            let o_prev = base + 7 + (k + 5) % 6;
+            let i1 = base + 1 + (k + 1) % 8;
+            let o0 = base + 9 + k;
+            let o_prev = base + 9 + (k + 7) % 8;
             batch.tri(base, i0, i1);
             // outer ring: each outer vertex sits between two inner ones
             batch.tri(i0, o0, i1);
             batch.tri(i0, o_prev, o0);
         }
     } else {
-        let batch = b.room(7);
-        let fwd = (bs.toward + Vec3::Y * 0.9).normalize();
-        let base = batch.vert(c, fwd, col(p.color, a * 0.8));
-        let c2 = col(p.color, 0.0);
-        for k in 0..6 {
-            let (x, y) = circ.pts[k * 2];
+        let batch = b.room(9);
+        let base = batch.vert(c, fwd, col(p.color, a * 0.85));
+        for k in 0..8 {
+            let (x, y) = circ.pts16[k * 2];
             let d = ax * x + ay * y;
-            batch.vert(c + d * r, (fwd * 0.4 + d).normalize(), c2);
+            batch.vert(c + d * r, (fwd * 0.4 + d).normalize(), col(tone(d, 1.0), 0.0));
         }
-        for k in 0..6u16 {
-            batch.tri(base, base + 1 + k, base + 1 + (k + 1) % 6);
+        for k in 0..8u16 {
+            batch.tri(base, base + 1 + k, base + 1 + (k + 1) % 8);
         }
     }
 }
@@ -198,7 +231,7 @@ fn tumble_axes(p: &Particle) -> (Vec3, Vec3) {
 
 /// Flakes, leaves, chunks, drops (lit)
 pub fn bit(b: &mut Batches, bs: &Basis, p: &Particle, dist: f32) {
-    let a = p.opacity() * near_fade(dist, 0.8);
+    let a = p.opacity() * near_fade(dist, 2.5);
     if a < 0.02 {
         return;
     }

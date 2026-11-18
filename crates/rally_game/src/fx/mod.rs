@@ -43,8 +43,10 @@ pub enum Prio {
 /// Per-car emitter state
 #[derive(Clone, Default)]
 struct CarFx {
-    /// fractional emission accumulators per wheel: dust, debris, smoke, water
-    acc: [[f32; 4]; 4],
+    /// fractional emission accumulators per wheel (spin jet, spin debris, slide fan, slide
+    /// debris, lock puffs, lock debris, rolling debris, water)
+    acc: [[f32; 8]; 4],
+    trail_acc: f32,
     exhaust_acc: f32,
     wake_acc: f32,
     prev_wheel: [Vec3; 4],
@@ -138,6 +140,22 @@ pub struct Fx {
     stat_timer: f32,
     /// peak wheelspin / slide / lock seen since the last stats line
     stat_trac: [f32; 3],
+    /// `COZY_FX_TEST=launch|slide|lock`: force that traction state on player 1's car
+    test: Option<TestMode>,
+    test_announced: bool,
+    go_time: Option<f32>,
+}
+
+/// Deterministic traction-loss showcase (visual testing). Overrides only the FX's view of
+/// player 1's wheels; physics is untouched.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TestMode {
+    /// Driven wheels spinning flat out: from 2 s into the countdown until 2.5 s after GO
+    Launch,
+    /// Rear-biased slide to the car's right, from GO+1.5 s for 8 s
+    Slide,
+    /// All four wheels locked, from GO+1.5 s for 8 s
+    Lock,
 }
 
 impl Fx {
@@ -182,6 +200,14 @@ impl Fx {
             stat_frames: 0,
             stat_timer: 0.0,
             stat_trac: [0.0; 3],
+            test: match std::env::var("COZY_FX_TEST").as_deref() {
+                Ok("launch") => Some(TestMode::Launch),
+                Ok("slide") => Some(TestMode::Slide),
+                Ok("lock") => Some(TestMode::Lock),
+                _ => None,
+            },
+            test_announced: false,
+            go_time: None,
         }
     }
 
@@ -326,18 +352,27 @@ impl Fx {
             }
         }
         sc.order.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        // the car this view follows (nearest local car to the eye): clouds between it and
+        // the camera are faded so the player's own car always stays readable
+        let focus = self
+            .locals
+            .iter()
+            .map(|&ci| self.poses[ci].0)
+            .filter(|p| p.distance(bs.eye) < 25.0)
+            .min_by(|a, b| a.distance(bs.eye).total_cmp(&b.distance(bs.eye)))
+            .map(|p| p + Vec3::Y * 0.3);
         sc.lit.clear();
         for &(dbits, i) in &sc.order {
             let p = &self.parts[i as usize];
             let d = f32::from_bits(dbits);
             match p.shape {
-                Shape::Puff => render::puff(&mut sc.lit, &bs, &self.circle, p, d),
+                Shape::Puff => render::puff(&mut sc.lit, &bs, &self.circle, p, d, focus),
                 Shape::Butterfly | Shape::Gull => render::critter(&mut sc.lit, p, d),
                 Shape::Tumbleweed => render::tumbleweed(&mut sc.lit, &bs, p, d),
                 _ => render::bit(&mut sc.lit, &bs, p, d),
             }
         }
-        sc.lit.draw(gpu, view, env, &DrawParams { unlit: 0.5, ..Default::default() });
+        sc.lit.draw(gpu, view, env, &DrawParams { unlit: 0.6, ..Default::default() });
         sc.glow.clear();
         for &i in &sc.glow_list {
             let p = &self.parts[i as usize];
@@ -351,5 +386,48 @@ impl Fx {
             s.0 += t0.elapsed().as_secs_f64();
             s.1 += verts;
         }
+    }
+}
+
+
+impl Fx {
+    /// Forced traction state for the showcase test hook (None = use the real one)
+    fn test_traction(&mut self, ci: usize, wi: usize, car: &rally_core::vehicle::Car) -> Option<Traction> {
+        let mode = self.test?;
+        if self.locals.first() != Some(&ci) {
+            return None;
+        }
+        let t = self.time;
+        let active = match (mode, self.go_time) {
+            (TestMode::Launch, None) => t >= 2.0,
+            (TestMode::Launch, Some(g)) => t < g + 2.5,
+            (_, Some(g)) => t >= g + 1.5 && t < g + 9.5,
+            _ => false,
+        };
+        if !active {
+            return None;
+        }
+        if !self.test_announced {
+            self.test_announced = true;
+            println!("[fx] test {:?} active at fx time {:.2}", mode, t);
+        }
+        let fwd = car.rot * Vec3::NEG_Z;
+        let right = car.rot * Vec3::X;
+        let mut tr = Traction { fwd, lat_dir: right, surf_sign: 1.0, ..Default::default() };
+        match mode {
+            TestMode::Launch => {
+                use rally_core::vehicle::Drivetrain;
+                let driven = match car.spec.drivetrain {
+                    Drivetrain::Fwd => wi < 2,
+                    Drivetrain::Rwd => wi >= 2,
+                    Drivetrain::Awd => true,
+                };
+                tr.spin = if driven { 1.0 } else { 0.0 };
+            }
+            TestMode::Slide => tr.slide = if wi >= 2 { 1.0 } else { 0.7 },
+            TestMode::Lock => tr.lock = 1.0,
+        }
+        tr.loss = tr.spin.max(tr.slide).max(tr.lock);
+        Some(tr)
     }
 }

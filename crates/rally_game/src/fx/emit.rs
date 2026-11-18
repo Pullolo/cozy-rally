@@ -75,7 +75,7 @@ fn dust_color(s: Surface) -> [f32; 3] {
         Surface::Snow | Surface::Ice => [0.97, 0.98, 1.0],
         Surface::Grass => mix(d, [0.92, 0.95, 0.80], 0.45),
         Surface::Mud => mix(d, [0.85, 0.75, 0.62], 0.35),
-        _ => mix(d, [1.0, 0.97, 0.92], 0.45),
+        _ => mix(d, [1.0, 0.96, 0.9], 0.55),
     }
 }
 
@@ -87,19 +87,6 @@ fn mark_style(s: Surface) -> ([f32; 3], f32) {
         Surface::Grass => ([0.30, 0.44, 0.20], 0.45),
         Surface::Sand => (shade(s.props().dust, 0.72), 0.5),
         _ => (shade(s.props().dust, 0.72), 0.45),
-    }
-}
-
-/// Base dust emission per second at full intensity
-fn dust_rate(s: Surface) -> f32 {
-    match s {
-        Surface::Gravel => 16.0,
-        Surface::Dirt => 18.0,
-        Surface::Sand => 22.0,
-        Surface::Snow => 11.0,
-        Surface::Grass => 5.0,
-        Surface::Mud => 8.0,
-        _ => 0.0,
     }
 }
 
@@ -127,6 +114,7 @@ impl Fx {
             let right = irot * Vec3::X;
             let he = car.spec.half_extents;
 
+            let mut trail_surf: Option<Surface> = None;
             // ---------------- wheels
             for wi in 0..4 {
                 let w = car.wheels[wi];
@@ -138,12 +126,15 @@ impl Fx {
                     // bridge little bumps; end the ribbon on a real jump
                     self.cars[ci].air[wi] += dt;
                     if self.cars[ci].air[wi] > 0.15 {
-                        self.feed_mark(ci, wi, &track, cp, right, car.spec.wheel_width, 0.0, Surface::Asphalt);
+                        self.feed_mark(ci, wi, &track, cp, right, car.spec.wheel_width, 0.0, Surface::Asphalt, 0.0);
                     }
                     continue;
                 };
                 self.cars[ci].air[wi] = 0.0;
-                let tr = wheel_traction(car, wi);
+                let mut tr = wheel_traction(car, wi);
+                if let Some(t) = self.test_traction(ci, wi, car) {
+                    tr = t;
+                }
                 if self.stats {
                     self.stat_trac[0] = self.stat_trac[0].max(tr.spin);
                     self.stat_trac[1] = self.stat_trac[1].max(tr.slide);
@@ -153,30 +144,31 @@ impl Fx {
                 let roll = (speed / 26.0).clamp(0.0, 1.0);
                 let in_water = water.is_some_and(|wl| cp.y < wl + 0.12);
                 let props = surface.props();
+                if props.loose && !in_water && (rear || trail_surf.is_none()) {
+                    trail_surf = Some(surface);
+                }
 
-                // ---- tyre marks
-                let (mcol, malpha) = mark_style(surface);
+                // ---- tyre marks: faint tracks on loose ground, darker when the tyre lets go,
+                // darkest for lock-ups and launches
+                let (_, malpha) = mark_style(surface);
                 let mut strength = ((tr.loss - 0.08) / 0.5).clamp(0.0, 1.0);
                 if props.loose && speed > 2.0 && (rear || tr.loss > 0.1) {
-                    // faint tracks always on loose ground
                     strength = strength.max(0.16 * (speed / 8.0).min(1.0));
                 }
+                let dark = ((tr.lock.max(tr.spin) - 0.15) / 0.6).clamp(0.0, 1.0);
                 if in_water {
                     strength = 0.0;
                 }
-                self.feed_mark(ci, wi, &track, cp, right, car.spec.wheel_width * if tr.loss > 0.3 { 1.25 } else { 1.0 }, strength * malpha, surface);
-                let _ = mcol;
+                let width = car.spec.wheel_width * if tr.loss > 0.3 { 1.3 } else { 1.0 };
+                self.feed_mark(ci, wi, &track, cp, right, width, (strength * malpha * (1.0 + 0.5 * dark)).min(0.85), surface, dark);
 
                 if speed < 0.6 && tr.spin < 0.05 {
                     continue;
                 }
-                let sgn = tr.surf_sign;
-                // where debris goes: backwards off spinning tyres, sideways off sliding ones
-                let roost_dir = (-tr.fwd * sgn * tr.spin * 1.4 + tr.lat_dir * tr.slide + tr.fwd * tr.lock * 0.4).normalize_or_zero();
                 let lose = tr.spin.max(tr.slide);
-
                 if in_water {
-                    let acc = &mut self.cars[ci].acc[wi][3];
+                    let roost_dir = (-tr.fwd * tr.surf_sign * tr.spin + tr.lat_dir * tr.slide).normalize_or_zero();
+                    let acc = &mut self.cars[ci].acc[wi][7];
                     *acc += (speed * 2.2 + lose * 30.0) * dt * lod;
                     let n = acc.floor() as usize;
                     *acc -= n as f32;
@@ -187,105 +179,170 @@ impl Fx {
                     }
                     continue;
                 }
+                let hard = !props.loose;
+                let dcol = dust_color(surface);
+                let dirt = mix(shade(props.dust, 0.78), dcol, 0.25);
+                let smoke_col = if surface == Surface::Ice { [0.92, 0.96, 1.0] } else { [0.93, 0.93, 0.96] };
 
-                if props.loose {
-                    // ---- dust clouds
-                    let wheel_k = if rear { 1.0 } else { 0.55 };
-                    let intensity = (roll * 0.4 * wheel_k + tr.spin * 2.2 + tr.slide * 1.8 + tr.lock * 0.9).min(1.6);
+                // ---- WHEELSPIN: a narrow jet of dark dirt + debris (or smoke) shooting backwards
+                if tr.spin > 0.05 {
+                    let back = -tr.fwd * tr.surf_sign;
                     let acc = &mut self.cars[ci].acc[wi][0];
-                    *acc += dust_rate(surface) * intensity * dt * lod;
+                    *acc += if hard { 22.0 } else { 34.0 } * tr.spin * dt * lod;
                     let n = acc.floor() as usize;
                     *acc -= n as f32;
-                    let dcol = dust_color(surface);
-                    let big = if surface == Surface::Sand { 1.15 } else { 1.0 };
-                    // powder is bright: keep it airy so cars stay readable
-                    let airy = if surface == Surface::Snow || surface == Surface::Sand { 0.6 } else { 1.0 };
-                    for _ in 0..n.min(10) {
-                        let u = self.rng.f();
-                        let jitter = Vec3::new(self.rng.r(-0.2, 0.2), self.rng.r(0.1, 0.35), self.rng.r(-0.2, 0.2));
-                        let kick = roost_dir * (lose * self.rng.r(2.0, 6.5)) + Vec3::Y * (self.rng.r(0.5, 1.6) + lose * self.rng.r(0.5, 2.5));
-                        let v = car.vel * 0.28 + kick + self.rng.hdir() * self.rng.r(0.2, 1.0);
-                        let shade_k = self.rng.r(0.92, 1.06);
-                        let alpha = (0.5 + lose * 0.2 + roll * 0.1) * airy * if surface == Surface::Grass { 0.45 } else { 1.0 };
-                        let s1 = self.rng.r(1.0, 1.7) * big * (1.0 + lose * 0.7);
-                        let p = Particle {
-                            pos: prev.lerp(cp, 1.0 - u) + jitter + v * (u * dt),
-                            vel: v,
-                            age: u * dt,
-                            life: self.rng.r(1.1, 1.9) * (1.0 + lose * 0.5),
-                            size0: self.rng.r(0.25, 0.4),
-                            size1: s1,
-                            color: [dcol[0] * shade_k, dcol[1] * shade_k, dcol[2] * shade_k],
-                            alpha,
-                            shape: Shape::Puff,
-                            ground: super::particle::Ground::Hover,
-                            rot: self.rng.r(0.0, 6.28),
-                            spin: self.rng.r(-0.6, 0.6),
-                            drag: 2.4,
-                            grav: -0.04,
-                            wind_k: 1.0,
-                            seed: self.rng.f(),
-                            ..Default::default()
-                        };
-                        self.spawn(p, Prio::Spray);
-                    }
-                    // ---- debris: pebbles / snow clumps / grass bits / sand grains (the roost)
-                    let acc = &mut self.cars[ci].acc[wi][1];
-                    let base = match surface {
-                        Surface::Gravel => 6.0 * roll,
-                        Surface::Grass => 5.0 * roll,
-                        Surface::Snow => 2.0 * roll,
-                        _ => 1.0 * roll,
-                    } * if rear { 1.0 } else { 0.5 };
-                    *acc += (base + lose * 34.0 + tr.lock * 6.0) * dt * lod;
-                    let n = acc.floor() as usize;
-                    *acc -= n as f32;
-                    for _ in 0..n.min(10) {
-                        let u = self.rng.f();
-                        let v = car.vel * 0.45 + roost_dir * self.rng.r(3.0, 8.0) * lose.max(0.25) + Vec3::Y * self.rng.r(1.8, 4.5) + self.rng.ball() * 1.2;
-                        let pos = prev.lerp(cp, 1.0 - u) + Vec3::Y * 0.15 + v * (u * dt);
-                        self.spawn_debris(surface, pos, v, Prio::Spray);
-                    }
-                } else if tr.loss > 0.12 {
-                    // ---- tyre smoke on hard ground (asphalt / ice): spin, slide and lock-ups
-                    let k = ((tr.loss - 0.12) / 0.6).clamp(0.0, 1.0);
-                    let acc = &mut self.cars[ci].acc[wi][2];
-                    *acc += 30.0 * k * dt * lod;
-                    let n = acc.floor() as usize;
-                    *acc -= n as f32;
-                    let ice = surface == Surface::Ice;
                     for _ in 0..n.min(8) {
                         let u = self.rng.f();
-                        let v = car.vel * 0.2 + roost_dir * self.rng.r(0.5, 2.5) + Vec3::Y * self.rng.r(0.4, 1.2) + self.rng.hdir() * 0.5;
-                        let g = self.rng.r(0.9, 0.97);
-                        let p = Particle {
-                            pos: prev.lerp(cp, 1.0 - u) + Vec3::Y * 0.25 + v * (u * dt),
-                            vel: v,
-                            age: u * dt,
-                            life: self.rng.r(2.0, 3.2),
-                            size0: self.rng.r(0.35, 0.55),
-                            size1: self.rng.r(2.4, 3.6),
-                            color: if ice { [0.92, 0.96, 1.0] } else { [g, g, g + 0.03] },
-                            alpha: 0.22 + 0.3 * k,
-                            shape: Shape::Puff,
-                            ground: Ground::Hover,
-                            rot: self.rng.r(0.0, 6.28),
-                            spin: self.rng.r(-0.5, 0.5),
-                            drag: 1.6,
-                            grav: -0.06,
-                            wind_k: 1.0,
-                            seed: self.rng.f(),
-                            ..Default::default()
-                        };
-                        self.spawn(p, Prio::Spray);
-                        if ice && self.rng.f() < 0.5 {
-                            let tp = cp + self.rng.ball() * 0.5 + Vec3::Y * 0.2;
-                            self.spawn_twinkle(tp, [0.9, 0.97, 1.0], v * 0.5, Prio::Spray);
+                        let v = car.vel * 0.5 + back * (self.rng.r(5.0, 10.0) * (0.5 + 0.5 * tr.spin)) + Vec3::Y * self.rng.r(0.8, 2.2) + self.rng.ball() * 0.6;
+                        let pos = prev.lerp(cp, 1.0 - u) + Vec3::Y * 0.2 + v * (u * dt);
+                        if hard {
+                            self.puff(pos, v, smoke_col, 0.4, (2.2, 3.0), 0.3 + 0.35 * tr.spin, (1.8, 2.8), 2.2, -0.05, u * dt, Prio::Spray);
+                        } else {
+                            let szr = (0.9, 1.4);
+                            self.puff(pos, v, dirt, 0.25, szr, 0.85, (0.8, 1.3), 3.0, 0.15, u * dt, Prio::Spray);
+                        }
+                    }
+                    if !hard {
+                        let acc = &mut self.cars[ci].acc[wi][1];
+                        *acc += 75.0 * tr.spin * dt * lod;
+                        let n = acc.floor() as usize;
+                        *acc -= n as f32;
+                        for _ in 0..n.min(12) {
+                            let u = self.rng.f();
+                            let v = car.vel * 0.5 + back * self.rng.r(6.0, 13.0) + Vec3::Y * self.rng.r(1.5, 4.0) + self.rng.ball() * 0.9;
+                            self.spawn_debris(surface, prev.lerp(cp, 1.0 - u) + Vec3::Y * 0.15 + v * (u * dt), v, Prio::Spray);
                         }
                     }
                 }
+                // ---- SLIDE: a sideways fan of spray (or smoke) from the sliding tyres
+                if tr.slide > 0.05 {
+                    let acc = &mut self.cars[ci].acc[wi][2];
+                    *acc += if hard { 22.0 } else { 28.0 } * tr.slide * dt * lod;
+                    let n = acc.floor() as usize;
+                    *acc -= n as f32;
+                    for _ in 0..n.min(8) {
+                        let u = self.rng.f();
+                        let v = car.vel * 0.45 + tr.lat_dir * (self.rng.r(3.0, 7.0) * (0.5 + 0.5 * tr.slide)) + tr.fwd * self.rng.r(-2.5, 2.5) + Vec3::Y * self.rng.r(0.8, 2.2);
+                        let pos = prev.lerp(cp, 1.0 - u) + Vec3::Y * 0.25 + v * (u * dt);
+                        if hard {
+                            self.puff(pos, v, smoke_col, 0.4, (2.4, 3.4), 0.25 + 0.3 * tr.slide, (2.0, 3.0), 1.8, -0.05, u * dt, Prio::Spray);
+                        } else {
+                            let szr = (1.4, 2.2);
+                            self.puff(pos, v, dcol, 0.35, szr, 0.62, (1.3, 2.0), 2.2, -0.02, u * dt, Prio::Spray);
+                        }
+                    }
+                    if !hard {
+                        let acc = &mut self.cars[ci].acc[wi][3];
+                        *acc += 45.0 * tr.slide * dt * lod;
+                        let n = acc.floor() as usize;
+                        *acc -= n as f32;
+                        for _ in 0..n.min(10) {
+                            let u = self.rng.f();
+                            let v = car.vel * 0.45 + tr.lat_dir * self.rng.r(4.0, 9.0) + tr.fwd * self.rng.r(-3.0, 3.0) + Vec3::Y * self.rng.r(1.5, 3.5) + self.rng.ball() * 0.6;
+                            self.spawn_debris(surface, prev.lerp(cp, 1.0 - u) + Vec3::Y * 0.15 + v * (u * dt), v, Prio::Spray);
+                        }
+                    }
+                }
+                // ---- LOCK-UP: bursts of smoke/dust boiling up around the locked tyre
+                if tr.lock > 0.05 {
+                    let acc = &mut self.cars[ci].acc[wi][4];
+                    *acc += 26.0 * tr.lock * dt * lod;
+                    let n = acc.floor() as usize;
+                    *acc -= n as f32;
+                    for _ in 0..n.min(8) {
+                        let u = self.rng.f();
+                        let v = car.vel * 0.7 + self.rng.hdir() * self.rng.r(0.3, 1.4) + Vec3::Y * self.rng.r(0.4, 1.3);
+                        let pos = prev.lerp(cp, 1.0 - u) + Vec3::Y * 0.25 + v * (u * dt);
+                        let c = if hard { smoke_col } else { dcol };
+                        let szr = (1.6, 2.4);
+                        self.puff(pos, v, c, 0.4, szr, 0.5 + 0.2 * tr.lock, (1.4, 2.2), 2.5, -0.04, u * dt, Prio::Spray);
+                    }
+                    if !hard {
+                        let acc = &mut self.cars[ci].acc[wi][5];
+                        *acc += 18.0 * tr.lock * dt * lod;
+                        let n = acc.floor() as usize;
+                        *acc -= n as f32;
+                        for _ in 0..n.min(6) {
+                            let v = car.vel * 0.85 + self.rng.hdir() * self.rng.r(0.5, 2.0) + Vec3::Y * self.rng.r(1.0, 2.5);
+                            self.spawn_debris(surface, cp + Vec3::Y * 0.15, v, Prio::Spray);
+                        }
+                    }
+                }
+                // ---- normal rolling: just a few pebbles / grass bits (the big cloud comes
+                // from the per-car trail emitter below)
+                if props.loose && roll > 0.1 {
+                    let base = match surface {
+                        Surface::Gravel => 6.0,
+                        Surface::Grass => 5.0,
+                        Surface::Snow => 2.0,
+                        _ => 1.5,
+                    } * roll * if rear { 1.0 } else { 0.5 };
+                    let acc = &mut self.cars[ci].acc[wi][6];
+                    *acc += base * dt * lod;
+                    let n = acc.floor() as usize;
+                    *acc -= n as f32;
+                    for _ in 0..n.min(4) {
+                        let v = car.vel * 0.45 - fwd * self.rng.r(0.0, 2.0) + Vec3::Y * self.rng.r(1.5, 3.0) + self.rng.ball() * 1.0;
+                        self.spawn_debris(surface, cp + Vec3::Y * 0.15, v, Prio::Spray);
+                    }
+                }
+                if surface == Surface::Ice && tr.loss > 0.15 && self.rng.f() < tr.loss * 0.5 {
+                    let tp = cp + self.rng.ball() * 0.5 + Vec3::Y * 0.2;
+                    self.spawn_twinkle(tp, [0.9, 0.97, 1.0], car.vel * 0.5, Prio::Spray);
+                }
             }
             self.cars[ci].has_prev = true;
+
+            // ---------------- the rally dust trail: a big soft cloud that billows out behind
+            // the car, rises a little, drifts with the wind and lingers for seconds
+            if let Some(surf) = trail_surf {
+                let k = ((speed - 3.0) / 22.0).clamp(0.0, 1.0);
+                if k > 0.0 {
+                    let acc = &mut self.cars[ci].trail_acc;
+                    *acc += (6.0 + 16.0 * k) * dt * lod;
+                    let n = acc.floor() as usize;
+                    *acc -= n as f32;
+                    let dcol = dust_color(surf);
+                    let (alpha_k, size_k) = match surf {
+                        Surface::Snow => (1.1, 0.95),
+                        Surface::Sand => (1.0, 1.15),
+                        Surface::Grass => (0.35, 0.8),
+                        Surface::Mud => (0.55, 0.85),
+                        _ => (1.0, 1.0),
+                    };
+                    for _ in 0..n.min(6) {
+                        let u = self.rng.f();
+                        let side = self.rng.r(-1.0, 1.0);
+                        let base = ipos - fwd * (he.z + 0.6) + right * (side * he.x * 1.1) - car.vel * (u * dt);
+                        let gh = track.visual_height(base.x, base.z);
+                        // billow outwards and upwards so the cloud swells beyond the car's silhouette
+                        let v = car.vel * 0.18 + right * (side.signum() * self.rng.r(0.8, 2.6)) + self.rng.hdir() * 0.4 + Vec3::Y * self.rng.r(0.4, 1.1);
+                        let sk = self.rng.r(0.93, 1.05);
+                        let p = Particle {
+                            pos: Vec3::new(base.x, gh + 0.5, base.z) + v * (u * dt),
+                            vel: v,
+                            age: u * dt,
+                            life: self.rng.r(3.5, 5.5),
+                            size0: self.rng.r(0.7, 1.0),
+                            size1: self.rng.r(3.4, 5.2) * (0.65 + 0.35 * k) * size_k,
+                            color: [dcol[0] * sk, dcol[1] * sk, dcol[2] * sk],
+                            alpha: (0.26 + 0.16 * k) * alpha_k,
+                            shape: Shape::Puff,
+                            ground: Ground::Hover,
+                            rot: self.rng.r(0.0, 6.28),
+                            spin: self.rng.r(-0.25, 0.25),
+                            drag: 1.3,
+                            grav: -0.02,
+                            wind_k: 1.0,
+                            // thin right behind the car, billowing up further back
+                            fade_in: 0.45,
+                            seed: self.rng.f(),
+                            ..Default::default()
+                        };
+                        self.spawn(p, Prio::Spray);
+                    }
+                }
+            }
 
             // ---------------- water: entry splash + wake
             let in_water = car.telemetry.in_water;
@@ -361,6 +418,34 @@ impl Fx {
         }
     }
 
+    /// Generic soft cloud puff
+    #[allow(clippy::too_many_arguments)]
+    fn puff(&mut self, pos: Vec3, vel: Vec3, color: [f32; 3], size0: f32, size1: (f32, f32), alpha: f32, life: (f32, f32), drag: f32, grav: f32, age: f32, prio: Prio) {
+        let sk = self.rng.r(0.94, 1.04);
+        let size1 = self.rng.r(size1.0, size1.1);
+        let life = self.rng.r(life.0, life.1);
+        let p = Particle {
+            pos,
+            vel,
+            age,
+            life,
+            size0,
+            size1,
+            color: [color[0] * sk, color[1] * sk, color[2] * sk],
+            alpha,
+            shape: Shape::Puff,
+            ground: Ground::Hover,
+            rot: self.rng.r(0.0, 6.28),
+            spin: self.rng.r(-0.6, 0.6),
+            drag,
+            grav,
+            wind_k: 1.0,
+            seed: self.rng.f(),
+            ..Default::default()
+        };
+        self.spawn(p, prio);
+    }
+
     fn spawn_exhaust(&mut self, pos: Vec3, vel: Vec3, scale: f32) {
         let g = self.rng.r(0.88, 0.96);
         let p = Particle {
@@ -383,8 +468,9 @@ impl Fx {
         self.spawn(p, Prio::Spray);
     }
 
-    fn feed_mark(&mut self, ci: usize, wi: usize, track: &rally_core::track::Track, cp: Vec3, side: Vec3, width: f32, strength: f32, surface: Surface) {
+    fn feed_mark(&mut self, ci: usize, wi: usize, track: &rally_core::track::Track, cp: Vec3, side: Vec3, width: f32, strength: f32, surface: Surface, dark: f32) {
         let (color, _) = mark_style(surface);
+        let color = shade(color, 1.0 - 0.4 * dark);
         let flat_side = Vec3::new(side.x, 0.0, side.z).normalize_or(Vec3::X);
         let seg_len = if strength > 0.2 { 0.55 } else { 1.1 };
         let ch = &mut self.cars[ci].chains[wi];
@@ -504,7 +590,10 @@ impl Fx {
             match *e {
                 WorldEvent::Landing { car, strength } => self.landing(world, car, strength),
                 WorldEvent::Collision { car, other, pos, strength } => self.collision(world, car, other, pos, strength),
-                WorldEvent::Race(RaceEvent::Go) => self.go_confetti(),
+                WorldEvent::Race(RaceEvent::Go) => {
+                    self.go_time = Some(self.time);
+                    self.go_confetti();
+                }
                 WorldEvent::Race(RaceEvent::Finish { car, .. }) => {
                     if matches!(world.controllers.get(car), Some(Controller::Local(_))) {
                         self.finish_confetti();

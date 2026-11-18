@@ -277,7 +277,7 @@ fn step_gull(p: &mut Particle, dt: f32, cx: &SimCtx) {
     p.yaw += p.spin * dt;
     let speed = 6.5;
     let g = cx.track.visual_height(p.pos.x, p.pos.z);
-    let want_h = (p.home.y).max(g + 9.0) + (p.age * 0.4 + s).sin() * 1.5;
+    let want_h = (p.home.y).max(g + 5.0) + (p.age * 0.4 + s).sin() * 1.2;
     p.vel = Vec3::new(p.yaw.cos() * speed, (want_h - p.pos.y) * 0.6, p.yaw.sin() * speed);
     p.pos += (p.vel + cx.wind * 0.4) * dt;
     // flap in bursts, glide in between
