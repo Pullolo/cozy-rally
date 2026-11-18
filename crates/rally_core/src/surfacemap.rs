@@ -364,7 +364,14 @@ pub fn plan(biome: Biome, mode: SurfaceMode, difficulty: u8, features: &[Feature
         let near_start = sc.min(len - sc) < 60.0 + half_len;
         let near_jump = jump_s.iter().any(|&j| arc_dist(j, sc, len) < half_len + 45.0);
         let near_patch = patches.iter().any(|p| arc_dist(p.s, sc, len) < p.half_len + half_len + 30.0);
-        if near_start || near_jump || near_patch || in_transition(sc, half_len + 12.0) {
+        // below Expert, keep slippery patches out of braking zones
+        let to_corner = features
+            .iter()
+            .filter(|f| matches!(f.kind, FeatureKind::Hairpin | FeatureKind::Square | FeatureKind::Medium | FeatureKind::Tightening | FeatureKind::SBend | FeatureKind::Chicane))
+            .map(|f| (f.s0 - (sc + half_len)).rem_euclid(len))
+            .fold(f32::MAX, f32::min);
+        let braking = to_corner < [70.0, 55.0, 0.0][d];
+        if near_start || near_jump || near_patch || braking || in_transition(sc, half_len + 12.0) {
             continue;
         }
         let i = ((sc / spacing) as usize).min(n - 1);
