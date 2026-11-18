@@ -97,6 +97,13 @@ impl RacingLine {
                 jump_zone[i] = true;
                 limit[i] = limit[i].min(1.2);
             }
+            // taper back to the full width so the line has no kink at the zone edges
+            for t in 1..=20isize {
+                let extra = t as f32 * 0.25;
+                for i in [wrap(j as isize - 14 - t, n), wrap(j as isize + JUMP_AIR_SAMPLES as isize + t, n)] {
+                    limit[i] = limit[i].min(1.2 + extra);
+                }
+            }
         }
         // start grid / line: stay a little tamer so the launch isn't chaotic
         let mut offset = vec![0.0f32; n];

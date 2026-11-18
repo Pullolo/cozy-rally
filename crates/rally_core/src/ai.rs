@@ -444,14 +444,20 @@ impl AiDriver {
             steer = if x >= 0.0 { 1.0 } else { -1.0 };
         } else {
             let kappa = 2.0 * x / (x * x + z * z);
-            let delta = (kappa * wheelbase).atan();
-            steer = delta / (car.spec.max_steer * sf);
+            let mut delta = (kappa * wheelbase).atan();
             // yaw-rate feedback: steer more if the car isn't rotating as asked (understeer)
             let yaw_right = -car.ang_vel.dot(car.up());
             let want_yaw = speed * kappa;
-            steer += (want_yaw - yaw_right) * 0.12 / (car.spec.max_steer * sf);
+            delta += (want_yaw - yaw_right) * 0.12;
+            // invert the car's steering system (assists / slip-angle limiter included)
+            steer = car.steer_input_for_angle(delta);
+        }
+        if car.telemetry.wheels_on_ground == 0 && car.telemetry.airtime > 0.05 {
+            // keep the wheels straight in the air: land pointing where we're going
+            steer = 0.0;
         }
         steer = steer.clamp(-1.0, 1.0);
+        let _ = sf;
 
         // ---------------- speed
         let mut v_target = free_speed;

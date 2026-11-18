@@ -353,6 +353,8 @@ pub struct Car {
     pub power_scale: f32,
     /// Seconds since the handbrake was last pulled (stability control stays out of drifts)
     pub handbrake_age: f32,
+    /// Post-landing stability window (s left)
+    pub landing_timer: f32,
 }
 
 fn torque_curve(spec: &CarSpec, rpm: f32) -> f32 {
@@ -406,6 +408,7 @@ impl Car {
             input: CarInput::default(),
             power_scale: 1.0,
             handbrake_age: 10.0,
+            landing_timer: 0.0,
             spec,
         }
     }
@@ -507,16 +510,10 @@ impl Car {
             brake = 1.0;
         }
 
-        // ---------------- steering with assists
-        let speed_factor = 1.0 / (1.0 + (speed / 22.0).powi(2) * 0.9);
-        let mut target = input.steer.clamp(-1.0, 1.0) * spec.max_steer * speed_factor.max(0.22);
-        if speed > 3.0 && v_long_body > 0.0 {
-            let beta = v_lat_body.atan2(v_long_body.abs());
-            // counter-steer toward the direction of travel
-            target += beta * (spec.assist * self.assist_level).min(1.0) * 0.85;
-        }
-        target = target.clamp(-spec.max_steer, spec.max_steer);
-        let rate = 3.2 * dt;
+        // ---------------- steering with assists (see steer_target)
+        let steer_in = input.steer.clamp(-1.0, 1.0);
+        let target = self.steer_target(steer_in);
+        let rate = 4.0 * dt;
         self.steer += (target - self.steer).clamp(-rate, rate);
 
         // ---------------- engine + clutch
@@ -884,14 +881,42 @@ impl Car {
             }
         }
 
-        // air control
+        // air control: level the car, a little player yaw (rate-limited, not accumulating),
+        // and with assists gently align the nose with the direction of travel so landings
+        // are straight
+        let assist_a = (spec.assist * self.assist_level).min(1.0);
         if on_ground == 0 {
             let (_, n) = track.terrain.sample(self.pos.x, self.pos.z);
             let level = up.cross(Vec3::Y.lerp(n, 0.5).normalize());
             let k = spec.mass * 6.0;
             torque += level * k * 2.0;
             torque -= (self.ang_vel - up * self.ang_vel.dot(up)) * k * 0.6;
-            torque += up * (-input.steer) * spec.mass * 1.2;
+            let yaw_rate = self.ang_vel.dot(up);
+            let mut want = -steer_in * 0.6;
+            let vh = Vec3::new(self.vel.x, 0.0, self.vel.z);
+            let fh = Vec3::new(fwd.x, 0.0, fwd.z);
+            if vh.length() > 5.0 && fh.length() > 0.3 {
+                // signed angle of travel relative to the nose (+ = velocity to the right)
+                let psi = fh.normalize().cross(vh.normalize()).y.asin() * -1.0;
+                want += -psi * 2.0 * assist_a;
+            }
+            torque += up * (want - yaw_rate) * spec.mass * 2.5;
+            self.landing_timer = 0.0;
+        } else if self.telemetry.airtime > 0.08 {
+            // just landed after a real jump: short stability window
+            self.landing_timer = 0.5;
+        }
+        if on_ground >= 2 && self.landing_timer > 0.0 {
+            // yaw tracks what the steering asks for (kinematic, grip-limited) for a moment,
+            // so a slightly crossed-up or one-wheel-first landing doesn't snap into a spin
+            let wb = spec.cg_to_front + spec.cg_to_rear;
+            let v = v_long_body.max(0.0);
+            let max_r = 9.0 / v.max(3.0);
+            let want = (-v * self.steer.tan() / wb).clamp(-max_r, max_r);
+            let yaw_rate = self.ang_vel.dot(up);
+            let f = (self.landing_timer / 0.5) * assist_a;
+            torque += up * (want - yaw_rate) * spec.mass * 12.0 * f;
+            self.landing_timer = (self.landing_timer - dt).max(0.0);
         }
 
         // body vs ground collision (keeps flipped cars from sinking)
@@ -985,6 +1010,67 @@ impl Car {
         t.in_water = in_water;
     }
 
+    /// Road-wheel angle the steering system aims for with `steer_in` (-1..1), including the
+    /// assists: counter-steer and the slip-angle limiter (full input = front tyres at about
+    /// their peak slip angle). Monotonic in `steer_in` (the AI inverts it).
+    pub fn steer_target(&self, steer_in: f32) -> f32 {
+        let spec = &self.spec;
+        let steer_in = steer_in.clamp(-1.0, 1.0);
+        let fwd = self.forward();
+        let right = self.right();
+        let speed = self.vel.length();
+        let v_long_body = self.vel.dot(fwd);
+        let v_lat_body = self.vel.dot(right);
+        let speed_factor = 1.0 / (1.0 + (speed / 22.0).powi(2) * 0.9);
+        let mut neutral = 0.0;
+        if speed > 3.0 && v_long_body > 0.0 {
+            let beta = v_lat_body.atan2(v_long_body.abs());
+            // counter-steer toward the direction of travel
+            neutral = beta * (spec.assist * self.assist_level).min(1.0) * 0.85;
+        }
+        // Sim: raw angle with speed sensitivity only
+        let mut target = (steer_in * spec.max_steer * speed_factor.max(0.22) + neutral).clamp(-spec.max_steer, spec.max_steer);
+        // Slip-angle steering limiter (Forza-style): full input puts the front tyres at about
+        // their peak slip angle relative to the front axle's actual direction of travel, so
+        // the fronts never plough past the peak (no straight-on understeer / screech on a
+        // keyboard). Partial input = proportional share of the available angle.
+        if let Some(k) = steer_limit_factor(self.assist_level) {
+            if v_long_body > 1.0 {
+                let v_f = self.vel + self.ang_vel.cross(fwd * spec.cg_to_front);
+                let theta = v_f.dot(right).atan2(v_f.dot(fwd).max(0.5));
+                let half = k * spec.peak_slip_angle;
+                let (lo, hi) = (theta - half, theta + half);
+                let n0 = neutral.clamp(lo, hi);
+                let limited = if steer_in >= 0.0 { n0 + (hi - n0) * steer_in } else { n0 + (n0 - lo) * steer_in };
+                // full lock stays available when parking / turning around
+                let w = ((speed - 3.0) / 5.0).clamp(0.0, 1.0);
+                let low = (steer_in * spec.max_steer + neutral).clamp(-spec.max_steer, spec.max_steer);
+                target = (low + (limited - low) * w).clamp(-spec.max_steer, spec.max_steer);
+            }
+        }
+        target
+    }
+
+    /// Steering input (-1..1) that makes `steer_target` closest to `angle` (rad)
+    pub fn steer_input_for_angle(&self, angle: f32) -> f32 {
+        let (mut lo, mut hi) = (-1.0f32, 1.0f32);
+        if self.steer_target(hi) <= angle {
+            return 1.0;
+        }
+        if self.steer_target(lo) >= angle {
+            return -1.0;
+        }
+        for _ in 0..14 {
+            let mid = 0.5 * (lo + hi);
+            if self.steer_target(mid) < angle {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        0.5 * (lo + hi)
+    }
+
     /// Two collision spheres (centre, radius) in world space along the body length
     pub fn collision_spheres(&self) -> [(Vec3, f32); 2] {
         let he = self.spec.half_extents;
@@ -1015,6 +1101,18 @@ pub fn drive_shares(spec: &CarSpec) -> [f32; 4] {
             let r = (1.0 - spec.awd_front_split) * 0.5;
             [f, f, r, r]
         }
+    }
+}
+
+/// Steering limiter: fraction of the tyre's peak slip angle that full steering input uses,
+/// or None (Sim: raw steering angle). Cozy 0.85, Normal 0.9, Sport ~1.1.
+pub fn steer_limit_factor(assist_level: f32) -> Option<f32> {
+    if assist_level <= 0.2 {
+        None
+    } else if assist_level <= 1.0 {
+        Some(1.25 - 0.35 * (assist_level - 0.2) / 0.8)
+    } else {
+        Some((0.9 - (assist_level - 1.0) * 0.17).max(0.8))
     }
 }
 
