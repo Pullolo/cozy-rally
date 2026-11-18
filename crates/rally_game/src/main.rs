@@ -406,24 +406,60 @@ impl App {
         self.preview_models.len() - 1
     }
 
-    fn draw_car_preview(&mut self, car: usize, paint: usize, x: f32, y: f32, w: f32, h: f32, zoom: f32) {
+    /// Turntable preview: car framed ~60% of the panel width, 3/4 elevated view,
+    /// on a soft pastel plinth with a blurred contact shadow.
+    fn draw_car_preview(&mut self, car: usize, paint: usize, x: f32, y: f32, w: f32, h: f32) {
+        use render::mesh::{rgba, Vertex};
         let idx = self.preview_model(car, paint);
         let spec = car_specs()[car].clone();
         let dpi = screen_dpi_scale();
         self.gpu.begin_3d((x * dpi) as i32, (y * dpi) as i32, (w * dpi) as i32, (h * dpi) as i32, true);
-        let eye = vec3(5.4, 2.3, 6.2) / zoom;
-        let view = Mat4::look_at_rh(eye, vec3(0.0, -0.25, 0.0), Vec3::Y);
-        let proj = Mat4::perspective_rh_gl(40f32.to_radians(), w / h, 0.1, 100.0);
+        let aspect = w / h.max(1.0);
+        let fov = 34f32.to_radians();
+        let he = spec.half_extents;
+        // apparent width of the car seen from 3/4 is about its footprint diagonal
+        let span = 2.0 * (he.x * he.x + he.z * he.z).sqrt();
+        // projected width at this 3/4 angle is ~75% of the footprint diagonal
+        let apparent = span * 0.75;
+        let tan = (fov * 0.5).tan();
+        let dist_w = apparent / 0.60 * 0.5 / (tan * aspect);
+        let dist_h = (he.y * 2.0 + 1.0) / 0.55 * 0.5 / tan;
+        let dist = dist_w.max(dist_h);
+        let ground = -0.62;
+        let target = vec3(0.0, ground + he.y * 0.9, 0.0);
+        let eye = target + vec3(0.62, 0.42, 0.66).normalize() * dist;
+        let view = Mat4::look_at_rh(eye, target, Vec3::Y);
+        let proj = Mat4::perspective_rh_gl(fov, aspect, 0.1, 100.0);
         let v = View::new(view, proj, eye);
-        let env = Environment { sun_dir: vec3(-0.4, 0.8, 0.5).normalize(), sun_color: [1.05, 0.98, 0.9], ambient: [0.5, 0.52, 0.58], fog_color: [1.0, 1.0, 1.0], fog_density: 0.0, time: 0.0 };
+        let env = Environment { sun_dir: vec3(-0.4, 0.8, 0.5).normalize(), sun_color: [1.0, 0.95, 0.88], ambient: [0.48, 0.5, 0.56], fog_color: [1.0, 1.0, 1.0], fog_density: 0.0, time: 0.0 };
         let rot = Mat4::from_rotation_y(self.preview_angle);
         let ride = -spec.mount_height + spec.susp_rest * 0.8 + spec.wheel_radius - 0.6;
         let m = rot * Mat4::from_translation(vec3(0.0, ride, 0.0));
-        let (body, wheel, _, _) = &self.preview_models[idx];
-        // ground disc
+        // plinth: soft peach-cream top with a slightly deeper rim (unlit so it never blows out)
+        let r = span * 0.52;
+        let unlit = DrawParams { unlit: 1.0, ..Default::default() };
         let mut disc = render::mesh::MeshBuilder::new();
-        disc.cylinder(Mat4::from_translation(vec3(0.0, -0.62, 0.0)), 3.2, 0.03, 32, render::mesh::rgb([0.98, 0.9, 0.78]), render::mesh::rgb([0.98, 0.9, 0.78]));
-        self.gpu.draw_builder(&disc, &v, &env, Mat4::IDENTITY, &DrawParams::default(), 0);
+        let rim = render::mesh::rgb([0.88, 0.79, 0.72]);
+        let top = render::mesh::rgb([0.95, 0.88, 0.80]);
+        disc.cylinder(Mat4::from_translation(vec3(0.0, ground - 0.12, 0.0)), r * 1.04, 0.12, 48, rim, rim);
+        disc.cylinder(Mat4::from_translation(vec3(0.0, ground - 0.02, 0.0)), r, 0.03, 48, top, top);
+        self.gpu.draw_builder(&disc, &v, &env, Mat4::IDENTITY, &unlit, 0);
+        // blurred contact shadow (rotates with the car)
+        let mut verts: Vec<Vertex> = Vec::new();
+        let mut ids: Vec<u16> = Vec::new();
+        let ring = 24u16;
+        let sy = ground + 0.02;
+        verts.push(Vertex { pos: [0.0, sy, 0.0], normal: [0.0, 1.0, 0.0], color: rgba([0.25, 0.15, 0.2], 0.38) });
+        for k in 0..ring {
+            let a = k as f32 / ring as f32 * std::f32::consts::TAU;
+            let p = rot.transform_point3(vec3(a.cos() * (he.x + 0.35), 0.0, a.sin() * (he.z + 0.3)));
+            verts.push(Vertex { pos: [p.x, sy, p.z], normal: [0.0, 1.0, 0.0], color: rgba([0.25, 0.15, 0.2], 0.0) });
+        }
+        for k in 0..ring {
+            ids.extend_from_slice(&[0, 1 + k, 1 + (k + 1) % ring]);
+        }
+        self.gpu.draw_dynamic(&verts, &ids, &v, &env, Mat4::IDENTITY, &unlit, 1);
+        let (body, wheel, _, _) = &self.preview_models[idx];
         self.gpu.draw(body, &v, &env, m, &DrawParams { rim: 0.5, ..Default::default() }, false);
         let mounts = [
             vec3(-spec.half_track, spec.mount_height, -spec.cg_to_front),
@@ -555,7 +591,7 @@ impl App {
         rounded_rect(x + 24.0 * s, ty, w - 48.0 * s, 44.0 * s, 14.0 * s, with_alpha(BUTTER, 0.55));
         text_mid(&format!("Tip: {}", TIPS[(get_time() / 5.0) as usize % TIPS.len()]), x + w * 0.5, ty + 22.0 * s, 20.0 * s, INK);
         self.focus.begin(1);
-        let back = button(&mut self.focus, "Back", x + w * 0.5 - 110.0 * s, y + h - 70.0 * s, 220.0 * s, 50.0 * s, PEACH);
+        let back = button_back(&mut self.focus, "Back", x + w * 0.5 - 110.0 * s, y + h - 70.0 * s, 220.0 * s, 50.0 * s, PEACH);
         if back || self.focus.back {
             if self.focus.back {
                 audio::ui_sound(audio::UiSound::Back);
@@ -672,7 +708,7 @@ impl App {
         self.focus.label_w = None;
         // --- buttons
         let btn_y = y + h - button_h - 22.0 * s;
-        let back = button(&mut self.focus, "Back", ax, btn_y, cw, button_h, CREAM);
+        let back = button_back(&mut self.focus, "Back", ax, btn_y, cw, button_h, CREAM);
         let go = button(&mut self.focus, "Start!", bx, btn_y, cw, button_h, PEACH);
         if back || self.focus.back {
             if self.focus.back {
@@ -724,27 +760,33 @@ impl App {
                 ("Drift", 1.0 - spec.rear_grip_bias.clamp(0.0, 1.0) * 0.5 + if spec.drivetrain == rally_core::vehicle::Drivetrain::Rwd { 0.3 } else { 0.0 }, LAVENDER),
             ];
             let stat_top = dy + 22.0 * s;
-            let colw = (pw - 44.0 * s - 16.0 * s) * 0.5;
+            // solo: 2x2 stat grid above a big turntable; split: stacked stats left, car right
+            let colw = if compact { pw * 0.42 } else { (pw - 44.0 * s - 16.0 * s) * 0.5 };
             for (i, (name, v, col)) in stats.iter().enumerate() {
-                let sx = px + 22.0 * s + (i % 2) as f32 * (colw + 16.0 * s);
-                let sy = stat_top + (i / 2) as f32 * 40.0 * s;
+                let (cx_i, cy_i) = if compact { (0, i) } else { (i % 2, i / 2) };
+                let sx = px + 22.0 * s + cx_i as f32 * (colw + 16.0 * s);
+                let sy = stat_top + cy_i as f32 * if compact { 34.0 } else { 40.0 } * s;
                 text(name, sx, sy + 14.0 * s, 15.0 * s, INK_SOFT);
-                let bw = colw;
                 let byy = sy + 21.0 * s;
-                rounded_rect(sx, byy, bw, 11.0 * s, 5.5 * s, with_alpha(INK, 0.08));
+                rounded_rect(sx, byy, colw, 11.0 * s, 5.5 * s, with_alpha(INK, 0.08));
                 let f = v.clamp(0.08, 1.0);
-                rounded_rect_gradient(sx, byy, bw * f, 11.0 * s, 5.5 * s, lighten(*col, 0.3), *col);
+                rounded_rect_gradient(sx, byy, colw * f, 11.0 * s, 5.5 * s, lighten(*col, 0.3), *col);
             }
-            let top = stat_top + 84.0 * s;
-            let bottom_text = if compact { 30.0 } else { 52.0 } * s;
-            let hh = (py + ph - bottom_text - top).max(60.0);
             let car = self.setup.cars[p];
             let paint = self.setup.paints[p];
-            self.draw_car_preview(car, paint, px + 8.0 * s, top, pw - 16.0 * s, hh, if compact { 1.4 } else { 1.0 });
+            if compact {
+                let vx = px + 22.0 * s + colw + 10.0 * s;
+                let vy = py + 50.0 * s;
+                self.draw_car_preview(car, paint, vx, vy, px + pw - 8.0 * s - vx, py + ph - 10.0 * s - vy);
+            } else {
+                let top = stat_top + 84.0 * s;
+                let hh = (py + ph - 52.0 * s - top).max(60.0);
+                self.draw_car_preview(car, paint, px + 8.0 * s, top, pw - 16.0 * s, hh);
+            }
             if !compact {
                 let bl = spec.blurb;
                 let fs = (17.0 * s).min((pw - 40.0 * s) / text_size(bl, 17.0 * s).x * 17.0 * s);
-                text_mid(bl, px + pw * 0.5, py + ph - bottom_text * 0.55, fs, INK_SOFT);
+                text_mid(bl, px + pw * 0.5, py + ph - 52.0 * s * 0.55, fs, INK_SOFT);
             }
         }
     }
@@ -817,7 +859,7 @@ impl App {
         header("Help", rx, ry);
         ry += 14.0 * s;
         let controls = button(&mut self.focus, "Controls", rx, ry, cw, rh, LAVENDER);
-        let back = button(&mut self.focus, "Back", x + w * 0.5 - 120.0 * s, y + h - 72.0 * s, 240.0 * s, 50.0 * s, PEACH);
+        let back = button_back(&mut self.focus, "Back", x + w * 0.5 - 120.0 * s, y + h - 72.0 * s, 240.0 * s, 50.0 * s, PEACH);
         if st != before {
             if st.assists != before.assists {
                 self.setup.assists = st.assists;
@@ -975,10 +1017,10 @@ impl App {
         let bw = w - 60.0 * s;
         let bh = 54.0 * s;
         let bx = x + 30.0 * s;
-        let resume = button(&mut f, "Resume", bx, y + 112.0 * s, bw, bh, MINT);
+        let resume = button_back(&mut f, "Resume", bx, y + 112.0 * s, bw, bh, MINT);
         let restart = button(&mut f, "Restart", bx, y + 180.0 * s, bw, bh, BUTTER);
         let sett = button(&mut f, "Settings", bx, y + 248.0 * s, bw, bh, SKY);
-        let quit = button(&mut f, "Quit to menu", bx, y + 316.0 * s, bw, bh, PEACH);
+        let quit = button_back(&mut f, "Quit to menu", bx, y + 316.0 * s, bw, bh, PEACH);
         self.pause_focus = f;
         if resume {
             if let Some(sess) = self.session.as_mut() {
@@ -1138,7 +1180,7 @@ impl App {
         self.focus.begin(3);
         let again = button(&mut self.focus, "Race again", tx, by, bw, bh, MINT);
         let new_track = button(&mut self.focus, "New track", tx + bw + 16.0 * s, by, bw, bh, BUTTER);
-        let menu = button(&mut self.focus, "Menu", tx + 2.0 * (bw + 16.0 * s), by, bw, bh, PEACH);
+        let menu = button_back(&mut self.focus, "Menu", tx + 2.0 * (bw + 16.0 * s), by, bw, bh, PEACH);
         if again {
             self.start_race();
         }
@@ -1147,6 +1189,9 @@ impl App {
             self.start_race();
         }
         if menu || self.focus.back {
+            if self.focus.back {
+                audio::ui_sound(audio::UiSound::Back);
+            }
             self.goto(Screen::Title);
         }
     }

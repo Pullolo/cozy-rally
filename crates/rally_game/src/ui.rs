@@ -310,6 +310,27 @@ pub fn text_outlined(t: &str, x: f32, y: f32, size: f32, color: Color) {
     text(t, x, y, size, color);
 }
 
+/// Big "sticker" text: drop shadow, chunky ink outline, thin cream rim, solid fill.
+/// Reads over any background (countdown digits, GO!, finish banners). `alpha` fades it all.
+pub fn text_sticker_centered(t: &str, cx: f32, baseline: f32, size: f32, fill: Color, alpha: f32) {
+    if size < 1.0 || alpha <= 0.0 {
+        return;
+    }
+    let d = text_size(t, size);
+    let x = cx - d.x * 0.5;
+    let o = (size * 0.075).max(2.0);
+    text(t, x + o * 0.3, baseline + o * 1.3, size, Color::new(0.2, 0.12, 0.25, 0.45 * alpha));
+    for a in 0..16 {
+        let ang = a as f32 / 16.0 * std::f32::consts::TAU;
+        text(t, x + ang.cos() * o, baseline + ang.sin() * o, size, with_alpha(INK, alpha));
+    }
+    for a in 0..10 {
+        let ang = a as f32 / 10.0 * std::f32::consts::TAU;
+        text(t, x + ang.cos() * o * 0.45, baseline + ang.sin() * o * 0.45, size, with_alpha(CREAM, alpha));
+    }
+    text(t, x, baseline, size, Color::new(fill.r, fill.g, fill.b, alpha));
+}
+
 pub fn text_outlined_centered(t: &str, cx: f32, y: f32, size: f32, color: Color) {
     let d = text_size(t, size);
     text_outlined(t, cx - d.x * 0.5, y, size, color);
@@ -421,6 +442,15 @@ fn pointer_down_in(r: Rect) -> bool {
 
 /// Big chunky button. Returns true when activated.
 pub fn button(focus: &mut Focus, label: &str, x: f32, y: f32, w: f32, h: f32, color: Color) -> bool {
+    button_with_sound(focus, label, x, y, w, h, color, crate::audio::UiSound::Select)
+}
+
+/// Button for "Back" / "Resume" / leaving a screen: plays the Back sound
+pub fn button_back(focus: &mut Focus, label: &str, x: f32, y: f32, w: f32, h: f32, color: Color) -> bool {
+    button_with_sound(focus, label, x, y, w, h, color, crate::audio::UiSound::Back)
+}
+
+fn button_with_sound(focus: &mut Focus, label: &str, x: f32, y: f32, w: f32, h: f32, color: Color, sound: crate::audio::UiSound) -> bool {
     let id = focus.next_id();
     let s = scale();
     let r = Rect::new(x, y, w, h);
@@ -451,7 +481,7 @@ pub fn button(focus: &mut Focus, label: &str, x: f32, y: f32, w: f32, h: f32, co
     text_mid(label, bx + bw * 0.5, y - lift + h * 0.5, fs, INK);
     let activated = clicked || (focused && focus.activated);
     if activated {
-        crate::audio::ui_sound(crate::audio::UiSound::Select);
+        crate::audio::ui_sound(sound);
     }
     activated
 }
@@ -494,12 +524,16 @@ pub fn selector_swatch(focus: &mut Focus, label: &str, value: &str, swatch: Opti
     let focused = focus.index == id;
     let hl = row_background(focus, id, x, y, w, h, color);
     let fs = (h * 0.44).min(27.0 * s);
-    text(label, x + 16.0 * s, mid_baseline(y + h * 0.5, fs), fs, INK);
     let aw = h * 0.72;
     let lx = match focus.label_w {
         Some(lw) => x + 16.0 * s + lw + 6.0 * s,
         None => x + w * 0.42,
     };
+    // shrink the label if it would touch the left arrow (never overlap, any resolution)
+    let room = lx - (x + 16.0 * s) - 8.0 * s;
+    let lw = text_size(label, fs).x;
+    let lfs = if lw > room { fs * (room / lw).max(0.4) } else { fs };
+    text(label, x + 16.0 * s, mid_baseline(y + h * 0.5, lfs), lfs, INK);
     let left = Rect::new(lx, y + (h - aw) * 0.5, aw, aw);
     let right = Rect::new(x + w - aw - 8.0 * s, y + (h - aw) * 0.5, aw, aw);
     let (_, cl) = pointer_pressed_in(left);
