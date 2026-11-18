@@ -56,6 +56,8 @@ void main() {
         if (in_color.a < 254.5) {
             float weight = (255.0 - in_color.a) / 200.0;
             w.xyz += wind_offset(w.xyz, weight, params.z);
+            // foliage: bend normals towards the sky so thin blades/leaves light softly
+            n = normalize(mix(n, vec3(0.0, 1.0, 0.0), 0.35 + 0.45 * weight));
         }
         c.a = 1.0;
     }

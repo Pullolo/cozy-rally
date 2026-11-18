@@ -220,8 +220,54 @@ impl<'a> GroundPainter<'a> {
     }
 }
 
+/// How far to sink each RENDER terrain vertex under the road ribbon (metres, per heightfield
+/// vertex). The terrain mesh's 2.5 m triangles chord the crowned/banked/cresting road profile
+/// differently from the road ribbon's own vertices, so without this the ground pokes through
+/// the road. The physics heightfield is untouched (the ribbon follows it exactly); only the
+/// hidden terrain underneath is pushed down: fully under the road, fading out across the
+/// shoulder so there is no visible step at the shoulder's outer edge.
+pub fn road_sink(track: &Track) -> Vec<f32> {
+    const SINK: f32 = 0.24;
+    let hf = &track.terrain;
+    let n = track.samples.len();
+    let mut dist = vec![f32::MAX; hf.nx * hf.nz];
+    let mut hw_at = vec![0.0f32; hf.nx * hf.nz];
+    for i in 0..n {
+        let a = &track.samples[i];
+        let b = &track.samples[(i + 1) % n];
+        let (a2, b2) = (macroquad::math::Vec2::new(a.pos.x, a.pos.z), macroquad::math::Vec2::new(b.pos.x, b.pos.z));
+        let reach = a.half_width.max(b.half_width) + SHOULDER + hf.cell;
+        let lo = a2.min(b2) - macroquad::math::Vec2::splat(reach);
+        let hi = a2.max(b2) + macroquad::math::Vec2::splat(reach);
+        let ix0 = (((lo.x - hf.origin.x) / hf.cell).floor().max(0.0) as usize).min(hf.nx - 1);
+        let ix1 = (((hi.x - hf.origin.x) / hf.cell).ceil().max(0.0) as usize).min(hf.nx - 1);
+        let iz0 = (((lo.y - hf.origin.y) / hf.cell).floor().max(0.0) as usize).min(hf.nz - 1);
+        let iz1 = (((hi.y - hf.origin.y) / hf.cell).ceil().max(0.0) as usize).min(hf.nz - 1);
+        let ab = b2 - a2;
+        let len2 = ab.length_squared().max(1e-6);
+        for iz in iz0..=iz1 {
+            for ix in ix0..=ix1 {
+                let q = macroquad::math::Vec2::new(hf.origin.x + ix as f32 * hf.cell, hf.origin.y + iz as f32 * hf.cell);
+                let t = ((q - a2).dot(ab) / len2).clamp(0.0, 1.0);
+                let d = (a2 + ab * t).distance(q);
+                let k = iz * hf.nx + ix;
+                if d < dist[k] {
+                    dist[k] = d;
+                    hw_at[k] = a.half_width + (b.half_width - a.half_width) * t;
+                }
+            }
+        }
+    }
+    dist.iter()
+        .zip(hw_at.iter())
+        .map(|(&d, &hw)| if d == f32::MAX { 0.0 } else { SINK * (1.0 - smoothstep(hw + 0.4, hw + SHOULDER, d)) })
+        .collect()
+}
+
 pub fn terrain_mesh(track: &Track, painter: &GroundPainter) -> MeshBuilder {
     let hf = &track.terrain;
+    let sink = road_sink(track);
+    let vpos = |ix: usize, iz: usize| hf.vertex_pos(ix, iz) - Vec3::Y * sink[iz.min(hf.nz - 1) * hf.nx + ix.min(hf.nx - 1)];
     let mut m = MeshBuilder::new();
     let tile = 24usize;
     for tz in (0..hf.nz - 1).step_by(tile) {
@@ -229,10 +275,10 @@ pub fn terrain_mesh(track: &Track, painter: &GroundPainter) -> MeshBuilder {
             m.begin_chunk();
             for iz in tz..(tz + tile).min(hf.nz - 1) {
                 for ix in tx..(tx + tile).min(hf.nx - 1) {
-                    let p00 = hf.vertex_pos(ix, iz);
-                    let p10 = hf.vertex_pos(ix + 1, iz);
-                    let p01 = hf.vertex_pos(ix, iz + 1);
-                    let p11 = hf.vertex_pos(ix + 1, iz + 1);
+                    let p00 = vpos(ix, iz);
+                    let p10 = vpos(ix + 1, iz);
+                    let p01 = vpos(ix, iz + 1);
+                    let p11 = vpos(ix + 1, iz + 1);
                     for (a, b, c) in [(p00, p11, p10), (p00, p01, p11)] {
                         let n = (b - a).cross(c - a).normalize();
                         let cen = (a + b + c) / 3.0;
@@ -1063,6 +1109,28 @@ fn water_mesh(track: &Track, level: f32) -> MeshBuilder {
 }
 
 // ---------------------------------------------------------------------------------- scene
+
+/// Debug/screenshot helper: a low camera on the road (`spec` = "crest", "bank" or a 0..1
+/// fraction of the lap) looking along it, for checking the road/terrain seam.
+pub fn road_viewpoint(track: &Track, spec: &str) -> (Vec3, Vec3) {
+    let n = track.samples.len();
+    let idx = match spec {
+        "crest" => (0..n)
+            .max_by(|&a, &b| {
+                let c = |i: usize| track.samples[(i + n - 6) % n].pos.y + track.samples[(i + 6) % n].pos.y - 2.0 * track.samples[i].pos.y;
+                c(b).partial_cmp(&c(a)).unwrap()
+            })
+            .unwrap_or(0),
+        "bank" => (0..n).max_by(|&a, &b| track.samples[a].bank.abs().partial_cmp(&track.samples[b].bank.abs()).unwrap()).unwrap_or(0),
+        f => ((f.parse::<f32>().unwrap_or(0.3).fract() * n as f32) as usize).min(n - 1),
+    };
+    let i0 = (idx + n - 12) % n;
+    let s0 = &track.samples[i0];
+    let fr = Vec3::new(s0.right.x, 0.0, s0.right.z).normalize();
+    let eye = s0.pos + fr * (s0.half_width * 0.55) + Vec3::Y * 0.45;
+    let t = &track.samples[(idx + 6) % n];
+    (eye, t.pos + Vec3::Y * 0.2)
+}
 
 /// Debug/screenshot helper: a viewpoint on the road looking out over nearby water.
 pub fn water_viewpoint(track: &Track) -> Option<(Vec3, Vec3)> {

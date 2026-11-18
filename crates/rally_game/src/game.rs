@@ -266,6 +266,12 @@ impl RaceSession {
             return View::new(view, proj, eye);
         }
         let cam = &self.players[player].cam;
+        if let Ok(spec) = std::env::var("COZY_ROAD_CAM") {
+            let (eye, target) = crate::render::scene::road_viewpoint(self.track(), &spec);
+            let v = Mat4::look_at_rh(eye, target, Vec3::Y);
+            let p = Mat4::perspective_rh_gl(55f32.to_radians(), vp.w / vp.h.max(1.0), 0.1, 2200.0);
+            return View::new(v, p, eye);
+        }
         if std::env::var("COZY_WATER_CAM").is_ok() {
             if let Some((eye, target)) = crate::render::scene::water_viewpoint(self.track()) {
                 let v = Mat4::look_at_rh(eye, target, Vec3::Y);
