@@ -90,6 +90,7 @@ impl Focus {
         self.activated = is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) || is_key_pressed(KeyCode::KpEnter);
         self.left = is_key_pressed(KeyCode::Left) || is_key_pressed(KeyCode::A);
         self.right = is_key_pressed(KeyCode::Right) || is_key_pressed(KeyCode::D);
+        crate::input::apply_menu_nav(self); // gamepad navigation (input.rs)
     }
 
     fn next_id(&mut self) -> usize {

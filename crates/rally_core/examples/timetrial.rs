@@ -1,5 +1,7 @@
 //! Headless time-trial check: an autopilot drives laps with a ghost recorder; prints lap
-//! times, ghost updates and the live delta. cargo run --release -p rally_core --example timetrial -- [seed] [laps]
+//! times, ghost updates and the live delta.
+//! cargo run --release -p rally_core --example timetrial -- [seed] [laps] [out.bin] [car] [lane]
+//! (writes the best lap as a ghost file usable by the game: ghost_s{seed}_b0_l1.bin)
 use rally_core::ai::AiDriver;
 use rally_core::ghost::{GhostLap, TimeTrial};
 use rally_core::track::{Track, TrackParams};
@@ -9,10 +11,10 @@ fn main() {
     let seed: u64 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(5);
     let laps: u32 = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(4);
     let track = Arc::new(Track::generate(&TrackParams { seed, biome: None, length_class: 1 }));
-    let mut world = World::new(track.clone(), &[RacerSetup { car_spec: 2, controller: Controller::Local(0) }], laps);
+    let mut world = World::new(track.clone(), &[RacerSetup { car_spec: std::env::args().nth(4).and_then(|s| s.parse().ok()).unwrap_or(2), controller: Controller::Local(0) }], laps);
     let mut tt = TimeTrial::new(&[0], None);
     // vary the driver a little per lap so laps differ
-    let mut ai = AiDriver::new(0.8, 0.0);
+    let mut ai = AiDriver::new(0.8, std::env::args().nth(5).and_then(|s| s.parse().ok()).unwrap_or(0.0));
     let mut frame = 0u32;
     let mut lap_seen = 0;
     let mut deltas = Vec::new();
@@ -48,5 +50,9 @@ fn main() {
     let g = tt.best.unwrap();
     let bytes = g.to_bytes();
     let back = GhostLap::from_bytes(&bytes).unwrap();
+    if let Some(out) = std::env::args().nth(3) {
+        std::fs::write(&out, &bytes).expect("write ghost");
+        println!("wrote {out}");
+    }
     println!("ghost blob {} bytes, roundtrip ok {}", bytes.len(), back.time == g.time && back.frames.len() == g.frames.len() && back.frames.iter().zip(&g.frames).all(|(a, b)| a.pos == b.pos && a.t == b.t && a.rot.dot(b.rot) > 0.9999));
 }

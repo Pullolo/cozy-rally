@@ -4,6 +4,7 @@ mod audio;
 mod camera;
 mod fx;
 mod game;
+mod gameplay;
 mod hud;
 mod input;
 mod models;
@@ -53,6 +54,8 @@ struct Setup {
     opponents: usize,
     difficulty: usize,
     assists: usize,
+    /// [gameplay] index into gameplay::GameMode::ALL
+    mode: usize,
 }
 
 const DIFFICULTY: [(&str, f32); 3] = [("Chill", 0.35), ("Normal", 0.7), ("Spicy", 1.0)];
@@ -69,10 +72,15 @@ impl Setup {
             track: TrackParams { seed: self.seed, biome: if self.biome == 0 { None } else { Some(ALL_BIOMES[self.biome - 1]) }, length_class: self.length },
             laps: self.laps,
             players,
-            ai_count: self.opponents,
+            ai_count: if self.mode() == gameplay::GameMode::TimeTrial { 0 } else { self.opponents },
             ai_skill: DIFFICULTY[self.difficulty].1,
             assist_level: ASSISTS[self.assists].1,
+            mode: self.mode(),
         }
+    }
+
+    fn mode(&self) -> gameplay::GameMode {
+        gameplay::GameMode::ALL[self.mode % gameplay::GameMode::ALL.len()]
     }
 }
 
@@ -236,12 +244,12 @@ impl App {
         panel(x, y, w, h);
         text_centered("How to play", x + w * 0.5, y + 56.0 * s, 46.0 * s, INK);
         let lines = [
-            ("Drive", "W A S D  or  arrow keys"),
-            ("Handbrake", "Space   (P2: Right Shift)"),
-            ("Respawn on track", "R   (P2: Backspace)"),
-            ("Change camera", "C   (P2: Right Ctrl)"),
-            ("Pause", "Esc / P"),
-            ("Split-screen", "P1 = WASD,  P2 = arrow keys"),
+            ("Drive", "WASD / arrows  or  stick + RT / LT"),
+            ("Handbrake", "Space  (P2: Right Shift)  pad: A"),
+            ("Respawn on track", "R  (P2: Backspace)  pad: Y"),
+            ("Change camera", "C  (P2: Right Ctrl)  pad: X"),
+            ("Pause", "Esc / P  pad: Start"),
+            ("Split-screen", "P1 = WASD / pad 1,  P2 = arrows / pad 2"),
             ("Tip", "Lift off and flick the handbrake into hairpins!"),
             ("Tip", "Gravel and snow are slippery - be gentle."),
         ];
@@ -251,7 +259,7 @@ impl App {
             text(b, x + 290.0 * s, ly, 26.0 * s, INK_SOFT);
         }
         self.focus.begin(1);
-        if button(&mut self.focus, "Back", x + w * 0.5 - 110.0 * s, y + h - 80.0 * s, 220.0 * s, 54.0 * s, PEACH) || is_key_pressed(KeyCode::Escape) {
+        if button(&mut self.focus, "Back", x + w * 0.5 - 110.0 * s, y + h - 80.0 * s, 220.0 * s, 54.0 * s, PEACH) || input::back_pressed() {
             self.screen = Screen::Title;
             self.focus = Focus::default();
         }
@@ -270,7 +278,8 @@ impl App {
         panel(x, y, w, h);
         text(if self.setup.split { "Split-screen race" } else { "Solo race" }, x + 24.0 * s, y + 48.0 * s, 40.0 * s, INK);
         let specs = car_specs();
-        let rows = if self.setup.split { 13 } else { 11 };
+        let tt = self.setup.mode() == gameplay::GameMode::TimeTrial; // [gameplay] no opponents in time trial
+        let rows = if self.setup.split { 13 } else { 11 } + 1 - if tt { 2 } else { 0 };
         self.focus.begin(rows);
         let rh = ((h - 140.0 * s) / rows as f32 - 8.0 * s).min(48.0 * s);
         let mut ry = y + 72.0 * s;
@@ -279,6 +288,9 @@ impl App {
         let step = rh + 8.0 * s;
         let wrap = |v: usize, d: i32, n: usize| ((v as i32 + d).rem_euclid(n as i32)) as usize;
         let players = if self.setup.split { 2 } else { 1 };
+        let d = selector(&mut self.focus, "Mode", self.setup.mode().name(), rx, ry, rw, rh, LAVENDER); // [gameplay]
+        self.setup.mode = wrap(self.setup.mode, d, gameplay::GameMode::ALL.len());
+        ry += step;
         for p in 0..players {
             let label = if players == 2 { format!("P{} car", p + 1) } else { "Car".into() };
             let d = selector(&mut self.focus, &label, specs[self.setup.cars[p]].name, rx, ry, rw, rh, [PEACH, SKY][p]);
@@ -302,12 +314,14 @@ impl App {
         let d = selector(&mut self.focus, "Laps", &format!("{}", self.setup.laps), rx, ry, rw, rh, BUTTER);
         self.setup.laps = ((self.setup.laps as i32 + d - 1).rem_euclid(6) + 1) as u32;
         ry += step;
-        let d = selector(&mut self.focus, "Opponents", &format!("{}", self.setup.opponents), rx, ry, rw, rh, BUTTER);
-        self.setup.opponents = wrap(self.setup.opponents, d, 8 - players + 1);
-        ry += step;
-        let d = selector(&mut self.focus, "AI mood", DIFFICULTY[self.setup.difficulty].0, rx, ry, rw, rh, BUTTER);
-        self.setup.difficulty = wrap(self.setup.difficulty, d, DIFFICULTY.len());
-        ry += step;
+        if !tt {
+            let d = selector(&mut self.focus, "Opponents", &format!("{}", self.setup.opponents), rx, ry, rw, rh, BUTTER);
+            self.setup.opponents = wrap(self.setup.opponents, d, 8 - players + 1);
+            ry += step;
+            let d = selector(&mut self.focus, "AI mood", DIFFICULTY[self.setup.difficulty].0, rx, ry, rw, rh, BUTTER);
+            self.setup.difficulty = wrap(self.setup.difficulty, d, DIFFICULTY.len());
+            ry += step;
+        }
         let d = selector(&mut self.focus, "Assists", ASSISTS[self.setup.assists].0, rx, ry, rw, rh, LAVENDER);
         self.setup.assists = wrap(self.setup.assists, d, ASSISTS.len());
         ry += step + 6.0 * s;
@@ -315,7 +329,7 @@ impl App {
         let back = button(&mut self.focus, "Back", rx, ry, bw, rh + 6.0 * s, CREAM);
         // Back is drawn as a button but excluded from the row count above: fold it into Start's row
         let go = button(&mut self.focus, "Start!", rx + bw + 16.0 * s, ry, bw, rh + 6.0 * s, PEACH);
-        if back || is_key_pressed(KeyCode::Escape) {
+        if back || input::back_pressed() {
             self.screen = Screen::Title;
             self.focus = Focus::default();
             return;
@@ -370,7 +384,7 @@ impl App {
             self.screen = Screen::Title;
             return;
         };
-        if is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::P) {
+        if is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::P) || input::pause_pressed() {
             sess.paused = !sess.paused;
             self.pause_focus = Focus::default();
         }
@@ -397,6 +411,7 @@ impl App {
         let vps = sess.viewports(screen_width(), screen_height());
         for (i, vp) in vps.iter().enumerate() {
             hud::draw_hud(sess, i, vp);
+            gameplay::draw_hud(sess, i, vp); // [gameplay] time-trial delta
         }
         if vps.len() == 2 {
             if vps[0].w < screen_width() * 0.9 {
@@ -528,7 +543,7 @@ async fn main() {
     let mut app = App {
         gpu: Gpu::new(),
         screen: Screen::Title,
-        setup: Setup { split: hooks.split, cars: [2, 1], paints: [0, 1], biome: 0, length: 1, seed: random_seed(), laps: 3, opponents: 3, difficulty: 1, assists: 1 },
+        setup: Setup { split: hooks.split, cars: [2, 1], paints: [0, 1], biome: 0, length: 1, seed: random_seed(), laps: 3, opponents: 3, difficulty: 1, assists: 1, mode: 0 },
         session: None,
         focus: Focus::default(),
         preview_angle: 0.6,
@@ -540,6 +555,9 @@ async fn main() {
     };
     if let Ok(seed) = std::env::var("COZY_SEED") {
         app.setup.seed = seed.parse().unwrap_or(1);
+    }
+    if std::env::var("COZY_MODE").is_ok_and(|m| m == "tt" || m == "timetrial") {
+        app.setup.mode = 1; // [gameplay] time trial test hook
     }
     if let Ok(b) = std::env::var("COZY_BIOME") {
         app.setup.biome = b.parse().unwrap_or(0);
@@ -557,6 +575,7 @@ async fn main() {
     let start = get_time();
     let mut shot_idx = 0;
     loop {
+        input::poll(); // [gameplay] gamepads
         match app.screen {
             Screen::Title => app.title(),
             Screen::Help => app.help(),
