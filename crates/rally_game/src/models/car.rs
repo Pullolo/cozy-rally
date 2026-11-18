@@ -900,7 +900,7 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
             for sx in [-1.0f32, 1.0] {
                 // big round headlights on the rounded nose, round fog lamps in the bumper
                 let n = Vec3::new(sx * 0.15, 0.3, -1.0).normalize();
-                round_lamp(&mut m, &mut head, Vec3::new(sx * 0.5 * kx, -0.1, front + 0.035), n, 0.125, CHROME, HEAD_OFF);
+                round_lamp(&mut m, &mut head, Vec3::new(sx * 0.5 * kx, -0.1, front + 0.035) + n * 0.03, n, 0.125, CHROME, HEAD_OFF);
                 round_lamp(&mut m, &mut head, Vec3::new(sx * 0.5 * kx, -0.33, front - 0.05), Vec3::NEG_Z, 0.055, DARK, [0.98, 0.9, 0.6]);
                 // twin round tail lights + reverse
                 round_lamp(&mut m, &mut brake, Vec3::new(sx * 0.56 * kx, -0.05, rear), Vec3::Z, 0.08, CHROME, TAIL_OFF);
@@ -928,7 +928,7 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
             m.bevel_box(trs(Vec3::new(0.0, -0.24, front - 0.01), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.3 * kx, 0.07, 0.03), 0.03, rgb(DARK));
             for k in 0..6 {
                 let x = (k as f32 - 2.5) * 0.09 * kx;
-                m.disc(Vec3::new(x, -0.24 + (k % 2) as f32 * 0.03 - 0.015, front - 0.045), Vec3::NEG_Z, 0.022, 6, rgb([0.4, 0.38, 0.44]));
+                m.disc(Vec3::new(x, -0.24 + (k % 2) as f32 * 0.03 - 0.015, front - 0.07), Vec3::NEG_Z, 0.022, 6, rgb([0.4, 0.38, 0.44]));
             }
             m.bevel_box(trs(Vec3::new(0.0, -0.4, front - 0.04), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.78 * kx, 0.06, 0.07), 0.035, rgb(paint));
             m.plank(Vec3::new(-0.72 * kx, -0.47, front - 0.1), Vec3::new(0.72 * kx, -0.47, front - 0.1), 0.12, 0.025, Vec3::Y, rgb(white));
