@@ -84,7 +84,7 @@ const ASSISTS: [(&str, f32); 4] = [("Cozy", 1.3), ("Normal", 1.0), ("Sport", 0.5
 const LENGTHS: [&str; 3] = ["Short", "Medium", "Long"];
 const SURFACES: [&str; 5] = ["Biome default", "Gravel", "Tarmac", "Snow", "Mixed"];
 const TRACK_DIFFICULTY: [&str; 3] = ["Relaxed", "Rally", "Expert"];
-const PAINT_NAMES: [&str; 8] = ["Strawberry", "Blueberry", "Honey", "Pistachio", "Lilac", "Tangerine", "Coconut", "Lagoon"];
+const PAINT_NAMES: [&str; 9] = ["Strawberry", "Blueberry", "Honey", "Pistachio", "Lilac", "Tangerine", "Coconut", "Lagoon", "Sakura"];
 const TIPS: [&str; 7] = [
     "Lift off and flick the handbrake into hairpins!",
     "Gravel and snow are slippery - be gentle.",

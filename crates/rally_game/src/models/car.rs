@@ -565,6 +565,17 @@ fn door_roundel(m: &mut MeshBuilder, secs: &[Sec], sx: f32, z: f32, t: f32, r: f
     roundel(m, c, n, up, r, num, disc, ink);
 }
 
+/// Five-petal cherry blossom decal facing `n`
+fn flower(m: &mut MeshBuilder, c: Vec3, n: Vec3, up: Vec3, s: f32, col: [f32; 3]) {
+    let right = up.cross(n).normalize();
+    let up = n.cross(right).normalize();
+    for k in 0..5 {
+        let a = k as f32 / 5.0 * std::f32::consts::TAU + 0.3;
+        m.disc(c + (right * a.cos() + up * a.sin()) * s * 0.55, n, s * 0.42, 7, rgb(col));
+    }
+    m.disc(c + n * 0.012, n, s * 0.3, 7, rgb([0.98, 0.85, 0.4]));
+}
+
 fn tow_hook(m: &mut MeshBuilder, p: Vec3, dir: f32) {
     let c = rgb([0.92, 0.3, 0.3]);
     m.beam(p, p + Vec3::Z * dir * 0.08, 0.025, c);
@@ -607,6 +618,8 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
 
     let wheel;
     let flare;
+    // wheel-arch flare size: (outer radius above the tyre, extra width beyond the tyre)
+    let mut arch_size = (0.13f32, 0.03f32);
     match spec.id {
         0 => {
             // ---------------- Pip: tiny round FWD hatch, frog-eye lamps, cream roof
@@ -829,6 +842,111 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
             wheel = wheel_mesh(spec, [0.98, 0.80, 0.30], DARK, 5, false);
             flare = [0.25, 0.24, 0.27];
         }
+        4 => {
+            // ---------------- Blossom: pink turbo AWD hot hatch "pocket rocket" — short, wide,
+            // blistered arches, bonnet scoop, big roof spoiler, cherry-blossom rally livery
+            let look = Look { number: 8, helmet: WHITE, suit: [0.98, 0.62, 0.78] };
+            // design is drawn for half-length 1.9 / half-width 0.88 and scaled to the spec
+            let (kz, kx) = (he.z / 1.9, he.x / 0.88);
+            let sc = |z: f32, yb: f32, yt: f32, w: f32, wt: f32, cb: f32, ct: f32| sec(z * kz, yb, yt, w * kx, wt * kx, cb, ct);
+            let secs = round_ends(
+                &[
+                    sc(-1.68, -0.41, 0.03, 0.80, 0.73, 0.13, 0.16).crown(0.05),
+                    sc(-1.25, -0.43, 0.10, 0.82, 0.75, 0.13, 0.17).crown(0.05),
+                    sc(-0.52, -0.43, 0.13, 0.83, 0.76, 0.13, 0.17).crown(0.02),
+                    sc(1.40, -0.43, 0.15, 0.83, 0.76, 0.13, 0.17),
+                    sc(1.70, -0.42, 0.15, 0.82, 0.75, 0.12, 0.15),
+                ],
+                0.12,
+                0.08,
+            );
+            let front = secs[0].z;
+            let rear = secs.last().unwrap().z;
+            let white = WHITE;
+            let deep = shade(paint, 0.72);
+            let bands = Bands { side: (0.16, 0.30), top: (0.10, 0.22) };
+            body_loft(&mut m, &secs, &bands, &BodyPaint { paint, lower: deep, side_band: white, top_band: white, top: paint, cabin: (-0.52 * kz, 1.40 * kz), hidden_top: None });
+            greenhouse(
+                &mut m,
+                &mut glass,
+                &secs,
+                &Green { z0: -0.5 * kz, zr0: 0.0, zr1: 1.12 * kz, z1: 1.42 * kz, wr: 0.62 * kx, yr: 0.67, roof: paint, pillar: paint, b_pillar: Some(0.45), c_from: 0.85, stripe: Some(white) },
+            );
+            // big hot-hatch roof spoiler with end plates + high-mounted brake light
+            let sp_z = 1.12 * kz + 0.12;
+            m.bevel_box(trs(Vec3::new(0.0, 0.7, sp_z), Quat::from_rotation_x(-0.18), Vec3::ONE), Vec3::new(0.6 * kx, 0.03, 0.2), 0.025, rgb(white));
+            for sx in [-1.0f32, 1.0] {
+                m.bevel_box(trs(Vec3::new(sx * 0.6 * kx, 0.66, sp_z), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.025, 0.08, 0.2), 0.012, rgb(paint));
+            }
+            rect_lamp(&mut m, &mut brake, Vec3::new(0.0, 0.66, sp_z + 0.2), Vec3::Z, Vec3::X, 0.14, 0.018, TAIL_OFF, LENS);
+            // bonnet scoop with a dark mouth, little bonnet pins
+            m.bevel_box(trs(Vec3::new(0.0, 0.16, -1.02 * kz), Quat::from_rotation_x(0.06), Vec3::ONE), Vec3::new(0.22, 0.06, 0.26), 0.05, rgb(paint));
+            m.quad(Vec3::new(-0.16, 0.15, -1.31 * kz), Vec3::new(0.16, 0.15, -1.31 * kz), Vec3::new(0.16, 0.2, -1.31 * kz), Vec3::new(-0.16, 0.2, -1.31 * kz), rgb(DARK));
+            for sx in [-1.0f32, 1.0] {
+                m.disc(Vec3::new(sx * 0.55, 0.12, front + 0.2), Vec3::Y, 0.025, 6, rgb(CHROME));
+            }
+            // cherry-blossom flowers: one on the bonnet, more on the doors
+            flower(&mut m, Vec3::new(-0.4, 0.172, -0.8 * kz), Vec3::new(0.0, 1.0, 0.06).normalize(), Vec3::NEG_Z, 0.1, white);
+            flower(&mut m, Vec3::new(-0.5, 0.16, -0.6 * kz), Vec3::new(0.0, 1.0, 0.04).normalize(), Vec3::NEG_Z, 0.065, white);
+            // roll cage hoop
+            let cage = rgb([0.92, 0.92, 0.92]);
+            m.beam(Vec3::new(-0.58 * kx, 0.15, 0.95 * kz), Vec3::new(-0.56 * kx, 0.62, 0.85 * kz), 0.045, cage);
+            m.beam(Vec3::new(0.58 * kx, 0.15, 0.95 * kz), Vec3::new(0.56 * kx, 0.62, 0.85 * kz), 0.045, cage);
+            m.beam(Vec3::new(-0.56 * kx, 0.62, 0.85 * kz), Vec3::new(0.56 * kx, 0.62, 0.85 * kz), 0.045, cage);
+            // driver + co-driver (pink suits, white helmets with pink bands)
+            driver(&mut m, Vec3::new(-0.31 * kx, -0.07, 0.42 * kz), look.suit, look.helmet, paint, 1.0);
+            driver(&mut m, Vec3::new(0.31 * kx, -0.07, 0.48 * kz), [0.95, 0.95, 0.92], look.helmet, deep, 1.0);
+            m.plank(Vec3::new(0.24 * kx, 0.18, 0.2 * kz), Vec3::new(0.42 * kx, 0.2, 0.2 * kz), 0.14, 0.01, Vec3::new(0.0, 0.5, -1.0), rgb([0.98, 0.95, 0.8]));
+            for sx in [-1.0f32, 1.0] {
+                // big round headlights on the rounded nose, round fog lamps in the bumper
+                let n = Vec3::new(sx * 0.15, 0.3, -1.0).normalize();
+                round_lamp(&mut m, &mut head, Vec3::new(sx * 0.5 * kx, -0.1, front + 0.035), n, 0.125, CHROME, HEAD_OFF);
+                round_lamp(&mut m, &mut head, Vec3::new(sx * 0.5 * kx, -0.33, front - 0.05), Vec3::NEG_Z, 0.055, DARK, [0.98, 0.9, 0.6]);
+                // twin round tail lights + reverse
+                round_lamp(&mut m, &mut brake, Vec3::new(sx * 0.56 * kx, -0.05, rear), Vec3::Z, 0.08, CHROME, TAIL_OFF);
+                round_lamp(&mut m, &mut brake, Vec3::new(sx * 0.37 * kx, -0.05, rear), Vec3::Z, 0.065, CHROME, TAIL_OFF);
+                round_lamp(&mut m, &mut rev, Vec3::new(sx * 0.37 * kx, -0.2, rear), Vec3::Z, 0.035, CHROME, REV_OFF);
+                mirror(&mut m, sx, Vec3::new(sx * 0.72 * kx, 0.19, -0.38 * kz), paint);
+                door_roundel(&mut m, &secs, sx, -0.13 * kz, 0.55, 0.2, look.number, WHITE, INK);
+                seam(&mut m, &secs, sx, -0.5 * kz, 0.0, 1.0);
+                seam(&mut m, &secs, sx, 0.62 * kz, 0.0, 1.0);
+                handle(&mut m, &secs, sx, 0.53 * kz, 0.92);
+                let (c, n, _, up) = on_flank(&secs, sx, 0.27 * kz, 0.5, 0.022);
+                let up = (up - n * up.dot(n)).normalize();
+                flower(&mut m, c, n, up, 0.11, white);
+                let (c, n, _, up) = on_flank(&secs, sx, 0.42 * kz, 0.78, 0.022);
+                let up = (up - n * up.dot(n)).normalize();
+                flower(&mut m, c, n, up, 0.06, white);
+                // dark side skirt + mud flaps behind every wheel
+                let (p0, nn) = flank(&secs, sx, 0.0, 0.0);
+                m.bevel_box(trs(Vec3::new(p0.x + nn.x * 0.02, -0.42, 0.0), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.04, 0.035, 0.62 * kz), 0.015, rgb(DARK));
+                for z in [fz, rz] {
+                    mud_flap(&mut m, sx * spec.half_track, z + r + 0.1, wy + 0.05, wy - r + 0.07, spec.wheel_width + 0.08, deep, white);
+                }
+            }
+            // smiley grille mouth with honeycomb, splitter and bumpers
+            m.bevel_box(trs(Vec3::new(0.0, -0.24, front - 0.01), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.3 * kx, 0.07, 0.03), 0.03, rgb(DARK));
+            for k in 0..6 {
+                let x = (k as f32 - 2.5) * 0.09 * kx;
+                m.disc(Vec3::new(x, -0.24 + (k % 2) as f32 * 0.03 - 0.015, front - 0.045), Vec3::NEG_Z, 0.022, 6, rgb([0.4, 0.38, 0.44]));
+            }
+            m.bevel_box(trs(Vec3::new(0.0, -0.4, front - 0.04), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.78 * kx, 0.06, 0.07), 0.035, rgb(paint));
+            m.plank(Vec3::new(-0.72 * kx, -0.47, front - 0.1), Vec3::new(0.72 * kx, -0.47, front - 0.1), 0.12, 0.025, Vec3::Y, rgb(white));
+            m.bevel_box(trs(Vec3::new(0.0, -0.37, rear + 0.04), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.8 * kx, 0.08, 0.06), 0.04, rgb(DARK));
+            for k in 0..4 {
+                let x = (k as f32 - 1.5) * 0.12;
+                m.cube(trs(Vec3::new(x, -0.44, rear + 0.06), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.012, 0.035, 0.05), rgb([0.35, 0.34, 0.38]));
+            }
+            plate(&mut m, Vec3::new(0.0, -0.2, rear), Vec3::Z);
+            for sx in [-0.09f32, 0.09] {
+                exhaust(&mut m, Vec3::new(sx, -0.42, rear + 0.02), 0.045, 0.2);
+            }
+            tow_hook(&mut m, Vec3::new(0.42, -0.32, front - 0.08), -1.0);
+            antenna(&mut m, Vec3::new(-0.42 * kx, 0.71, 0.8 * kz), 0.4, [0.98, 0.75, 0.85]);
+            wheel = wheel_mesh(spec, WHITE, paint, 6, false);
+            flare = paint;
+            arch_size = (0.16, 0.06);
+        }
         _ => {
             // ---------------- Burrow: chunky 4x4 camper van, two-tone, rack, spare wheel, dog
             let look = Look { number: 9, helmet: WHITE, suit: [0.45, 0.7, 0.45] };
@@ -991,7 +1109,7 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
     for sx in [-1.0f32, 1.0] {
         for z in [fz, rz] {
             let body_w = he.x.min(spec.half_track) - 0.12;
-            arch(&mut m, sx * body_w, sx * (wheel_out + 0.03), z, wy, r + 0.04, r + 0.13, flare);
+            arch(&mut m, sx * body_w, sx * (wheel_out + arch_size.1), z, wy, r + 0.04, r + arch_size.0, flare);
         }
     }
     // underbody tray so the road never shows through

@@ -24,8 +24,34 @@ fn env() -> Environment {
     Environment { sun_dir: vec3(-0.45, 0.75, -0.35).normalize(), sun_color: [1.05, 0.97, 0.85], ambient: [0.45, 0.48, 0.56], fog_color: [0.8, 0.89, 0.95], fog_density: 0.0, time: 0.0 }
 }
 
+/// Car spec by id; id 4 (Blossom) falls back to a provisional hot-hatch spec until the
+/// gameplay branch adds the real one to `car_specs()`.
+fn spec_of(car: usize) -> rally_core::vehicle::CarSpec {
+    let specs = car_specs();
+    if let Some(s) = specs.iter().find(|s| s.id as usize == car) {
+        return s.clone();
+    }
+    let mut s = specs[2].clone();
+    s.id = 4;
+    s.name = "Blossom";
+    s.half_extents = Vec3::new(0.88, 0.58, 1.9);
+    s.cg_to_front = 1.18;
+    s.cg_to_rear = 1.18;
+    s.half_track = 0.80;
+    s.mount_height = -0.03;
+    s.wheel_radius = 0.32;
+    s.wheel_width = 0.24;
+    s.susp_rest = 0.38;
+    s.susp_travel = 0.26;
+    s
+}
+
+fn paint_of(car: usize) -> usize {
+    if car == 4 { models::PAINT_PINK } else { car % 4 }
+}
+
 fn draw_car(gpu: &mut Gpu, v: &View, car: usize, paint: usize, model: Mat4, lights: bool) {
-    let spec = car_specs()[car].clone();
+    let spec = spec_of(car);
     let m = models::car_model(&spec, models::PAINTS[paint]);
     let e = env();
     gpu.draw_builder(&m.body, v, &e, model, &DrawParams { rim: 0.5, ..Default::default() }, 0);
@@ -176,10 +202,10 @@ async fn main() {
                 let only: Option<usize> = std::env::var("CAR").ok().and_then(|s| s.parse().ok());
                 let cars: Vec<usize> = match only {
                     Some(c) => vec![c],
-                    None => (0..4).collect(),
+                    None => (0..5).collect(),
                 };
                 let n = cars.len() as f32;
-                let paints = [0usize, 1, 2, 3];
+
                 for (ci, &car) in cars.iter().enumerate() {
                     for row in 0..2 {
                         let (w, h) = if n == 1.0 { (sw / 2.0, sh) } else { (sw / n, sh / 2.0) };
@@ -193,9 +219,9 @@ async fn main() {
                         let view = Mat4::look_at_rh(eye, vec3(0.0, 0.0, 0.0), Vec3::Y);
                         let proj = Mat4::perspective_rh_gl(38f32.to_radians(), w / h, 0.1, 100.0);
                         let v = View::new(view, proj, eye);
-                        let spec = car_specs()[car].clone();
+                        let spec = spec_of(car);
                         ground(&mut gpu, &v, spec.mount_height - spec.susp_rest * 0.8 - spec.wheel_radius, 3.4, [0.98, 0.9, 0.78]);
-                        draw_car(&mut gpu, &v, car, paints[car % 4], Mat4::IDENTITY, lights);
+                        draw_car(&mut gpu, &v, car, paint_of(car), Mat4::IDENTITY, lights);
                         gpu.end_3d();
                     }
                 }
@@ -274,8 +300,9 @@ async fn main() {
                             }
                         }
                     }
-                    for (i, s) in car_specs().iter().enumerate() {
-                        let cm = models::car_model(s, models::PAINTS[i % models::PAINTS.len()]);
+                    for i in 0..5 {
+                        let s = &spec_of(i);
+                        let cm = models::car_model(s, models::PAINTS[paint_of(i)]);
                         for (name, mesh) in [("body", &cm.body), ("wheel", &cm.wheel)] {
                             let (n, ex) = coplanar_fights(mesh, 0.008);
                             if n > 0 {
@@ -356,8 +383,9 @@ async fn main() {
             }
             _ => {
                 if frame == 0 {
-                    for (i, s) in car_specs().iter().enumerate() {
-                        let m = models::car_model(s, models::PAINTS[0]);
+                    for i in 0..5 {
+                        let s = &spec_of(i);
+                        let m = models::car_model(s, models::PAINTS[paint_of(i)]);
                         println!(
                             "car {} {}: body {} wheel {} (x4 drawn) head {} brake {} rev {} glass {} => total drawn {}",
                             i,
