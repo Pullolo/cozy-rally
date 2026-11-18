@@ -301,7 +301,9 @@ impl RaceSession {
             self.scene.draw_opaque(gpu, &view);
             self.draw_cars(gpu, &view);
             self.draw_shadows(gpu, &view);
+            gpu.set_shadow_receive(false);
             self.fx.draw(gpu, &view, &self.scene.env);
+            gpu.set_shadow_receive(true);
             extra(gpu, &view, i);
             self.scene.draw_transparent(gpu, &view);
             gpu.end_scene();

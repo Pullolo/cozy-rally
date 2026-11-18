@@ -295,6 +295,8 @@ pub struct Gpu {
     msaa_broken: bool,
     frame_viewports: Vec<PxRect>,
     frame_quality: Quality,
+    /// when false, no draw samples the shadow map (e.g. volumetric fx particles)
+    shadow_receive: bool,
 }
 
 pub const STREAM_VERTS: usize = 60_000;
@@ -379,6 +381,7 @@ impl Gpu {
             msaa_broken: false,
             frame_viewports: Vec::new(),
             frame_quality: Quality::High,
+            shadow_receive: true,
         }
     }
 
@@ -548,6 +551,12 @@ impl Gpu {
         pipes.finish(ctx(), t, &self.frame_viewports, grade, time);
     }
 
+    /// Globally allow/suppress shadow-map sampling for subsequent draws (default: allowed).
+    /// Used around fx so soft dust/smoke stays light instead of catching car shadows.
+    pub fn set_shadow_receive(&mut self, on: bool) {
+        self.shadow_receive = on;
+    }
+
     /// True when the current pass renders the shadow map
     pub fn in_shadow_pass(&self) -> bool {
         self.target == Target::Shadow
@@ -556,7 +565,7 @@ impl Gpu {
     // ------------------------------------------------------------------ drawing
 
     fn uniforms(&self, view: &View, env: &Environment, model: Mat4, p: &DrawParams, blended: bool) -> Uniforms {
-        let (shadow_mat, shadow_on, texel_uv, texel_world, sbias) = match (&self.shadow, p.receive_shadow) {
+        let (shadow_mat, shadow_on, texel_uv, texel_world, sbias) = match (&self.shadow, p.receive_shadow && self.shadow_receive) {
             (Some(s), true) => (s.mat, 1.0, s.texel_uv, s.texel_world, s.depth_bias),
             _ => (Mat4::IDENTITY, 0.0, 0.0, 0.0, 0.0),
         };
