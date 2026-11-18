@@ -299,6 +299,9 @@ pub struct WheelState {
     pub tc_cut: f32,
     /// Traction-control integrator state
     pub tc_i: f32,
+    /// Slip ratio / slip angle at peak friction for the current ground (for normalising)
+    pub peak_slip_ratio: f32,
+    pub peak_slip_angle: f32,
     /// Current ABS brake release on this wheel (0..1)
     pub abs_cut: f32,
 }
@@ -306,6 +309,29 @@ pub struct WheelState {
 impl WheelState {
     pub fn is_front(idx: usize) -> bool {
         idx < 2
+    }
+
+    /// Traction loss split by cause, each 0..1: (sideways slide, wheelspin, lock-up).
+    /// Zero while the tyre is below its peak, except a gentle sideways "scrub" in the last
+    /// 15% before the peak (a correctly driven corner sounds alive but quiet).
+    /// The one place FX / audio / HUD should read tyre slip from.
+    pub fn traction_split(&self) -> (f32, f32, f32) {
+        if !self.contact || self.peak_slip_ratio <= 0.0 {
+            return (0.0, 0.0, 0.0);
+        }
+        let sx = self.slip_ratio / self.peak_slip_ratio;
+        let sy = self.slip_angle / self.peak_slip_angle.max(1e-3);
+        let s2 = sx * sx + sy * sy;
+        if s2 < 1e-6 {
+            return (0.0, 0.0, 0.0);
+        }
+        let s = s2.sqrt();
+        let (lat_share, long_share) = (sy * sy / s2, sx * sx / s2);
+        let scrub = 0.15 * ((s - 0.85) / 0.15).clamp(0.0, 1.0) * lat_share;
+        let loss = self.traction_loss;
+        let lat = (loss * lat_share + scrub).min(1.0);
+        let long = loss * long_share;
+        if self.slip_ratio >= 0.0 { (lat, long, 0.0) } else { (lat, 0.0, long) }
     }
 }
 
@@ -803,6 +829,8 @@ impl Car {
             // ---- telemetry for FX / audio / HUD
             w.slip_ratio = kappa;
             w.slip_angle = alpha;
+            w.peak_slip_ratio = tyre.peak_kappa;
+            w.peak_slip_angle = tyre.peak_alpha;
             w.traction_loss = ((combined - 1.0) / 1.5).clamp(0.0, 1.0);
             let x = alpha.abs() / spec.peak_slip_angle;
             let slide = if x > 1.0 { v_lat.abs() } else { 0.0 };

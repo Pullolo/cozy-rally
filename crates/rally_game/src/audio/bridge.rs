@@ -34,26 +34,13 @@ pub struct WheelSlip {
 
 /// THE single place that derives traction loss from wheel state.
 ///
-/// Currently derived from `slide_lat` (m/s of lateral sliding beyond the slip-angle peak),
-/// `slide_long` (|wheel surface speed - ground speed|) and the wheel spin direction. When
-/// `WheelState::traction_loss` / `slip_ratio` / `slip_angle` land in rally_core, swap the body
-/// of this function for them (e.g. `lat = w.traction_loss * lateral_share`, `spin =
-/// slip_ratio.max(0)`, `lock = (-slip_ratio).max(0)`).
+/// From the sim's tyre model (`WheelState::traction_split`): silent below the tyre's peak
+/// apart from a gentle scrub right at the limit; spin / lock-up from the slip ratio.
 pub fn wheel_slip(car: &Car, w: &WheelState) -> WheelSlip {
-    if !w.contact {
-        return WheelSlip::default();
-    }
-    let lat = ((w.slide_lat - 0.6) / 5.0).clamp(0.0, 1.0);
-    let long = ((w.slide_long - 1.0) / 6.0).clamp(0.0, 1.0);
-    let wheel_v = (w.spin_speed * car.spec.wheel_radius).abs();
-    let ground_v = car.telemetry.forward_speed.abs();
-    if wheel_v >= ground_v {
-        WheelSlip { lat, spin: long, lock: 0.0 }
-    } else {
-        // a stationary car can't lock its wheels
-        let lock = if ground_v > 1.5 { long } else { 0.0 };
-        WheelSlip { lat, spin: 0.0, lock }
-    }
+    let (lat, spin, lock) = w.traction_split();
+    // a stationary car can't lock its wheels
+    let lock = if car.telemetry.forward_speed.abs() > 1.5 { lock } else { 0.0 };
+    WheelSlip { lat, spin, lock }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

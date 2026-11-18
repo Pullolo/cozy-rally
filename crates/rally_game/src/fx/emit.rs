@@ -30,9 +30,8 @@ pub struct Traction {
     pub surf_sign: f32,
 }
 
-/// Traction loss for wheel `i`. Derived locally from the existing wheel state; when
-/// rally_core grows `WheelState::traction_loss` / `slip_ratio` / `slip_angle`, swap the body
-/// of this function for those fields.
+/// Traction loss for wheel `i`, from the sim's tyre model (`WheelState::traction_split`:
+/// zero below the tyre's peak, so a well-driven corner throws no slide FX).
 pub fn wheel_traction(car: &Car, i: usize) -> Traction {
     let w = &car.wheels[i];
     if !w.contact {
@@ -46,14 +45,9 @@ pub fn wheel_traction(car: &Car, i: usize) -> Traction {
     let v_long = vc.dot(f);
     let v_lat = vc.dot(r);
     let surf = w.spin_speed * car.spec.wheel_radius;
-    // wheelspin: tyre surface outruns the ground (or spins against it)
-    let spin_ex = if surf * v_long >= 0.0 { (surf.abs() - v_long.abs()).max(0.0) } else { (surf - v_long).abs() };
-    let spin = ((spin_ex - 1.2) / 7.0).clamp(0.0, 1.0);
-    // lock-up: tyre surface much slower than the ground
-    let lock_ex = if surf * v_long >= 0.0 { (v_long.abs() - surf.abs()).max(0.0) } else { 0.0 };
-    let lock = ((lock_ex / v_long.abs().max(3.0) - 0.2) / 0.55).clamp(0.0, 1.0) * ((v_long.abs() - 1.5) / 4.0).clamp(0.0, 1.0);
-    let slide = ((w.slide_lat.max(v_lat.abs() * w.skid) - 0.9) / 5.0).clamp(0.0, 1.0);
-    let loss = spin.max(lock).max(slide).max(w.skid * 0.8);
+    let _ = v_long;
+    let (slide, spin, lock) = w.traction_split();
+    let loss = spin.max(lock).max(slide).max(w.traction_loss);
     Traction { spin, lock, slide, loss, fwd: f, lat_dir: r * v_lat.signum(), surf_sign: if surf >= 0.0 { 1.0 } else { -1.0 } }
 }
 
