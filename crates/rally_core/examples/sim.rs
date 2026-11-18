@@ -2,7 +2,7 @@
 //! cargo run -p rally_core --release --example sim -- [seeds] [laps] [ai_count] [difficulty] [reference]
 //!   difficulty: AI base skill (Chill 0.35, Normal 0.7, Spicy 1.0), default 0.7
 //!   reference:  1 (default) = add a "human" stand-in driven by a plain autopilot (skill 0.85,
-//!               no traffic awareness) as Controller::Local, so rubber-banding is active and
+//!               traffic-aware, no catch-up) as Controller::Local, so rubber-banding is active and
 //!               AI pace can be compared to it; 0 = AI only.
 use rally_core::ai::{drive_all, AiDriver};
 use rally_core::race::{format_time, RaceEvent, RacePhase};
@@ -90,9 +90,11 @@ fn main() {
         let mut lead_changes = 0;
         let mut max_spin = 0.0f32;
         let (mut start_hits, mut hard_hits) = (0, 0);
+        let (mut rear_hits, mut side_hits) = (0, 0);
         while world.race.phase != RacePhase::Finished && ticks < 120 * 60 * 12 {
             if let Some(r) = ref_idx {
-                let inp = autopilot.drive(&world.cars[r], &world.track, TICK);
+                // the "human" looks out for other cars too (no catch-up for it)
+                let inp = autopilot.drive_world(r, &world, TICK);
                 world.set_input(r, inp);
             }
             drive_all(&mut ais, &mut world, TICK);
@@ -125,8 +127,16 @@ fn main() {
             for e in world.drain_events() {
                 match e {
                     WorldEvent::Race(RaceEvent::Reset { car }) => resets[car] += 1,
-                    WorldEvent::Collision { other: Some(_), strength, .. } => {
+                    WorldEvent::Collision { car, other: Some(o), strength, .. } => {
                         car_hits += 1;
+                        let d = world.cars[o].pos - world.cars[car].pos;
+                        let f = world.cars[car].forward();
+                        if d.dot(world.cars[car].right()).abs() < 1.3 {
+                            rear_hits += 1;
+                        } else {
+                            side_hits += 1;
+                        }
+                        let _ = f;
                         if world.race.clock < 12.0 {
                             start_hits += 1;
                         }
@@ -144,7 +154,7 @@ fn main() {
         }
         let wall = t1.elapsed().as_millis().max(1);
         println!(
-            "   sim {:.1}s game time in {wall} ms ({}x realtime), plan {plan_ms:.1}ms, car-car hits {car_hits} (first 12s {start_hits}, hard >4m/s {hard_hits}), scenery hits {scenery_hits}, lead changes {lead_changes}, max air {:.2}s, max wheelspin {:.2}, NaN {nan}",
+            "   sim {:.1}s game time in {wall} ms ({}x realtime), plan {plan_ms:.1}ms, car-car hits {car_hits} (first 12s {start_hits}, hard >4m/s {hard_hits}, rear {rear_hits} side {side_hits}), scenery hits {scenery_hits}, lead changes {lead_changes}, max air {:.2}s, max wheelspin {:.2}, NaN {nan}",
             ticks as f32 / 120.0,
             (ticks as f32 / 120.0 * 1000.0 / wall as f32) as i32,
             airtime_max,

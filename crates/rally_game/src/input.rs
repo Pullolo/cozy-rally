@@ -371,10 +371,12 @@ impl PlayerInput {
         let reset = down(&ks.iter().map(|k| k.reset).collect::<Vec<_>>());
         let target = (r as i32 - l as i32) as f32;
         // keyboard steer ramps in (gentle near centre, quicker as you hold), returns faster
+        // (the car's slip-angle limiter maps full input to peak front grip, so a tap is a
+        // small correction and holding glides to the limit in ~0.3 s)
         let rate = if target == 0.0 || target.signum() != self.steer.signum() {
             7.5
         } else {
-            2.6 + 2.4 * self.steer.abs()
+            1.8 + 3.2 * self.steer.abs()
         };
         let d = (target - self.steer).clamp(-rate * dt, rate * dt);
         self.steer += d;

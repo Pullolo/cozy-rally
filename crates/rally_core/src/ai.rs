@@ -196,7 +196,7 @@ impl AiDriver {
     pub fn racer(index: usize, base_skill: f32, seed: u64) -> Self {
         let mut rng = Rng::new(seed.wrapping_mul(31).wrapping_add(index as u64 * 7919));
         let skill = (base_skill + rng.range(-0.07, 0.07)).clamp(0.05, 1.0);
-        let aggression = rng.range(0.15, 0.9);
+        let aggression = rng.range(0.3, 1.0);
         let consistency = (0.55 + base_skill * 0.35 + rng.range(-0.12, 0.12)).clamp(0.3, 1.0);
         let p = Personality { skill, aggression, consistency };
         let mut d = AiDriver::with_personality(p, RubberBand::for_difficulty(base_skill), seed ^ index as u64);
@@ -205,7 +205,9 @@ impl AiDriver {
     }
 
     fn grip_use(&self) -> f32 {
-        0.74 + 0.24 * self.personality.skill
+        // calibrated with `skilltest SKILL_SWEEP`: the planner is conservative, the lap-time
+        // optimum is around 1.2 (Chill 0.89, Normal 1.06, Spicy ~1.2 = near the optimum)
+        0.72 + 0.48 * self.personality.skill
     }
 
     fn ensure_plan(&mut self, car: &Car, track: &Track) {
@@ -215,7 +217,7 @@ impl AiDriver {
             self.profile = None;
         }
         if self.profile.as_ref().map(|p| p.0) != Some(car.spec.id) {
-            let sp = SpeedParams::for_car(&car.spec, track.style.road_surface, self.grip_use(), 0.66 + 0.26 * self.personality.skill);
+            let sp = SpeedParams::for_car(&car.spec, track.style.road_surface, self.grip_use() * car.spec.ai_grip, 0.6 + 0.45 * self.personality.skill);
             let prof = SpeedProfile::build(self.line.as_ref().unwrap(), &sp);
             self.profile = Some((car.spec.id, prof));
         }
@@ -360,6 +362,7 @@ impl AiDriver {
             v
         };
         let mut passing = false;
+        let mut alongside = false;
 
         // ---- traffic: decide where to be and how fast we may go
         let mut want_lat: Option<f32> = None;
@@ -370,10 +373,16 @@ impl AiDriver {
         for o in &ctx.others {
             let closing = v_along - o.v_along;
             // side by side: give room
-            if o.ds.abs() < 5.5 && (o.lat - my_lat).abs() < 2.7 {
+            if o.ds.abs() < 5.8 && (o.lat - my_lat).abs() < 3.0 {
                 let side = if my_lat <= o.lat { -1.0 } else { 1.0 };
-                let w = (o.lat + side * 2.8).clamp(-lim_t, lim_t);
+                let w = (o.lat + side * 3.1).clamp(-lim_t, lim_t);
                 want_lat = Some(w);
+                alongside = true;
+                // squeezed (no room left on my side) and not ahead: yield instead of rubbing
+                if (w - o.lat).abs() < 2.4 && o.ds > -1.0 {
+                    follow_cap = follow_cap.min(o.v_along - 0.8);
+                    following = true;
+                }
                 continue;
             }
             if o.ds > 0.0 && o.ds < 38.0 {
@@ -384,7 +393,7 @@ impl AiDriver {
                 }
                 let ttc = (o.ds - 4.6).max(0.1) / closing.max(0.1);
                 // want to pass if closing fast, or if stuck behind a slower car we could beat
-                let faster = free_speed > o.v_along + 0.8 && o.ds < 14.0 + p.aggression * 12.0;
+                let faster = free_speed > o.v_along + 0.4 && o.ds < 16.0 + p.aggression * 14.0;
                 if ttc < 2.8 + p.aggression * 1.5 || faster {
                     // try a pass: pick a feasible side, preferring the racing line ahead
                     let lim_o = line.limit_at(q.s + o.ds, track) + 0.4;
@@ -423,7 +432,7 @@ impl AiDriver {
             Some(w) => (w - line_off_t).clamp(-6.0, 6.0),
             None => 0.0,
         };
-        let rate = if want_lat.is_some() { 3.2 } else { 1.4 };
+        let rate = if alongside { 5.0 } else if want_lat.is_some() { 3.2 } else { 1.4 };
         self.avoid += (avoid_target - self.avoid).clamp(-rate * dt, rate * dt);
         // mistakes: running wide
         let mut wide = 0.0;
@@ -469,14 +478,16 @@ impl AiDriver {
         self.debug.band = 0.0;
         if let Some(gap) = ctx.human_gap {
             if gap > 0.0 {
-                let ease = smoothstep(12.0, 130.0, gap) * self.band.ease_ahead;
+                let ease = smoothstep(6.0, 90.0, gap) * self.band.ease_ahead;
                 scale *= 1.0 - 0.09 * ease;
                 self.power_scale = self.base_power * (1.0 - 0.3 * ease);
                 self.debug.band = -ease;
             } else {
-                let push = smoothstep(18.0, 160.0, -gap) * self.band.push_behind;
+                // a little push right behind too, so a close battle can turn into a pass
+                let close = if -gap < 40.0 { 0.4 } else { 0.0 };
+                let push = smoothstep(10.0, 120.0, -gap).max(close) * self.band.push_behind;
                 scale *= 1.0 + 0.035 * push;
-                self.power_scale = self.base_power * (1.0 + 0.12 * push);
+                self.power_scale = self.base_power * (1.0 + 0.15 * push);
                 self.debug.band = push;
             }
         }
@@ -606,8 +617,43 @@ impl AiDriver {
     }
 }
 
-/// Run every AI in `ais` (index = car index) for this frame: inputs + catch-up power.
+/// Slipstream: a car tucked in 4..22 m behind another (laterally within ~1.6 m) gets up to
+/// 35% less aero drag — for everyone, humans included. Makes straights tactical and passes
+/// happen. Called from `drive_all` each frame.
+pub fn apply_slipstream(world: &mut World) {
+    let n = world.cars.len();
+    for i in 0..n {
+        let (pos, vel) = (world.cars[i].pos, world.cars[i].vel);
+        let speed = vel.length();
+        let mut best = 0.0f32;
+        if speed > 15.0 {
+            let dir = vel / speed;
+            for j in 0..n {
+                if j == i {
+                    continue;
+                }
+                let d = world.cars[j].pos - pos;
+                let along = d.dot(dir);
+                if !(4.0..22.0).contains(&along) {
+                    continue;
+                }
+                let lateral = (d - dir * along).length();
+                if lateral < 1.6 {
+                    let k = (1.0 - (along - 4.0) / 18.0) * (1.0 - lateral / 1.6).max(0.0).sqrt();
+                    best = best.max(k);
+                }
+            }
+        }
+        let target = 1.0 - 0.35 * best;
+        let c = &mut world.cars[i];
+        c.drag_scale += (target - c.drag_scale) * 0.2;
+    }
+}
+
+/// Run every AI in `ais` (index = car index) for this frame: inputs + catch-up power, and
+/// the slipstream for all cars.
 pub fn drive_all(ais: &mut [Option<AiDriver>], world: &mut World, dt: f32) {
+    apply_slipstream(world);
     let n = ais.len().min(world.cars.len());
     let mut inputs = Vec::with_capacity(n);
     for (i, ai) in ais.iter_mut().enumerate().take(n) {

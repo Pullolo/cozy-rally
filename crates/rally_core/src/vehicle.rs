@@ -68,6 +68,10 @@ pub struct CarSpec {
     pub engine_inertia: f32,
     /// Limited-slip strength (0 = open diff)
     pub lsd: f32,
+    /// AI planner calibration: multiplies the grip the racing-line planner assumes, so that
+    /// the top AI difficulty sits at this car's lap-time optimum (measured with
+    /// `skilltest` SKILL_SWEEP)
+    pub ai_grip: f32,
     pub brake_force: f32,
     pub brake_bias_front: f32,
     pub handbrake_force: f32,
@@ -101,7 +105,7 @@ pub fn car_specs() -> Vec<CarSpec> {
             damp_rebound: 3400.0,
             arb_front: 9000.0,
             arb_rear: 7000.0,
-            tire_grip: 1.12,
+            tire_grip: 1.2,
             peak_slip_angle: 0.15,
             rear_grip_bias: 1.04,
             max_steer: 0.62,
@@ -116,6 +120,7 @@ pub fn car_specs() -> Vec<CarSpec> {
             reverse_ratio: 3.2,
             engine_inertia: 0.10,
             lsd: 0.1,
+            ai_grip: 1.22,
             brake_force: 11500.0,
             brake_bias_front: 0.66,
             handbrake_force: 5000.0,
@@ -144,9 +149,9 @@ pub fn car_specs() -> Vec<CarSpec> {
             damp_rebound: 4000.0,
             arb_front: 12000.0,
             arb_rear: 6000.0,
-            tire_grip: 1.08,
+            tire_grip: 1.17,
             peak_slip_angle: 0.15,
-            rear_grip_bias: 0.97,
+            rear_grip_bias: 1.08,
             max_steer: 0.62,
             drivetrain: Drivetrain::Rwd,
             awd_front_split: 0.0,
@@ -159,6 +164,7 @@ pub fn car_specs() -> Vec<CarSpec> {
             reverse_ratio: 3.2,
             engine_inertia: 0.20,
             lsd: 0.35,
+            ai_grip: 0.94,
             brake_force: 14500.0,
             brake_bias_front: 0.64,
             handbrake_force: 6500.0,
@@ -202,6 +208,7 @@ pub fn car_specs() -> Vec<CarSpec> {
             reverse_ratio: 3.2,
             engine_inertia: 0.15,
             lsd: 0.3,
+            ai_grip: 1.06,
             brake_force: 16000.0,
             brake_bias_front: 0.62,
             handbrake_force: 7000.0,
@@ -245,6 +252,7 @@ pub fn car_specs() -> Vec<CarSpec> {
             reverse_ratio: 3.5,
             engine_inertia: 0.25,
             lsd: 0.3,
+            ai_grip: 1.0,
             brake_force: 19000.0,
             brake_bias_front: 0.62,
             handbrake_force: 8000.0,
@@ -351,6 +359,8 @@ pub struct Car {
     pub input: CarInput,
     /// Engine torque multiplier (1 = stock). Used by AI catch-up; players keep 1.
     pub power_scale: f32,
+    /// Aero drag multiplier (slipstream behind another car < 1)
+    pub drag_scale: f32,
     /// Seconds since the handbrake was last pulled (stability control stays out of drifts)
     pub handbrake_age: f32,
     /// Post-landing stability window (s left)
@@ -407,6 +417,7 @@ impl Car {
             assist_level: 1.0,
             input: CarInput::default(),
             power_scale: 1.0,
+            drag_scale: 1.0,
             handbrake_age: 10.0,
             landing_timer: 0.0,
             spec,
@@ -834,7 +845,7 @@ impl Car {
         // aero
         let v2 = speed * speed;
         if speed > 0.1 {
-            force -= self.vel.normalize() * spec.drag * v2;
+            force -= self.vel.normalize() * spec.drag * self.drag_scale * v2;
         }
         if on_ground > 0 {
             force -= up * spec.downforce * v2;
