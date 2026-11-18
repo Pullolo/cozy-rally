@@ -709,6 +709,10 @@ pub fn drive_all(ais: &mut [Option<AiDriver>], world: &mut World, dt: f32) {
         if let Some((input, power)) = inp {
             world.set_input(i, input);
             world.cars[i].power_scale = power;
+            // AI opponents drive with a touch more stability assist than Normal (mild TC)
+            if world.controllers[i] == Controller::Ai {
+                world.cars[i].assist_level = 1.15;
+            }
         }
     }
 }

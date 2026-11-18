@@ -311,7 +311,7 @@ impl RaceSession {
             self.draw_shadows(gpu, &view);
             gpu.set_shadow_receive(false);
             self.fx.draw(gpu, &view, &self.scene.env);
-            crate::gameplay::draw_ghost(self, gpu, &view, i); // [gameplay]
+            crate::gameplay::draw_world_overlays(self, gpu, &view, i); // [gameplay] racing line + ghost
             gpu.set_shadow_receive(true);
             extra(gpu, &view, i);
             self.scene.draw_transparent(gpu, &view);
