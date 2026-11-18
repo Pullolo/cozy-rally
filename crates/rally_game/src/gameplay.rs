@@ -213,7 +213,8 @@ pub fn draw_hud(sess: &RaceSession, player: usize, vp: &Viewport) {
     let pad = 16.0 * k;
     let w = 210.0 * k;
     let x = vp.x + vp.w - w - pad;
-    let y = vp.y + pad + 96.0 * k + 14.0 * k;
+    // below the HUD timer card and its checkpoint split chip
+    let y = vp.y + pad + 96.0 * k + 14.0 * k + 52.0 * k;
     let h = 40.0 * k;
     if let Some(d) = t.tt.deltas.get(player).copied().flatten() {
         let col = if d <= 0.0 { MINT } else { PEACH };
