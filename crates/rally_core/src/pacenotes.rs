@@ -35,8 +35,40 @@ pub enum NoteKind {
     Crest,
     /// Jump take-off
     Jump,
-    /// Hazard on a straight: surface change, narrowing, compression
+    /// Hazard on a straight: surface change, narrowing, compression, weather
     Hazard,
+    /// Finish line of a point-to-point stage
+    Finish,
+}
+
+/// Weather calls (dynamic stage conditions)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum WeatherCall {
+    /// Rain (or snow) starting just ahead
+    RainAhead,
+    /// The road is wet from here
+    Wet,
+    /// Road drying out again
+    Drying,
+    /// Fog bank: little visibility
+    Fog,
+    /// Snowfall
+    Snow,
+    /// Sand storm / dust
+    Dust,
+}
+
+impl WeatherCall {
+    pub fn word(self) -> &'static str {
+        match self {
+            WeatherCall::RainAhead => "rain ahead",
+            WeatherCall::Wet => "wet",
+            WeatherCall::Drying => "drying",
+            WeatherCall::Fog => "fog",
+            WeatherCall::Snow => "snow",
+            WeatherCall::Dust => "dust",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -87,6 +119,8 @@ pub enum Modifier {
     Into,
     /// The surface change is a short patch (ice patch, mud, sand drift), not a new section
     Patch,
+    /// Conditions change here
+    Weather(WeatherCall),
 }
 
 impl Modifier {
@@ -107,6 +141,7 @@ impl Modifier {
             Modifier::DoubleCaution => "double caution".into(),
             Modifier::Into => "into".into(),
             Modifier::Patch => "patch".into(),
+            Modifier::Weather(w) => w.word().into(),
         }
     }
 }
@@ -158,6 +193,10 @@ impl PaceNote {
         matches!(self.kind, NoteKind::Corner | NoteKind::Hairpin | NoteKind::Square | NoteKind::Kink)
     }
 
+    pub fn weather(&self) -> Option<WeatherCall> {
+        self.modifiers.iter().find_map(|m| if let Modifier::Weather(w) = m { Some(*w) } else { None })
+    }
+
     pub fn surface_change(&self) -> Option<Surface> {
         self.modifiers.iter().find_map(|m| if let Modifier::SurfaceChange(s) = m { Some(*s) } else { None })
     }
@@ -181,6 +220,7 @@ impl PaceNote {
             NoteKind::Kink => w.push(format!("kink {dir}")),
             NoteKind::Crest => w.push("crest".into()),
             NoteKind::Jump => w.push("jump".into()),
+            NoteKind::Finish => w.push("finish".into()),
             NoteKind::Hazard => {}
         }
         for m in &self.modifiers {
@@ -189,7 +229,7 @@ impl PaceNote {
                     Surface::Sand => "sand drift".into(),
                     other => format!("{} patch", surface_word(*other)),
                 }),
-                Modifier::Long | Modifier::OverCrest | Modifier::Compression | Modifier::OffCamber | Modifier::Narrows | Modifier::DontCut | Modifier::SurfaceChange(_) => w.push(m.word()),
+                Modifier::Long | Modifier::OverCrest | Modifier::Compression | Modifier::OffCamber | Modifier::Narrows | Modifier::DontCut | Modifier::SurfaceChange(_) | Modifier::Weather(_) => w.push(m.word()),
                 Modifier::Tightens | Modifier::Opens => match self.exit_severity {
                     Some(e) if e.abs_diff(self.severity) >= 2 => w.push(format!("{} {e}", m.word())),
                     _ => w.push(m.word()),
@@ -204,6 +244,9 @@ impl PaceNote {
     /// Spoken form including the link to the next note: "left 4 tightens into" / "right 2 100"
     pub fn text(&self) -> String {
         let c = self.call();
+        if self.kind == NoteKind::Finish {
+            return c;
+        }
         if self.has(Modifier::Into) || self.distance_to_next == 0 {
             format!("{c} into")
         } else {
@@ -303,7 +346,7 @@ fn avg_abs_curv(track: &Track, r: isize) -> Vec<f32> {
         .map(|i| {
             let mut s = 0.0;
             for k in -r..=r {
-                s += track.samples[(i as isize + k).rem_euclid(n as isize) as usize].curvature;
+                s += track.samples[track.sample_index(i as isize + k)].curvature;
             }
             (s / (2 * r + 1) as f32).abs()
         })
@@ -334,15 +377,18 @@ struct Run {
 /// Build the pace notes for a track. Deterministic (pure function of the track).
 pub fn notes_for(track: &Track) -> PaceNotes {
     let n = track.samples.len();
-    let len = track.length;
+    let open = !track.is_loop();
+    // arc-length arithmetic: open stages use a "virtual loop" much longer than the road so
+    // distances never wrap from the finish back to the start
+    let len = if open { track.length * 2.0 + 2000.0 } else { track.length };
     let ds = SAMPLE_SPACING;
-    let at = |i: isize| &track.samples[i.rem_euclid(n as isize) as usize];
+    let at = |i: isize| &track.samples[track.sample_index(i)];
     let kavg = avg_abs_curv(track, 2);
     let ksig: Vec<f32> = (0..n).map(|i| track.samples[i].curvature).collect();
 
     // ---- 1. corner runs: |k| above threshold with constant sign. Start at a straight sample.
     let k_on = 1.0 / 320.0;
-    let start = (0..n).find(|&i| ksig[i].abs() < k_on).unwrap_or(0);
+    let start = if open { 0 } else { (0..n).find(|&i| ksig[i].abs() < k_on).unwrap_or(0) };
     let mut runs: Vec<Run> = Vec::new();
     let mut cur: Option<Run> = None;
     for o in 0..=n {
@@ -406,8 +452,14 @@ pub fn notes_for(track: &Track) -> PaceNotes {
     let ns = split.len();
     for (ri, r) in split.iter().enumerate() {
         // linked corners (S-bends, "into"): the line cannot use the full width on both
-        let gap_prev = if ns > 1 { (r.i0 + n - split[(ri + ns - 1) % ns].i1 % n) % n } else { n };
-        let gap_next = if ns > 1 { (split[(ri + 1) % ns].i0 % n + n - r.i1 % n) % n } else { n };
+        let mut gap_prev = if ns > 1 { (r.i0 + n - split[(ri + ns - 1) % ns].i1 % n) % n } else { n };
+        let mut gap_next = if ns > 1 { (split[(ri + 1) % ns].i0 % n + n - r.i1 % n) % n } else { n };
+        if open && ri == 0 {
+            gap_prev = n;
+        }
+        if open && ri + 1 == ns {
+            gap_next = n;
+        }
         let linked = (gap_prev.min(gap_next) as f32) * ds < 14.0;
         let angle: f32 = (r.i0..=r.i1).map(|i| ksig[i % n].abs() * ds).sum();
         let angle_deg = angle.to_degrees();
@@ -649,6 +701,68 @@ pub fn notes_for(track: &Track) -> PaceNotes {
         }
     }
 
+    // ---- weather calls where the conditions change (dynamic stages)
+    if !track.conditions.keys.is_empty() && track.conditions.keys.len() > 1 {
+        let (a, b) = if open { (track.start_s, track.finish_s) } else { (0.0, track.length) };
+        let mut prev = track.conditions.at(a);
+        let mut last_call = f32::MIN;
+        let mut calls: Vec<(f32, WeatherCall, bool)> = Vec::new(); // (s, call, caution)
+        let step = 10.0;
+        let mut s = a + step;
+        let lookahead = 150.0;
+        let mut rain_called = false;
+        while s < b {
+            let w = track.conditions.at(s);
+            let ahead = track.conditions.at((s + lookahead).min(b));
+            if !rain_called && ahead.precipitation > 0.25 && w.precipitation < 0.1 {
+                calls.push((s, if ahead.snow { WeatherCall::Snow } else { WeatherCall::RainAhead }, false));
+                rain_called = true;
+            }
+            if w.precipitation < 0.05 && ahead.precipitation < 0.05 {
+                rain_called = false;
+            }
+            if prev.wetness < 0.35 && w.wetness >= 0.35 && !w.snow {
+                calls.push((s, WeatherCall::Wet, true));
+            }
+            if prev.wetness >= 0.3 && w.wetness < 0.3 {
+                calls.push((s, WeatherCall::Drying, false));
+            }
+            let dusty = track.biome == crate::biome::Biome::Desert;
+            if prev.fog < 0.4 && w.fog >= 0.4 {
+                calls.push((s, if dusty { WeatherCall::Dust } else { WeatherCall::Fog }, w.fog > 0.7 || dusty));
+            }
+            prev = w;
+            s += step;
+        }
+        for (sc, call, caution) in calls {
+            if sc - last_call < 120.0 {
+                continue;
+            }
+            last_call = sc;
+            let mut mods = vec![Modifier::Weather(call)];
+            // inside a corner: attach to it
+            let target = notes.iter().position(|nt| {
+                let span = fwd(nt.s_start, nt.s_end);
+                fwd(nt.s_start, sc) <= span
+            });
+            match target {
+                Some(t) => notes[t].modifiers.push(Modifier::Weather(call)),
+                None => {
+                    if caution {
+                        mods.insert(0, Modifier::Caution);
+                    }
+                    extra.push(blank(sc, sc + 10.0, NoteKind::Hazard, mods));
+                }
+            }
+        }
+    }
+    if open {
+        // nothing before the start line or past the finish; then the finish call itself
+        notes.retain(|nt| nt.s_start >= track.start_s - 2.0 && nt.s_start < track.finish_s - 5.0);
+        extra.retain(|nt| nt.s_start >= track.start_s - 2.0 && nt.s_start < track.finish_s - 5.0);
+        extra.push(blank(track.finish_s, track.finish_s + 4.0, NoteKind::Finish, vec![]));
+    }
+
     // ---- 6. merge, order, cautions, links
     notes.extend(extra);
     notes.sort_by(|a, b| a.s_start.partial_cmp(&b.s_start).unwrap());
@@ -665,8 +779,10 @@ pub fn notes_for(track: &Track) -> PaceNotes {
     // cautions: how much braking is needed + blind / slippery / tightening factors
     let mut prev_exit_speed = 0.0f32;
     let mut prev_end = 0.0f32;
-    // find the last corner before s=0 to seed the approach model
-    if let Some(last) = notes.iter().rev().find(|nt| nt.is_corner()) {
+    // find the last corner before s=0 to seed the approach model (stages: standing start)
+    if open {
+        prev_end = track.start_s;
+    } else if let Some(last) = notes.iter().rev().find(|nt| nt.is_corner()) {
         prev_exit_speed = last.speed_kmh / 3.6;
         prev_end = last.s_end;
     }
@@ -703,6 +819,9 @@ pub fn notes_for(track: &Track) -> PaceNotes {
         if nt.has(Modifier::Jump) && nt.severity <= 4 {
             score += 1;
         }
+        if matches!(nt.weather(), Some(WeatherCall::Wet) | Some(WeatherCall::Fog) | Some(WeatherCall::Dust)) && nt.severity <= 3 {
+            score += 1;
+        }
         if score >= 3 {
             nt.modifiers.insert(0, Modifier::DoubleCaution);
         } else if score == 2 {
@@ -712,6 +831,10 @@ pub fn notes_for(track: &Track) -> PaceNotes {
         prev_end = nt.s_end;
     }
     for k in 0..m {
+        if open && notes[k].kind == NoteKind::Finish {
+            notes[k].distance_to_next = 0;
+            continue;
+        }
         let nx = (k + 1) % m;
         let gap = fwd(notes[k].s_end, notes[nx].s_start);
         let gap = if gap > len * 0.9 { 0.0 } else { gap }; // overlapping notes

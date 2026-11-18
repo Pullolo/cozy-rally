@@ -72,10 +72,9 @@ enum Elem {
 impl Elem {
     fn len(&self, mains: &[f32]) -> f32 {
         match *self {
-            Elem::Straight { len, main: Some(k), frac } => {
-                let _ = len;
-                mains[k] * frac
-            }
+            // loops: main straights get their length from the closure solve; stages (no
+            // `mains`) use the stored length
+            Elem::Straight { main: Some(k), frac, .. } if k < mains.len() => mains[k] * frac,
             Elem::Straight { len, .. } => len,
             Elem::Curve { a, b, c, .. } => a + b + c,
         }
@@ -697,7 +696,12 @@ fn straight_window(curv: &[f32], spacing: f32, s: f32, before: f32, after: f32, 
     let i = (s / spacing).round() as isize;
     let b = (before / spacing) as isize;
     let a = (after / spacing) as isize;
-    (-b..=a).all(|k| curv[(i + k).rem_euclid(n) as usize].abs() < max_k)
+    // open roads: the ends simply count as straight (clamped)
+    (-b..=a).all(|k| {
+        let j = i + k;
+        let j = if j < 0 || j >= n { j.rem_euclid(n) } else { j };
+        curv[j as usize].abs() < max_k
+    })
 }
 
 /// Distance from s to the start of the next real corner (kinks don't count).
@@ -711,15 +715,30 @@ fn next_corner(features: &[Feature], s: f32, len: f32) -> f32 {
 
 /// Adds blind crests before/over corners, compressions and jumps. Returns jump take-off indices.
 pub fn shape_elevation(elev: &mut [f32], features: &[Feature], curv: &[f32], rng: &mut Rng, difficulty: u8, spacing: f32) -> Vec<usize> {
+    shape_elevation_ex(elev, features, curv, rng, difficulty, spacing, None)
+}
+
+/// `open` = Some((start_line_s, finish_line_s)) for point-to-point stages: no wrap-around, no
+/// features near the start area / finish / run-off, jump count scales with stage length.
+pub fn shape_elevation_ex(elev: &mut [f32], features: &[Feature], curv: &[f32], rng: &mut Rng, difficulty: u8, spacing: f32, open: Option<(f32, f32)>) -> Vec<usize> {
     let n = elev.len();
-    let len = n as f32 * spacing;
+    let road_len = n as f32 * spacing;
+    // distances on an open road: a "virtual loop" far longer than the road never wraps
+    let len = if open.is_some() { road_len * 2.0 + 2000.0 } else { road_len };
+    let idx = |i: isize| -> usize { if open.is_some() { i.clamp(0, n as isize - 1) as usize } else { i.rem_euclid(n as isize) as usize } };
     let d = (difficulty as usize).min(2);
-    let near_start = |s: f32| s < 90.0 || len - s < 120.0;
+    let near_start = |s: f32| match open {
+        Some((a, b)) => s < a + 70.0 || s > b - 70.0,
+        None => s < 90.0 || len - s < 120.0,
+    };
     let max_k = 1.0 / 90.0;
 
     // ---- jumps
     let mut jump_s: Vec<f32> = Vec::new();
-    let n_jumps = [1, rng.range_i(1, 3), rng.range_i(2, 4)][d] as usize + (len > 2200.0) as usize;
+    let n_jumps = match open {
+        Some((a, b)) => (((b - a) / 1000.0) * [0.3, 0.45, 0.6][d] + rng.f32()) as usize,
+        None => [1, rng.range_i(1, 3), rng.range_i(2, 4)][d] as usize + (len > 2200.0) as usize,
+    };
     for f in features.iter().filter(|f| f.jump_kink) {
         if jump_s.len() >= n_jumps {
             break;
@@ -761,7 +780,7 @@ pub fn shape_elevation(elev: &mut [f32], features: &[Feature], curv: &[f32], rng
         // the top (amp * pi^2 / (2 w^2) * v^2) stays below ~0.65 g
         let i0 = (f.s0 / spacing) as usize;
         let i1 = i0 + (f.len(len) / spacing) as usize;
-        let k_peak = (i0..=i1).map(|i| curv[i % n].abs()).fold(1e-4, f32::max);
+        let k_peak = (i0..=i1).map(|i| curv[idx(i as isize)].abs()).fold(1e-4, f32::max);
         let v_corner = (0.8 * 9.81 / k_peak).sqrt().min(40.0);
         let v = (v_corner * v_corner + 2.0 * 6.0 * lead.max(0.0)).sqrt().min(40.0);
         let amp_max = 0.65 * 9.81 * 2.0 * w * w / (std::f32::consts::PI.powi(2) * v * v);
@@ -794,7 +813,7 @@ pub fn shape_elevation(elev: &mut [f32], features: &[Feature], curv: &[f32], rng
         let ci = (c / spacing).round() as isize;
         for k in -r..=r {
             let x = (k as f32 * spacing / w).clamp(-1.0, 1.0);
-            let i = (ci + k).rem_euclid(n as isize) as usize;
+            let i = idx(ci + k);
             elev[i] += amp * 0.5 * (1.0 + (x * std::f32::consts::PI).cos());
         }
     }
@@ -802,11 +821,11 @@ pub fn shape_elevation(elev: &mut [f32], features: &[Feature], curv: &[f32], rng
     let max_step = 0.17 * spacing;
     for _ in 0..3 {
         for i in 0..n {
-            let prev = elev[(i + n - 1) % n];
+            let prev = elev[idx(i as isize - 1)];
             elev[i] = elev[i].clamp(prev - max_step, prev + max_step);
         }
         for i in (0..n).rev() {
-            let next = elev[(i + 1) % n];
+            let next = elev[idx(i as isize + 1)];
             elev[i] = elev[i].clamp(next - max_step, next + max_step);
         }
     }
@@ -820,7 +839,7 @@ pub fn shape_elevation(elev: &mut [f32], features: &[Feature], curv: &[f32], rng
         let down = 3isize;
         let h = rng.range(hlo, hhi);
         for k in -up..=down {
-            let i = (j + k).rem_euclid(n as isize) as usize;
+            let i = idx(j + k);
             let f = if k <= 0 {
                 let t = (k + up) as f32 / up as f32;
                 t * t * (3.0 - 2.0 * t)
@@ -829,7 +848,410 @@ pub fn shape_elevation(elev: &mut [f32], features: &[Feature], curv: &[f32], rng
             };
             elev[i] += h * f;
         }
-        jumps.push(j.rem_euclid(n as isize) as usize);
+        jumps.push(idx(j));
     }
     jumps
+}
+
+// =============================================================================================
+// Point-to-point stages
+// =============================================================================================
+
+/// An open (A→B) stage layout. Arc length 0 is the very beginning of the road (start area);
+/// the start line is at `start_s`, the finish line at `finish_s`, followed by a straight run-off.
+pub struct StageLayout {
+    pub pts: Vec<Vec2>,
+    pub features: Vec<Feature>,
+    pub tech: Vec<f32>,
+    pub camber: Vec<f32>,
+    pub start_s: f32,
+    pub finish_s: f32,
+    /// Designed elevation changes (s0, s1, rise m): switchbacks climbing / descending a hill
+    pub climbs: Vec<(f32, f32, f32)>,
+}
+
+/// Start area length before the start line, and run-off after the finish line (m)
+pub const STAGE_PRE_START: f32 = 80.0;
+pub const STAGE_RUN_OFF: f32 = 220.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Section {
+    Fast,
+    Technical,
+    Mountain,
+    Junctions,
+}
+
+impl Planner<'_> {
+    /// Zig-zag of `count` alternating hairpins joined by short climbing legs.
+    fn switchback(&mut self, first: f32, count: usize, out: &mut Vec<Elem>) {
+        for k in 0..count {
+            let sign = if k % 2 == 0 { first } else { -first };
+            let h = deg(self.rng.range(150.0, 170.0));
+            let e = self.hairpin(sign, h);
+            out.push(e);
+            if k + 1 < count {
+                let l = self.link(45.0, 85.0);
+                out.push(l);
+            }
+        }
+    }
+}
+
+fn wrap_pi(a: f32) -> f32 {
+    let mut a = a.rem_euclid(TAU);
+    if a > std::f32::consts::PI {
+        a -= TAU;
+    }
+    a
+}
+
+/// Incremental clearance grid for the stage walk (points every ~2 m with their arc length).
+struct WalkGrid {
+    cell: f32,
+    cells: std::collections::HashMap<(i32, i32), Vec<u32>>,
+    pts: Vec<(Vec2, f32)>,
+}
+
+impl WalkGrid {
+    fn key(&self, p: Vec2) -> (i32, i32) {
+        ((p.x / self.cell).floor() as i32, (p.y / self.cell).floor() as i32)
+    }
+
+    fn push(&mut self, p: Vec2, s: f32) {
+        let k = self.key(p);
+        self.cells.entry(k).or_default().push(self.pts.len() as u32);
+        self.pts.push((p, s));
+    }
+
+    fn truncate(&mut self, len: usize) {
+        while self.pts.len() > len {
+            let (p, _) = self.pts.pop().unwrap();
+            let k = self.key(p);
+            let i = self.pts.len() as u32;
+            if let Some(v) = self.cells.get_mut(&k) {
+                v.retain(|&j| j != i);
+            }
+        }
+    }
+
+    /// Is `p` (at arc length s) clear of every committed point far enough along the road?
+    fn clear(&self, p: Vec2, s: f32, near: f32, far: f32) -> bool {
+        let r = (far / self.cell).ceil() as i32;
+        let (cx, cz) = self.key(p);
+        for z in cz - r..=cz + r {
+            for x in cx - r..=cx + r {
+                if let Some(v) = self.cells.get(&(x, z)) {
+                    for &j in v {
+                        let (q, sq) = self.pts[j as usize];
+                        let ds = (s - sq).abs();
+                        if ds < 36.0 {
+                            continue;
+                        }
+                        let req = if ds < 120.0 { near } else { (near + (ds - 120.0) * 0.2).min(far) };
+                        if p.distance_squared(q) < req * req {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        true
+    }
+}
+
+/// Integrate `elems` from (pos, heading, s); returns fine points every ~0.5 m with arc length,
+/// each element's start s, the end pose.
+fn integrate_open(elems: &[Elem], mut p: Vec2, mut th: f32, mut s: f32) -> (Vec<(Vec2, f32)>, Vec<f32>, Vec2, f32, f32) {
+    let mut pts = Vec::new();
+    let mut starts = Vec::with_capacity(elems.len());
+    for e in elems {
+        starts.push(s);
+        let len = e.len(&[]);
+        let steps = (len / 0.5).ceil().max(1.0) as usize;
+        let h = len / steps as f32;
+        for i in 0..steps {
+            let k = e.curvature((i as f32 + 0.5) * h);
+            let th_mid = th + k * h * 0.5;
+            th += k * h;
+            p += Vec2::new(th_mid.cos(), th_mid.sin()) * h;
+            s += h;
+            pts.push((p, s));
+        }
+    }
+    (pts, starts, p, th, s)
+}
+
+/// Design an open rally stage of roughly `stage_len` metres between start and finish line.
+/// `natural(x, z)` is the untouched terrain height (switchbacks prefer to climb real hills).
+#[allow(clippy::too_many_arguments)]
+pub fn design_stage(rng: &mut Rng, difficulty: u8, stage_len: f32, spacing: f32, max_half_width: f32, shoulder: f32, natural: &dyn Fn(f32, f32) -> f32) -> Option<StageLayout> {
+    let d = (difficulty as usize).min(2);
+    let near = 2.0 * (max_half_width + shoulder) + 6.0;
+    let far = near + 26.0;
+
+    // ---- sections along the stage
+    let mut sections: Vec<(Section, f32)> = Vec::new(); // (kind, end s relative to start line)
+    let w = [[0.42, 0.30, 0.10, 0.18], [0.32, 0.36, 0.16, 0.16], [0.22, 0.42, 0.22, 0.14]][d];
+    let mut acc = 0.0;
+    let mut has_mountain = false;
+    while acc < stage_len {
+        let r = rng.f32();
+        let mut kind = if r < w[0] {
+            Section::Fast
+        } else if r < w[0] + w[1] {
+            Section::Technical
+        } else if r < w[0] + w[1] + w[2] {
+            Section::Mountain
+        } else {
+            Section::Junctions
+        };
+        // the first stretch after the start is always a fast one; no two mountains in a row
+        if sections.is_empty() {
+            kind = Section::Fast;
+        }
+        if kind == Section::Mountain && sections.last().is_some_and(|l| l.0 == Section::Mountain) {
+            kind = Section::Technical;
+        }
+        let l = match kind {
+            Section::Fast => rng.range(450.0, 950.0),
+            Section::Technical => rng.range(400.0, 900.0),
+            Section::Mountain => rng.range(350.0, 650.0),
+            Section::Junctions => rng.range(250.0, 450.0),
+        };
+        has_mountain |= kind == Section::Mountain;
+        acc += l;
+        sections.push((kind, acc));
+    }
+    if !has_mountain && d >= 1 && stage_len >= 3500.0 && sections.len() > 2 {
+        let k = rng.range_i(1, sections.len() as i32 - 1) as usize;
+        sections[k].0 = Section::Mountain;
+    }
+
+    // ---- macro route: the general direction the stage wanders in
+    let phi0 = rng.range(0.0, TAU);
+    let (a1, l1, p1) = (rng.range(0.6, 1.15), rng.range(2200.0, 3800.0), rng.range(0.0, TAU));
+    let (a2, l2, p2) = (rng.range(0.25, 0.6), rng.range(800.0, 1300.0), rng.range(0.0, TAU));
+    let route = |s: f32| phi0 + a1 * (TAU * s / l1 + p1).sin() + a2 * (TAU * s / l2 + p2).sin();
+
+    let mut grid = WalkGrid { cell: 16.0, cells: Default::default(), pts: Vec::new() };
+    let mut elems: Vec<Elem> = Vec::new();
+    let mut elem_s: Vec<f32> = Vec::new();
+    // undo stack: (elems len, grid len, pose)
+    let mut stack: Vec<(usize, usize, Vec2, f32, f32)> = Vec::new();
+    let mut climbs: Vec<(f32, f32, f32, usize)> = Vec::new(); // + elems len at creation
+    let (mut pos, mut th, mut s) = (Vec2::ZERO, phi0, 0.0f32);
+    grid.push(pos, 0.0);
+
+    // start area + first straight (the start line sits STAGE_PRE_START into it)
+    let first = Elem::Straight { len: STAGE_PRE_START + rng.range(110.0, 170.0), main: Some(0), frac: 1.0 };
+    {
+        let (pts, starts, p, t, s1) = integrate_open(&[first], pos, th, s);
+        for (q, sq) in pts.iter().step_by(4) {
+            grid.push(*q, *sq);
+        }
+        elems.push(first);
+        elem_s.extend(starts);
+        pos = p;
+        th = t;
+        s = s1;
+    }
+    let start_s = STAGE_PRE_START;
+    let target_finish = start_s + stage_len;
+    let mut failures = 0;
+    let mut fails_here = 0;
+    let mut finish_s = 0.0;
+    let mut finished = false;
+    let mut main_idx = 1usize;
+    while !finished {
+        if failures > 600 {
+            return None;
+        }
+        let rel = s - start_s;
+        let section = sections.iter().find(|x| rel < x.1).map(|x| x.0).unwrap_or(Section::Fast);
+        let mut group: Vec<Elem> = Vec::new();
+        let mut climb: Option<f32> = None;
+        let remaining = target_finish - s;
+        let mut pl = Planner { rng: &mut *rng, d };
+        if remaining < 260.0 {
+            // finish: a straight up to the line, then the run-off
+            let l = remaining.max(90.0);
+            group.push(Elem::Straight { len: l, main: Some(main_idx), frac: 1.0 });
+            group.push(Elem::Straight { len: STAGE_RUN_OFF, main: Some(usize::MAX), frac: 1.0 });
+        } else {
+            let want = wrap_pi(route(rel + 200.0) - th);
+            let jitter = pl.rng.range(-0.55, 0.55);
+            let delta = (want * 0.85 + jitter).clamp(-deg(115.0), deg(115.0));
+            let sign = if delta.abs() < 1e-3 { if pl.rng.chance(0.5) { 1.0 } else { -1.0 } } else { delta.signum() };
+            let mag = delta.abs();
+            match section {
+                Section::Fast => {
+                    let l = pl.rng.range(120.0, 320.0) * [1.0, 0.9, 0.8][d];
+                    if pl.rng.chance(0.35) {
+                        let f = pl.rng.range(0.35, 0.65);
+                        group.push(Elem::Straight { len: l * f, main: Some(main_idx), frac: 1.0 });
+                        pl.insert(&mut group);
+                        group.push(Elem::Straight { len: l * (1.0 - f), main: Some(main_idx), frac: 1.0 });
+                    } else {
+                        group.push(Elem::Straight { len: l, main: Some(main_idx), frac: 1.0 });
+                    }
+                    if mag < deg(18.0) {
+                        let e = pl.kink(sign, mag.max(deg(7.0)));
+                        group.push(e);
+                    } else if pl.rng.chance(0.55) {
+                        let e = pl.sweeper(sign, mag);
+                        group.push(e);
+                    } else {
+                        let e = pl.single(sign, mag);
+                        group.push(e);
+                    }
+                }
+                Section::Technical => {
+                    let l = pl.rng.range(20.0, 75.0);
+                    group.push(Elem::Straight { len: l, main: Some(main_idx), frac: 1.0 });
+                    let r = pl.rng.f32();
+                    let mag = mag.max(deg(30.0));
+                    let kind = if r < 0.28 {
+                        JunctionKind::SBend
+                    } else if r < 0.5 {
+                        JunctionKind::Double
+                    } else if r < 0.62 && d >= 1 {
+                        JunctionKind::Hairpin
+                    } else if r < 0.74 {
+                        JunctionKind::Square
+                    } else {
+                        JunctionKind::Single
+                    };
+                    pl.junction(kind, sign, mag.min(deg(110.0)), &mut group);
+                    if pl.rng.chance([0.15, 0.25, 0.35][d]) {
+                        group.push(Elem::Straight { len: pl.rng.range(25.0, 50.0), main: Some(main_idx), frac: 1.0 });
+                        pl.insert(&mut group);
+                    }
+                }
+                Section::Mountain => {
+                    group.push(Elem::Straight { len: pl.rng.range(40.0, 90.0), main: Some(main_idx), frac: 1.0 });
+                    let count = if d == 2 && pl.rng.chance(0.4) { 4 } else { 2 };
+                    let n0 = group.len();
+                    pl.switchback(sign, count, &mut group);
+                    let len: f32 = group[n0..].iter().map(|e| e.len(&[])).sum();
+                    // climb the real hill if there is one nearby, otherwise mostly up
+                    let ahead = pos + Vec2::new(th.cos(), th.sin()) * 120.0;
+                    let side = Vec2::new(-th.sin(), th.cos()) * sign * 60.0;
+                    let up = natural((ahead + side).x, (ahead + side).y) >= natural(pos.x, pos.y) - 2.0;
+                    let rise = (len * pl.rng.range(0.06, 0.09)).min(26.0) * if up || pl.rng.chance(0.3) { 1.0 } else { -1.0 };
+                    climb = Some(rise);
+                    // leave the zig-zag with a short straight
+                    group.push(Elem::Straight { len: pl.rng.range(30.0, 60.0), main: Some(main_idx), frac: 1.0 });
+                }
+                Section::Junctions => {
+                    group.push(Elem::Straight { len: pl.rng.range(60.0, 170.0), main: Some(main_idx), frac: 1.0 });
+                    let a = deg(pl.rng.range(82.0, 98.0));
+                    let e = pl.square(sign, a);
+                    group.push(e);
+                }
+            }
+        }
+        // ---- try to commit the group
+        let (pts, starts, p, t, s1) = integrate_open(&group, pos, th, s);
+        let mut ok = true;
+        let mut fresh = WalkGrid { cell: 16.0, cells: Default::default(), pts: Vec::new() };
+        for (q, sq) in pts.iter().step_by(4) {
+            if !grid.clear(*q, *sq, near, far) || !fresh.clear(*q, *sq, near, far) {
+                ok = false;
+                break;
+            }
+            fresh.push(*q, *sq);
+        }
+        if ok {
+            stack.push((elems.len(), grid.pts.len(), pos, th, s));
+            if let Some(rise) = climb {
+                // the climb spans the hairpins (not the approach / exit straights)
+                let a = starts[1];
+                let b = *starts.last().unwrap();
+                climbs.push((a, b, rise, elems.len()));
+            }
+            for (q, sq) in pts.iter().step_by(4) {
+                grid.push(*q, *sq);
+            }
+            if remaining < 260.0 {
+                finish_s = starts[1];
+                finished = true;
+            }
+            elems.extend(group);
+            elem_s.extend(starts);
+            pos = p;
+            th = t;
+            s = s1;
+            main_idx += 1;
+            fails_here = 0;
+        } else {
+            failures += 1;
+            fails_here += 1;
+            if fails_here > 8 {
+                // backtrack one group
+                fails_here = 0;
+                if let Some((el, gl, p0, t0, s0)) = stack.pop() {
+                    elems.truncate(el);
+                    elem_s.truncate(el);
+                    grid.truncate(gl);
+                    climbs.retain(|c| c.3 < el);
+                    pos = p0;
+                    th = t0;
+                    s = s0;
+                } else {
+                    return None;
+                }
+            }
+        }
+    }
+
+    // ---- resample the whole road uniformly
+    let (fine, starts, _, _, total) = integrate_open(&elems, Vec2::ZERO, phi0, 0.0);
+    let mut poly: Vec<Vec2> = vec![Vec2::ZERO];
+    poly.extend(fine.iter().map(|(p, _)| *p));
+    let count = (total / spacing).round() as usize + 1;
+    // resample_loop samples `count` points over [0, total) – add one more step to reach the end
+    let pts = resample_loop(&poly, count - 1);
+    let mut pts = pts;
+    pts.push(*poly.last().unwrap());
+    let n = pts.len();
+    let scale = (n - 1) as f32 * spacing / total;
+
+    // features + per-sample technical / camber
+    let mut features = Vec::new();
+    let mut tech = vec![0.0f32; n];
+    let mut camber = vec![1.0f32; n];
+    for (ei, e) in elems.iter().enumerate() {
+        let s0 = starts[ei] * scale;
+        let l = e.len(&[]) * scale;
+        let s1 = s0 + l;
+        match *e {
+            Elem::Straight { main, .. } => {
+                let main = match main {
+                    Some(usize::MAX) => Some(0), // run-off: no features
+                    m => m,
+                };
+                features.push(Feature { kind: FeatureKind::Straight, s0, s1, main, jump_kink: false, camber: 1.0 });
+            }
+            Elem::Curve { kind, camber: cam, tech: t, jump_kink, .. } => {
+                features.push(Feature { kind, s0, s1, main: None, jump_kink, camber: cam });
+                let i0 = (s0 / spacing).floor() as isize;
+                let i1 = i0 + (l / spacing).ceil() as isize;
+                for i in i0 - 6..=i1 + 6 {
+                    if i < 0 || i >= n as isize {
+                        continue;
+                    }
+                    let j = i as usize;
+                    let edge = if i < i0 { (i0 - i) as f32 / 6.0 } else if i > i1 { (i - i1) as f32 / 6.0 } else { 0.0 };
+                    tech[j] = tech[j].max(t * (1.0 - edge));
+                    if (i0..=i1).contains(&i) {
+                        camber[j] = cam;
+                    }
+                }
+            }
+        }
+    }
+    let climbs = climbs.iter().map(|c| (c.0 * scale, c.1 * scale, c.2)).collect();
+    let _ = elem_s;
+    Some(StageLayout { pts, features, tech, camber, start_s: start_s * scale, finish_s: finish_s * scale, climbs })
 }

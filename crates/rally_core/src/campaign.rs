@@ -67,7 +67,14 @@ impl MedalTimes {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stage(id: &str, name: &str, blurb: &str, seed: u64, biome: Biome, km: f32, difficulty: u8, surface: SurfaceMode, cars: &[u8]) -> StageDef {
+    stage_c(id, name, blurb, seed, biome, km, difficulty, surface, cars, ConditionsSpec::Dynamic)
+}
+
+/// Same as `stage` with an explicit conditions spec (e.g. `ConditionsSpec::Storm`)
+#[allow(clippy::too_many_arguments)]
+fn stage_c(id: &str, name: &str, blurb: &str, seed: u64, biome: Biome, km: f32, difficulty: u8, surface: SurfaceMode, cars: &[u8], conditions: ConditionsSpec) -> StageDef {
     StageDef {
         id: id.into(),
         name: name.into(),
@@ -79,7 +86,7 @@ fn stage(id: &str, name: &str, blurb: &str, seed: u64, biome: Biome, km: f32, di
             difficulty,
             surface,
             layout: LayoutKind::PointToPoint { length_m: km * 1000.0 },
-            conditions: ConditionsSpec::Dynamic,
+            conditions,
         },
         cars: cars.to_vec(),
     }
@@ -96,9 +103,9 @@ pub fn campaign() -> Vec<Chapter> {
             biome: Meadow,
             unlock_golds: 0,
             stages: vec![
-                stage("c1s1-buttercup-lane", "Buttercup Lane", "A gentle gravel warm-up through the meadows.", 1101, Meadow, 3.0, 1, BiomeDefault, &[]),
+                stage("c1s1-buttercup-lane", "Buttercup Lane", "A gentle gravel warm-up through the meadows.", 1106, Meadow, 3.0, 0, BiomeDefault, &[]),
                 stage("c1s2-hazel-hollow", "Hazel Hollow", "Narrow lanes, blind crests and a passing shower.", 1102, Meadow, 3.8, 1, Mixed, &[]),
-                stage("c1s3-windmill-run", "Windmill Run", "Fast and flowing — until the fog rolls in.", 1103, Meadow, 4.5, 2, BiomeDefault, &[]),
+                stage("c1s3-windmill-run", "Windmill Run", "Fast and flowing — until the fog rolls in.", 1103, Meadow, 4.5, 1, BiomeDefault, &[]),
             ],
         },
         Chapter {
@@ -107,8 +114,8 @@ pub fn campaign() -> Vec<Chapter> {
             unlock_golds: 2,
             stages: vec![
                 stage("c2s1-copper-leaf", "Copper Leaf", "Slippery dirt under a carpet of leaves.", 2101, Autumn, 3.5, 1, BiomeDefault, &[]),
-                stage("c2s2-mushroom-dell", "Mushroom Dell", "Rain-soaked hairpins and muddy ruts.", 2102, Autumn, 4.5, 2, Mixed, &[]),
-                stage("c2s3-owl-ridge", "Owl Ridge", "A long, technical climb into the evening storm.", 2103, Autumn, 6.0, 2, BiomeDefault, &[]),
+                stage("c2s2-mushroom-dell", "Mushroom Dell", "Rain-soaked hairpins and muddy ruts.", 2102, Autumn, 4.5, 1, Mixed, &[]),
+                stage_c("c2s3-owl-ridge", "Owl Ridge", "A long, technical climb into the evening storm.", 2103, Autumn, 6.0, 2, BiomeDefault, &[], ConditionsSpec::Storm),
             ],
         },
         Chapter {
@@ -118,7 +125,7 @@ pub fn campaign() -> Vec<Chapter> {
             stages: vec![
                 stage("c3s1-lighthouse-dash", "Lighthouse Dash", "Coastal tarmac with sea spray and gusts.", 3101, Coast, 4.0, 1, Tarmac, &[]),
                 stage("c3s2-cliffside", "Cliffside", "Tarmac and gravel mixed above the waves.", 3102, Coast, 5.0, 2, Mixed, &[]),
-                stage("c3s3-harbour-storm", "Harbour Storm", "Everything the coast can throw at you.", 3103, Coast, 6.5, 2, Mixed, &[]),
+                stage_c("c3s3-harbour-storm", "Harbour Storm", "Everything the coast can throw at you.", 3103, Coast, 6.5, 2, Mixed, &[], ConditionsSpec::Storm),
             ],
         },
         Chapter {
@@ -136,9 +143,9 @@ pub fn campaign() -> Vec<Chapter> {
             biome: Biome::Snow,
             unlock_golds: 11,
             stages: vec![
-                stage("c5s1-snowglobe", "Snowglobe", "Packed snow and gentle snowfall.", 5101, Biome::Snow, 4.0, 1, BiomeDefault, &[]),
+                stage("c5s1-snowglobe", "Snowglobe", "Packed snow and gentle snowfall.", 5101, Biome::Snow, 4.0, 2, BiomeDefault, &[]),
                 stage("c5s2-icicle-pass", "Icicle Pass", "Ice patches on the shady side of the pass.", 5102, Biome::Snow, 5.5, 2, Mixed, &[]),
-                stage("c5s3-summit-blizzard", "Summit Blizzard", "The final test: a blizzard at the top.", 5103, Biome::Snow, 7.5, 2, SurfaceMode::Snow, &[]),
+                stage_c("c5s3-summit-blizzard", "Summit Blizzard", "The final test: a blizzard at the top.", 5103, Biome::Snow, 7.5, 2, SurfaceMode::Snow, &[], ConditionsSpec::Storm),
             ],
         },
     ]

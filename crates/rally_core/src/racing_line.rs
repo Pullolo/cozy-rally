@@ -167,12 +167,8 @@ impl RacingLine {
         smooth_closed(&mut vcurv, 2, 2);
         let length = seg.iter().sum();
         let raw_grip: Vec<f32> = (0..n)
-            .map(|i| {
-                let m = track.surface_map.mix_at(track.samples[i].s, offset[i]);
-                let a = m.a.props().grip;
-                let b = m.b.props().grip;
-                a + (b - a) * m.t
-            })
+            // surface blend x weather (wet roads, puddles) where the line runs
+            .map(|i| track.road_grip_at(track.samples[i].s, offset[i]))
             .collect();
         let grip: Vec<f32> = (0..n).map(|i| (-2isize..=2).map(|k| raw_grip[wrap(i as isize + k, n)]).fold(f32::MAX, f32::min)).collect();
         let bank_into: Vec<f32> = (0..n).map(|i| track.samples[i].bank * curvature[i].signum()).collect();

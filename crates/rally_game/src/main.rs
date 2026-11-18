@@ -11,6 +11,7 @@ mod hud;
 mod input;
 mod models;
 mod pacenotes_hud;
+mod weather_view;
 mod render;
 mod settings;
 mod ui;

@@ -96,6 +96,8 @@ pub enum ConditionsSpec {
     Fixed(WeatherPreset),
     /// Seeded, changing conditions along the stage (rain fronts, fog banks, drying roads…)
     Dynamic,
+    /// Like Dynamic, but the weather builds into a storm over the stage
+    Storm,
 }
 
 /// A keyframe on the conditions timeline (arc length in metres).

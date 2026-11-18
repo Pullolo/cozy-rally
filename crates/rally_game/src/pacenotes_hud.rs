@@ -5,7 +5,7 @@
 use crate::game::{RaceSession, Viewport};
 use crate::ui::*;
 use macroquad::prelude::*;
-use rally_core::pacenotes::{notes_for, upcoming, Direction, Modifier, NoteKind, PaceNote, PaceNotes};
+use rally_core::pacenotes::{notes_for, upcoming, Direction, Modifier, NoteKind, PaceNote, PaceNotes, WeatherCall};
 use rally_core::race::RacePhase;
 use rally_core::surface::Surface;
 use rally_core::surfacemap::road_color;
@@ -93,6 +93,11 @@ pub fn draw_pace_notes(session: &RaceSession, player: usize, vp: &Viewport) {
         });
     }
     let track = session.track();
+    // rain / snow over this viewport (placeholder until 3D precipitation exists)
+    if let Some(lp) = session.players.get(player) {
+        let w = track.conditions.at(session.world.race.racers[lp.car].s);
+        crate::weather_view::draw_overlay(&w, vp.x, vp.y, vp.w, vp.h, crate::hud::hud_scale(vp));
+    }
     let key = (std::sync::Arc::as_ptr(&session.world.track) as usize, track.params.seed, track.length.to_bits());
     STATE.with(|st| {
         let mut st = st.borrow_mut();
@@ -245,7 +250,6 @@ fn draw_card(n: &PaceNote, x: f32, y: f32, size: f32, alpha: f32, inside: bool, 
     draw_rectangle(x, y + size * 0.12, size, r, with_alpha(CREAM, alpha * 0.96));
 
     let ink = with_alpha(INK, alpha);
-    let gx = x + size * 0.08;
     let gy = y + size * 0.16;
     let gs = size * 0.52;
     let number: Option<String> = match n.kind {
@@ -272,8 +276,12 @@ fn draw_card(n: &PaceNote, x: f32, y: f32, size: f32, alpha: f32, inside: bool, 
         }
         NoteKind::Crest => draw_crest(x + size * 0.5, gy + gs * 0.85, gs * 0.9, ink, false),
         NoteKind::Jump => draw_crest(x + size * 0.5, gy + gs * 0.85, gs * 0.9, ink, true),
+        NoteKind::Finish => draw_finish_flag(x + size * 0.5, gy + gs * 0.5, gs * 0.42, alpha),
         NoteKind::Hazard => {
-            if let Some(sf) = n.surface_change() {
+            if let Some(w) = n.weather() {
+                draw_weather_icon(w, x + size * 0.5, gy + gs * 0.5, gs * 0.42, alpha);
+                text_centered(&w.word().to_uppercase(), x + size * 0.5, gy + gs * 1.12, size * 0.12, ink);
+            } else if let Some(sf) = n.surface_change() {
                 draw_surface_badge(sf, biome, x + size * 0.5, gy + gs * 0.5, gs * 0.42, alpha);
                 text_centered(&surface_short(sf, n.has(Modifier::Patch)), x + size * 0.5, gy + gs * 1.12, size * 0.13, ink);
             } else if n.has(Modifier::Compression) {
@@ -318,6 +326,11 @@ fn draw_card(n: &PaceNote, x: f32, y: f32, size: f32, alpha: f32, inside: bool, 
     }
     if n.has(Modifier::OffCamber) {
         badges.push(Badge::OffCamber);
+    }
+    if n.kind != NoteKind::Hazard {
+        if let Some(w) = n.weather() {
+            badges.insert(badges.len().min(1), Badge::Weather(w));
+        }
     }
     badges.truncate(4);
     let br = size * 0.1;
@@ -515,6 +528,7 @@ enum Badge {
     DontCut,
     Narrows,
     OffCamber,
+    Weather(WeatherCall),
 }
 
 fn draw_badge(b: Badge, cx: f32, cy: f32, r: f32, biome: rally_core::biome::Biome, alpha: f32, k: f32) {
@@ -528,6 +542,7 @@ fn draw_badge(b: Badge, cx: f32, cy: f32, r: f32, biome: rally_core::biome::Biom
             text_centered(label, cx, cy + r * 0.65, r * 1.6, ink);
         }
         Badge::Surface(s) => draw_surface_badge(s, biome, cx, cy, r * 0.9, alpha),
+        Badge::Weather(w) => draw_weather_icon(w, cx, cy, r * 0.95, alpha),
         _ => {
             draw_circle(cx, cy, r, with_alpha(Color::new(0.24, 0.20, 0.27, 0.12), alpha));
             match b {
@@ -558,6 +573,65 @@ fn draw_badge(b: Badge, cx: f32, cy: f32, r: f32, biome: rally_core::biome::Biom
                 }
                 _ => {}
             }
+        }
+    }
+}
+
+/// Small cloud / fog / dust / snow icon for weather calls
+fn draw_weather_icon(w: WeatherCall, cx: f32, cy: f32, r: f32, alpha: f32) {
+    let cloud = with_alpha(Color::new(0.62, 0.66, 0.74, 1.0), alpha);
+    let ink = with_alpha(INK, alpha);
+    let puff = |dx: f32, dy: f32, rr: f32, c: Color| draw_circle(cx + dx * r, cy + dy * r, rr * r, c);
+    match w {
+        WeatherCall::RainAhead | WeatherCall::Wet | WeatherCall::Snow => {
+            for (dx, dy, rr) in [(-0.45, -0.1, 0.38), (0.0, -0.32, 0.48), (0.45, -0.1, 0.38)] {
+                puff(dx, dy, rr, cloud);
+            }
+            draw_rectangle(cx - 0.8 * r, cy - 0.12 * r, 1.6 * r, 0.32 * r, cloud);
+            let drop = with_alpha(Color::new(0.35, 0.6, 0.95, 1.0), alpha);
+            for k in 0..3 {
+                let x = cx + (k as f32 - 1.0) * 0.45 * r;
+                if w == WeatherCall::Snow {
+                    draw_circle(x, cy + 0.55 * r, 0.12 * r, with_alpha(WHITE, alpha));
+                    draw_circle_lines(x, cy + 0.55 * r, 0.12 * r, 1.0, ink);
+                } else {
+                    draw_line(x + 0.08 * r, cy + 0.32 * r, x - 0.08 * r, cy + 0.72 * r, 0.12 * r, drop);
+                }
+            }
+            if w == WeatherCall::Wet {
+                draw_line(cx - 0.8 * r, cy + 0.92 * r, cx + 0.8 * r, cy + 0.92 * r, 0.1 * r, drop);
+            }
+        }
+        WeatherCall::Drying => {
+            let sun = with_alpha(BUTTER, alpha);
+            draw_circle(cx, cy, 0.42 * r, sun);
+            for k in 0..8 {
+                let a = k as f32 * std::f32::consts::TAU / 8.0;
+                draw_line(cx + a.cos() * 0.55 * r, cy + a.sin() * 0.55 * r, cx + a.cos() * 0.8 * r, cy + a.sin() * 0.8 * r, 0.1 * r, sun);
+            }
+        }
+        WeatherCall::Fog | WeatherCall::Dust => {
+            let c = if w == WeatherCall::Dust { with_alpha(Color::new(0.85, 0.66, 0.42, 1.0), alpha) } else { cloud };
+            for k in 0..3 {
+                let y = cy + (k as f32 - 1.0) * 0.38 * r;
+                let off = if k % 2 == 0 { 0.1 } else { -0.1 };
+                draw_line(cx - 0.8 * r + off * r, y, cx + 0.8 * r + off * r, y, 0.16 * r, c);
+            }
+        }
+    }
+}
+
+/// Chequered finish flag
+fn draw_finish_flag(cx: f32, cy: f32, r: f32, alpha: f32) {
+    let ink = with_alpha(INK, alpha);
+    draw_line(cx - 0.7 * r, cy - 0.9 * r, cx - 0.7 * r, cy + 1.0 * r, 0.1 * r, ink);
+    let cells = 4;
+    let w = 1.4 * r / cells as f32;
+    let h = 1.0 * r / 3.0;
+    for i in 0..cells {
+        for j in 0..3 {
+            let c = if (i + j) % 2 == 0 { with_alpha(WHITE, alpha) } else { ink };
+            draw_rectangle(cx - 0.65 * r + i as f32 * w, cy - 0.9 * r + j as f32 * h, w, h, c);
         }
     }
 }

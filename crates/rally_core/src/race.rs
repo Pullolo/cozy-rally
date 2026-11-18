@@ -38,6 +38,12 @@ pub struct RacerProgress {
     pub track_index: usize,
     pub lateral: f32,
     pub off_track: bool,
+    /// Point-to-point stages: race clock at each split passed (see `Track::splits`)
+    pub split_times: Vec<f32>,
+    /// Index of the next split to pass (stages)
+    pub next_split: usize,
+    /// 0..1 progress through the race (stages: start line -> finish line; loops: all laps)
+    pub progress: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -66,8 +72,11 @@ pub enum RaceEvent {
 
 impl Race {
     pub fn new(n_cars: usize, laps: u32, countdown: f32, track: &Track) -> Race {
+        // stages are a single run from the start line to the finish line
+        let laps = if track.is_loop() { laps } else { 1 };
+        let safe = if track.is_loop() { track.length - 10.0 } else { track.start_s };
         let racers = (0..n_cars)
-            .map(|_| RacerProgress { lap: 1, next_cp: 1, last_safe_s: track.length - 10.0, ..Default::default() })
+            .map(|_| RacerProgress { lap: 1, next_cp: 1, last_safe_s: safe, ..Default::default() })
             .collect();
         Race { laps, phase: RacePhase::Countdown(countdown), clock: 0.0, racers, finish_order: Vec::new(), finish_grace: 45.0, grace_timer: None }
     }
@@ -132,7 +141,44 @@ impl Race {
                 r.last_safe_s = q.s;
             }
 
-            if !r.finished && racing {
+            if !track.is_loop() {
+                // ---- point-to-point stage: splits in order, then the finish line
+                if !r.finished && racing {
+                    let near_road = q.dist < smp.half_width + 25.0;
+                    while r.next_split < track.splits.len() && near_road {
+                        let sp = track.splits[r.next_split];
+                        if q.s >= sp && q.s - sp < 60.0 {
+                            r.split_times.push(self.clock);
+                            r.next_split += 1;
+                            events.push(RaceEvent::Checkpoint { car: i });
+                        } else {
+                            break;
+                        }
+                    }
+                    if r.next_split >= track.splits.len() && near_road && q.s >= track.finish_s && q.s - track.finish_s < 80.0 {
+                        let t = self.clock;
+                        r.lap_times.push(t);
+                        r.best_lap = Some(t);
+                        r.finished = true;
+                        r.finish_time = Some(t);
+                        self.finish_order.push(i);
+                        let place = self.finish_order.len();
+                        events.push(RaceEvent::Finish { car: i, place, time: t });
+                        if self.grace_timer.is_none() {
+                            self.grace_timer = Some(self.finish_grace);
+                        }
+                    }
+                    let moving_back = car.vel.dot(smp.tangent) < -3.0;
+                    if moving_back {
+                        r.wrong_way_timer += dt;
+                    } else {
+                        r.wrong_way_timer = (r.wrong_way_timer - dt * 2.0).max(0.0);
+                    }
+                    r.wrong_way = r.wrong_way_timer > 1.2;
+                }
+                r.progress = if r.finished { 1.0 } else { track.stage_progress(q.s) };
+                r.total = q.s - track.start_s;
+            } else if !r.finished && racing {
                 // checkpoints
                 let target_cp = if r.next_cp >= n_cp { 0 } else { r.next_cp };
                 let cp_s = track.samples[track.checkpoints[target_cp]].s;
@@ -173,14 +219,17 @@ impl Race {
             }
 
             // progress total
-            let mut s_rel = q.s;
-            if r.next_cp <= 1 && s_rel > len * 0.6 {
-                s_rel -= len;
+            if track.is_loop() {
+                let mut s_rel = q.s;
+                if r.next_cp <= 1 && s_rel > len * 0.6 {
+                    s_rel -= len;
+                }
+                if r.next_cp >= n_cp && s_rel < len * 0.4 {
+                    s_rel += len;
+                }
+                r.total = (r.lap as f32 - 1.0) * len + s_rel;
+                r.progress = if r.finished { 1.0 } else { (r.total / (len * self.laps.max(1) as f32)).clamp(0.0, 1.0) };
             }
-            if r.next_cp >= n_cp && s_rel < len * 0.4 {
-                s_rel += len;
-            }
-            r.total = (r.lap as f32 - 1.0) * len + s_rel;
 
             // auto reset conditions
             let flipped = car.is_upside_down() && car.vel.length() < 4.0;

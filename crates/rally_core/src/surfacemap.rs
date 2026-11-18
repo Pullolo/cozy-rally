@@ -214,9 +214,24 @@ pub struct SurfacePlan {
 /// Plan the surfaces of a track. `hw` = per-sample half widths.
 #[allow(clippy::too_many_arguments)]
 pub fn plan(biome: Biome, mode: SurfaceMode, difficulty: u8, features: &[Feature], jumps: &[usize], hw: &[f32], spacing: f32, rng: &mut Rng) -> SurfacePlan {
+    plan_ex(biome, mode, difficulty, features, jumps, hw, spacing, rng, None)
+}
+
+/// `open` = Some((start_line_s, finish_line_s)) for point-to-point stages: arc lengths never
+/// wrap (the map uses a virtual length longer than the road), changes and patches stay
+/// between the start and finish lines and their number scales with the stage length.
+#[allow(clippy::too_many_arguments)]
+pub fn plan_ex(biome: Biome, mode: SurfaceMode, difficulty: u8, features: &[Feature], jumps: &[usize], hw: &[f32], spacing: f32, rng: &mut Rng, open: Option<(f32, f32)>) -> SurfacePlan {
     let d = (difficulty as usize).min(2);
     let n = hw.len();
-    let len = n as f32 * spacing;
+    let road_len = n as f32 * spacing;
+    let len = if open.is_some() { road_len * 2.0 + 2000.0 } else { road_len };
+    // the span that gets surface changes, and its length
+    let (span0, span_len) = match open {
+        Some((a, b)) => (a, b - a),
+        None => (0.0, len),
+    };
+    let long_factor = (span_len / 1800.0).max(1.0);
     let biome_road = biome.style().road_surface;
     let jump_s: Vec<f32> = jumps.iter().map(|&j| j as f32 * spacing).collect();
 
@@ -225,7 +240,7 @@ pub fn plan(biome: Biome, mode: SurfaceMode, difficulty: u8, features: &[Feature
         SurfaceMode::BiomeDefault => {
             if biome == Biome::Coast {
                 // tarmac with gravel sections
-                (Surface::Asphalt, Some(Surface::Gravel), [2, 2 + 2 * rng.chance(0.5) as usize, 4][d])
+                (Surface::Asphalt, Some(Surface::Gravel), [2, 2 + 2 * rng.chance(0.5) as usize, 4][d] + 2 * (long_factor as usize - 1).min(3))
             } else {
                 (biome_road, None, 0)
             }
@@ -239,7 +254,7 @@ pub fn plan(biome: Biome, mode: SurfaceMode, difficulty: u8, features: &[Feature
                 Biome::Autumn | Biome::Desert => Surface::Dirt,
                 Biome::Snow => Surface::Snow,
             };
-            let changes = if len > 2200.0 { 6 } else { 4 };
+            let changes = if open.is_some() { ((span_len / 900.0) as usize / 2 * 2).max(4) } else if len > 2200.0 { 6 } else { 4 };
             (Surface::Asphalt, Some(loose), changes)
         }
     };
@@ -255,16 +270,20 @@ pub fn plan(biome: Biome, mode: SurfaceMode, difficulty: u8, features: &[Feature
     }
     let ok_at = |s: f32| {
         let s = s.rem_euclid(len);
-        s > 70.0 && s < len - 90.0 && jump_s.iter().all(|&j| arc_dist(j, s + 8.0, len) > 40.0)
+        let inside = match open {
+            Some((a, b)) => s > a + 60.0 && s < b - 60.0,
+            None => s > 70.0 && s < len - 90.0,
+        };
+        inside && jump_s.iter().all(|&j| arc_dist(j, s + 8.0, len) > 40.0)
     };
     let mut transitions: Vec<SurfaceTransition> = Vec::new();
     if let Some(alt) = alt {
         let mut count = n_changes;
         while count >= 2 && transitions.is_empty() {
-            let off = rng.range(0.0, len / count as f32);
+            let off = rng.range(0.0, span_len / count as f32);
             let mut cuts: Vec<f32> = Vec::new();
             for i in 0..count {
-                let ideal = off + i as f32 * len / count as f32;
+                let ideal = span0 + off + i as f32 * span_len / count as f32;
                 // nearest admissible point
                 let mut best: Option<(f32, f32)> = None;
                 for &(a, b) in &intervals {
@@ -283,7 +302,7 @@ pub fn plan(biome: Biome, mode: SurfaceMode, difficulty: u8, features: &[Feature
                     }
                 }
                 if let Some((s, dd)) = best {
-                    if dd < len / count as f32 * 0.45 && cuts.iter().all(|&c| arc_dist(c, s, len) > (len * 0.1).max(110.0)) {
+                    if dd < span_len / count as f32 * 0.45 && cuts.iter().all(|&c| arc_dist(c, s, len) > (span_len * 0.1).max(110.0).min(450.0)) {
                         cuts.push(s);
                     }
                 }
@@ -328,7 +347,10 @@ pub fn plan(biome: Biome, mode: SurfaceMode, difficulty: u8, features: &[Feature
     if mode == SurfaceMode::Mixed {
         count = count.max(1);
     }
-    count += (len > 2200.0 && count > 0) as usize;
+    count += (len > 2200.0 && count > 0 && open.is_none()) as usize;
+    if open.is_some() {
+        count = (count as f32 * long_factor).round() as usize;
+    }
     let (lmin, lmax, feather) = match patch_surface {
         Surface::Ice => (7.0, 14.0, 0.22),
         Surface::Sand => (5.0, 11.0, 0.45),
@@ -343,7 +365,7 @@ pub fn plan(biome: Biome, mode: SurfaceMode, difficulty: u8, features: &[Feature
     let corners: Vec<&Feature> = features.iter().filter(|f| matches!(f.kind, FeatureKind::Medium | FeatureKind::Sweeper | FeatureKind::Opening | FeatureKind::Kink) && f.camber >= 0.0).collect();
     let mut patches: Vec<SurfacePatch> = Vec::new();
     let mut tries = 0;
-    while patches.len() < count && tries < 100 {
+    while patches.len() < count && tries < 100 * long_factor as usize {
         tries += 1;
         let half_len = rng.range(lmin, lmax);
         let l = half_len * 2.0;
@@ -361,7 +383,10 @@ pub fn plan(biome: Biome, mode: SurfaceMode, difficulty: u8, features: &[Feature
             break;
         };
         let sc = (s0 + half_len).rem_euclid(len);
-        let near_start = sc.min(len - sc) < 60.0 + half_len;
+        let near_start = match open {
+            Some((a, b)) => sc < a + 60.0 + half_len || sc > b - 40.0 - half_len,
+            None => sc.min(len - sc) < 60.0 + half_len,
+        };
         let near_jump = jump_s.iter().any(|&j| arc_dist(j, sc, len) < half_len + 45.0);
         let near_patch = patches.iter().any(|p| arc_dist(p.s, sc, len) < p.half_len + half_len + 30.0);
         // below Expert, keep slippery patches out of braking zones

@@ -235,6 +235,9 @@ pub fn road_sink(track: &Track) -> Vec<f32> {
     let mut dist = vec![f32::MAX; hf.nx * hf.nz];
     let mut hw_at = vec![0.0f32; hf.nx * hf.nz];
     for i in 0..n {
+        if !track.is_loop() && i + 1 >= n {
+            break; // open stage: no segment back to the start
+        }
         let a = &track.samples[i];
         let b = &track.samples[(i + 1) % n];
         let (a2, b2) = (macroquad::math::Vec2::new(a.pos.x, a.pos.z), macroquad::math::Vec2::new(b.pos.x, b.pos.z));
@@ -556,6 +559,9 @@ pub fn road_mesh(track: &Track, painter: &GroundPainter) -> MeshBuilder {
         if i % 16 == 0 {
             m.begin_chunk();
         }
+        if !track.is_loop() && i + 1 >= n {
+            break; // open stage: no segment back to the start
+        }
         let ib = (i + 1) % n;
         let a = &track.samples[i];
         let b = &track.samples[ib];
@@ -619,9 +625,10 @@ pub fn road_mesh(track: &Track, painter: &GroundPainter) -> MeshBuilder {
             tri_up(&mut m, [(a0, ca), (b1, cb), (b0, cb)]);
         }
     }
-    // chequered start line
+    // chequered start line (stages: start and finish line)
     m.begin_chunk();
-    let s0 = &track.samples[0];
+    for li in start_finish_indices(track) {
+    let s0 = &track.samples[li];
     let fr = Vec3::new(s0.right.x, 0.0, s0.right.z).normalize();
     let fwd = Vec3::new(s0.tangent.x, 0.0, s0.tangent.z).normalize();
     let cells = 12;
@@ -636,7 +643,14 @@ pub fn road_mesh(track: &Track, painter: &GroundPainter) -> MeshBuilder {
             m.quad(p(l0, z0), p(l1, z0), p(l1, z1), p(l0, z1), rgb(c));
         }
     }
+    }
     m
+}
+
+/// Sample indices that get a chequered line + arch: the start/finish line on loops, the start
+/// and the finish line on point-to-point stages.
+fn start_finish_indices(track: &Track) -> Vec<usize> {
+    if track.is_loop() { vec![0] } else { vec![track.start_index(), track.finish_index()] }
 }
 
 /// Start arch, balloons, bunting and checkpoint flags (they cast shadows; flags sway).
@@ -644,7 +658,8 @@ pub fn structures_mesh(track: &Track) -> MeshBuilder {
     let mut m = MeshBuilder::new();
     let hf = &track.terrain;
     let ground = |p: Vec3, lift: f32| Vec3::new(p.x, hf.height(p.x, p.z) + lift, p.z);
-    let s0 = &track.samples[0];
+    for li in start_finish_indices(track) {
+    let s0 = &track.samples[li];
     let fr = Vec3::new(s0.right.x, 0.0, s0.right.z).normalize();
     let fwd = Vec3::new(s0.tangent.x, 0.0, s0.tangent.z).normalize();
     let hw = s0.half_width + 1.2;
@@ -671,6 +686,7 @@ pub fn structures_mesh(track: &Track) -> MeshBuilder {
         let p = center + fr * l - Vec3::Y * 0.6;
         let col = rgb(c);
         m.tri_smooth([(p - fr * 0.3, -fwd, col), (p + fr * 0.3, -fwd, col), (p - Vec3::Y * 0.5, -fwd, sway(col, 0.6))]);
+    }
     }
     // checkpoint flags
     for (ci, &idx) in track.checkpoints.iter().enumerate().skip(1) {

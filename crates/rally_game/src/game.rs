@@ -190,6 +190,10 @@ impl RaceSession {
         }
         self.time += dt;
         self.scene.env.time = self.time;
+        // stage weather (fog / overcast) follows the first local player
+        if let Some(p) = self.players.first() {
+            crate::weather_view::apply(&mut self.scene.env, &self.world.track, self.world.race.racers[p.car].s);
+        }
         for (pi, p) in self.players.iter_mut().enumerate() {
             let inp = p.input.sample(dt, if pi == 0 { touch } else { None });
             if p.input.camera_pressed() {

@@ -705,6 +705,9 @@ fn draw_minimap(s: &RaceSession, player: usize, x: f32, y: f32, size: f32) {
     let pts: Vec<Vec2> = (0..n).step_by(step).map(|i| to(vec2(t.samples[i].pos.x, t.samples[i].pos.z))).collect();
     for (wdt, col) in [(9.0 * k, with_alpha(INK, 0.55)), (5.0 * k, Color::new(1.0, 0.95, 0.85, 1.0))] {
         for i in 0..pts.len() {
+            if !t.is_loop() && i + 1 >= pts.len() {
+                break; // open stage
+            }
             let a = pts[i];
             let b = pts[(i + 1) % pts.len()];
             draw_line(a.x, a.y, b.x, b.y, wdt, col);
