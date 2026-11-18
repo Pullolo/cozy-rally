@@ -99,10 +99,11 @@ async fn main() {
                         let (w, h) = if n == 1.0 { (sw / 2.0, sh) } else { (sw / n, sh / 2.0) };
                         let (vx, vy) = if n == 1.0 { (row as f32 * w, 0.0) } else { (ci as f32 * w, row as f32 * h) };
                         viewport(&mut gpu, vx, vy, w, h);
-                        let ang: f32 = if row == 0 { -0.75 } else { 2.55 };
-                        let dist = if close { 5.6 } else { 6.6 };
+                        let sides = std::env::var("SIDES").is_ok();
+                        let ang: f32 = if sides { if row == 0 { -1.5708 } else { 1.5708 } } else if row == 0 { -0.75 } else { 2.55 };
+                        let dist: f32 = std::env::var("DIST").ok().and_then(|s| s.parse().ok()).unwrap_or(if close { 5.6 } else { 6.6 });
                         let eye = vec3(ang.sin() * dist, if row == 0 { 1.6 } else { 2.3 }, -ang.cos() * dist);
-                        let eye = if row == 0 { vec3(eye.x, eye.y, -eye.z.abs()) } else { vec3(eye.x, eye.y, eye.z.abs()) };
+                        let eye = if sides { eye } else if row == 0 { vec3(eye.x, eye.y, -eye.z.abs()) } else { vec3(eye.x, eye.y, eye.z.abs()) };
                         let view = Mat4::look_at_rh(eye, vec3(0.0, 0.0, 0.0), Vec3::Y);
                         let proj = Mat4::perspective_rh_gl(38f32.to_radians(), w / h, 0.1, 100.0);
                         let v = View::new(view, proj, eye);

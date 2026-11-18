@@ -177,6 +177,8 @@ struct BodyPaint {
     top: [f32; 3],
     /// z range of the open cabin (top surface there is the interior floor)
     cabin: (f32, f32),
+    /// z range where the top is covered by other bodywork (skipped)
+    hidden_top: Option<(f32, f32)>,
 }
 
 fn body_loft(m: &mut MeshBuilder, secs: &[Sec], bands: &Bands, p: &BodyPaint) {
@@ -187,6 +189,11 @@ fn body_loft(m: &mut MeshBuilder, secs: &[Sec], bands: &Bands, p: &BodyPaint) {
         |s, k| {
             let kd = kind(k);
             let inside = zs[s] >= p.cabin.0 - 1e-3 && zs[s + 1] <= p.cabin.1 + 1e-3;
+            if let Some((h0, h1)) = p.hidden_top {
+                if kd >= 8 && zs[s] >= h0 - 1e-3 && zs[s + 1] <= h1 + 1e-3 {
+                    return [0, 0, 0, 0];
+                }
+            }
             rgb(match kd {
                 0 => DARK,
                 1 | 2 => p.lower,
@@ -616,14 +623,14 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
                 0.1,
             );
             let bands = Bands { side: (0.36, 0.58), top: (0.12, 0.2) };
-            body_loft(&mut m, &secs, &bands, &BodyPaint { paint, lower, side_band: accent, top_band: paint, top: paint, cabin: (-0.52, 1.45) });
+            body_loft(&mut m, &secs, &bands, &BodyPaint { paint, lower, side_band: accent, top_band: paint, top: paint, cabin: (-0.52, 1.45), hidden_top: None });
             greenhouse(
                 &mut m,
                 &mut glass,
                 &secs,
                 &Green { z0: -0.5, zr0: -0.02, zr1: 1.25, z1: 1.6, wr: 0.6, yr: 0.67, roof: CREAM, pillar: paint, b_pillar: Some(0.44), c_from: 0.86, stripe: None },
             );
-            roundel(&mut m, Vec3::new(0.0, 0.715, 0.62), Vec3::Y, Vec3::NEG_Z, 0.25, look.number, paint, INK);
+            roundel(&mut m, Vec3::new(0.0, 0.715, 0.62), Vec3::Y, Vec3::X, 0.25, look.number, paint, INK);
             antenna(&mut m, Vec3::new(-0.45, 0.67, 1.05), 0.45, accent);
             // little roof lip spoiler
             m.plank(Vec3::new(-0.5, 0.68, 1.33), Vec3::new(0.5, 0.68, 1.33), 0.16, 0.03, Vec3::new(0.0, 1.0, 0.4), rgb(CREAM));
@@ -679,7 +686,7 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
             );
             let stripe = accent;
             let bands = Bands { side: (0.18, 0.30), top: (0.10, 0.28) };
-            body_loft(&mut m, &secs, &bands, &BodyPaint { paint, lower, side_band: stripe, top_band: stripe, top: paint, cabin: (-0.15, 1.25) });
+            body_loft(&mut m, &secs, &bands, &BodyPaint { paint, lower, side_band: stripe, top_band: stripe, top: paint, cabin: (-0.15, 1.25), hidden_top: None });
             greenhouse(
                 &mut m,
                 &mut glass,
@@ -746,7 +753,7 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
                 0.08,
             );
             let bands = Bands { side: (0.22, 0.5), top: (0.10, 0.18) };
-            body_loft(&mut m, &secs, &bands, &BodyPaint { paint, lower: trim, side_band: accent, top_band: paint, top: paint, cabin: (-0.45, 1.2) });
+            body_loft(&mut m, &secs, &bands, &BodyPaint { paint, lower: trim, side_band: accent, top_band: paint, top: paint, cabin: (-0.45, 1.2), hidden_top: None });
             greenhouse(
                 &mut m,
                 &mut glass,
@@ -754,7 +761,7 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
                 &Green { z0: -0.43, zr0: 0.1, zr1: 0.88, z1: 1.25, wr: 0.62, yr: 0.73, roof: paint, pillar: paint, b_pillar: Some(0.5), c_from: 0.9, stripe: None },
             );
             // roof: number roundel + air scoop
-            roundel(&mut m, Vec3::new(0.0, 0.77, 0.55), Vec3::Y, Vec3::NEG_Z, 0.22, look.number, WHITE, INK);
+            roundel(&mut m, Vec3::new(0.0, 0.77, 0.55), Vec3::Y, Vec3::X, 0.22, look.number, WHITE, INK);
             m.bevel_box(trs(Vec3::new(0.0, 0.79, 0.16), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.15, 0.05, 0.11), 0.035, rgb(trim));
             m.quad(Vec3::new(-0.11, 0.77, 0.045), Vec3::new(0.11, 0.77, 0.045), Vec3::new(0.11, 0.825, 0.045), Vec3::new(-0.11, 0.825, 0.045), rgb(DARK));
             // roll cage hoop
@@ -796,7 +803,7 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
                 rect_lamp(&mut m, &mut brake, Vec3::new(sx * 0.5, -0.02, 2.01), Vec3::Z, Vec3::X * sx, 0.16, 0.055, TAIL_OFF, LENS);
                 rect_lamp(&mut m, &mut rev, Vec3::new(sx * 0.27, -0.02, 2.01), Vec3::Z, Vec3::X * sx, 0.05, 0.045, REV_OFF, LENS);
                 mirror(&mut m, sx, Vec3::new(sx * 0.73, 0.2, -0.3), paint);
-                door_roundel(&mut m, &secs, sx, 0.25, 0.6, 0.2, look.number, WHITE, INK);
+                door_roundel(&mut m, &secs, sx, 0.0, 0.55, 0.2, look.number, WHITE, INK);
                 seam(&mut m, &secs, sx, -0.43, 0.0, 1.0);
                 seam(&mut m, &secs, sx, 0.47, 0.0, 1.0);
                 seam(&mut m, &secs, sx, 1.22, 0.0, 1.0);
@@ -837,7 +844,7 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
                 0.07,
             );
             let bands = Bands { side: (0.55, 0.75), top: (0.1, 0.2) };
-            body_loft(&mut m, &secs, &bands, &BodyPaint { paint, lower, side_band: CREAM, top_band: paint, top: paint, cabin: (-1.10, -0.30) });
+            body_loft(&mut m, &secs, &bands, &BodyPaint { paint, lower, side_band: CREAM, top_band: paint, top: paint, cabin: (-1.10, -0.30), hidden_top: Some((-0.30, 2.03)) });
             // upper camper box (cream); its front underside forms the cab roof overhang
             let cream = CREAM;
             let ub = |z: f32, yb: f32, yt: f32, w: f32| sec(z, yb, yt, w, w - 0.05, 0.03, 0.14);
@@ -853,7 +860,7 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
             ];
             let ubands = Bands { side: (0.0, 0.1), top: (0.1, 0.2) };
             let rings: Vec<Vec<Vec3>> = usecs.iter().map(|s| ring(s, &ubands)).collect();
-            m.loft(&rings, |_, k| rgb(if kind(k) == 4 { paint } else if kind(k) == 0 { shade(cream, 0.85) } else { cream }), Some(rgb(cream)), Some(rgb(cream)));
+            m.loft(&rings, |s, k| if kind(k) == 0 && s >= 3 { [0, 0, 0, 0] } else { rgb(if kind(k) == 4 { paint } else if kind(k) == 0 { shade(cream, 0.85) } else { cream }) }, Some(rgb(cream)), Some(rgb(cream)));
             // pop-top roof stripe
             m.bevel_box(trs(Vec3::new(0.0, 1.06, 0.7), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.66, 0.03, 1.2), 0.02, rgb(shade(paint, 0.95)));
             // A pillars + windshield + cab side glass
@@ -902,7 +909,7 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
                 door_roundel(&mut m, &secs, sx, -0.7, 0.3, 0.19, look.number, WHITE, INK);
                 seam(&mut m, &secs, sx, -1.08, 0.0, 1.0);
                 seam(&mut m, &secs, sx, -0.31, 0.0, 1.0);
-                handle(&mut m, &secs, sx, -0.42, 0.9);
+                handle(&mut m, &secs, sx, -0.36, 0.9);
                 let (c, n, _, up) = on_flank(&secs, sx, 0.9, 0.4, 0.006);
                 sun(&mut m, c, n, up, 0.2, [0.98, 0.78, 0.3]);
                 mud_flap(&mut m, sx * spec.half_track, rz + r + 0.1, wy + 0.05, wy - r + 0.1, spec.wheel_width + 0.08, DARK, cream);

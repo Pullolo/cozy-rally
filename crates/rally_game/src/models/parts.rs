@@ -120,6 +120,10 @@ impl MeshExt for MeshBuilder {
             for i in 0..k {
                 let j = (i + 1) % k;
                 let c = color(s, i);
+                // alpha 0 = hidden face, skip it
+                if c[3] == 0 {
+                    continue;
+                }
                 // skip degenerate quads (collapsed rings)
                 if a[i].distance_squared(a[j]) < 1e-10 && b[i].distance_squared(b[j]) < 1e-10 {
                     continue;

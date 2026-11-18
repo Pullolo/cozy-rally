@@ -471,6 +471,24 @@ impl App {
             let wm = m * Mat4::from_translation(mt - Vec3::Y * spec.susp_rest * 0.8);
             self.gpu.draw(wheel, &v, &env, wm, &DrawParams::default(), false);
         }
+        // headlights (unlit, glowing like in the race) + translucent glass last, cached per car/paint
+        thread_local! {
+            static PREVIEW_EXTRAS: std::cell::RefCell<Vec<(usize, usize, render::mesh::MeshBuilder, render::mesh::MeshBuilder)>> = const { std::cell::RefCell::new(Vec::new()) };
+        }
+        PREVIEW_EXTRAS.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            let i = match cache.iter().position(|e| e.0 == car && e.1 == paint) {
+                Some(i) => i,
+                None => {
+                    let cm = models::car_model(&spec, models::PAINTS[paint]);
+                    cache.push((car, paint, cm.head_lights, cm.glass));
+                    cache.len() - 1
+                }
+            };
+            let (_, _, head, glass) = &cache[i];
+            self.gpu.draw_builder(head, &v, &env, m, &DrawParams { unlit: 1.0, tint: [1.35, 1.3, 1.15, 1.0], ..Default::default() }, 0);
+            self.gpu.draw_builder(glass, &v, &env, m, &DrawParams { rim: 0.8, ..Default::default() }, 1);
+        });
         self.gpu.end_3d();
     }
 

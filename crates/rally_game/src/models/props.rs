@@ -118,6 +118,24 @@ fn flower_box(m: &mut MeshBuilder, f: &Frame, c: Vec3, n: Vec3, w: f32) {
     m.sway_since(mk, |_| 0.15);
 }
 
+/// Irregular ground patch (fallen leaves / petals) that fades towards the ground colour at its rim.
+fn litter(m: &mut MeshBuilder, f: &Frame, r: f32, col: [f32; 3], ground: [f32; 3]) {
+    let segs = 9;
+    let inner = mix(ground, col, 0.22);
+    let outer = mix(ground, col, 0.09);
+    let pt = |i: usize, k: f32| {
+        let a = i as f32 / segs as f32 * TAU;
+        let rr = r * k * (0.7 + 0.45 * h01(f.seed + i as f32, 3.3));
+        f.p(a.cos() * rr + 0.2, 0.035, a.sin() * rr)
+    };
+    let c = f.p(0.2, 0.035, 0.0);
+    for i in 0..segs {
+        let j = (i + 1) % segs;
+        m.tri(c, pt(i, 0.6), pt(j, 0.6), rgb(inner));
+        m.quad(pt(i, 0.6), pt(i, 1.0), pt(j, 1.0), pt(j, 0.6), rgb(outer));
+    }
+}
+
 fn leaf_c(style: &BiomeStyle, k: usize, f: &Frame) -> [f32; 3] {
     shade(style.leaves[k % 3], 0.9 + 0.2 * f.r(1.0))
 }
@@ -153,10 +171,6 @@ fn tree(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
         }
     }
     sway_up(m, mk, f.pos.y, 1.8 * f.s, 3.5 * f.s, 0.55);
-    if b == Biome::Autumn && p.variant % 3 == 0 {
-        // fallen leaves
-        m.disc(f.p(0.2, 0.04, 0.1), Vec3::Y, 1.7 * f.s, 7, rgb(shade(c, 0.85)));
-    }
 }
 
 fn birch(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
@@ -181,7 +195,7 @@ fn birch(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
     sway_up(m, mk, f.pos.y, 1.8 * f.s, 3.2 * f.s, 0.7);
 }
 
-fn blossom(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
+fn blossom(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
     let trunk = rgb([0.42, 0.28, 0.24]);
     m.frustum(f.at(0.0, 0.8, 0.0), 0.24, 0.16, 0.8, 5, trunk, trunk);
     m.beam(f.p(0.0, 1.4, 0.0), f.p(0.9, 2.4, 0.2), 0.16, trunk);
@@ -193,7 +207,9 @@ fn blossom(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
         m.blob(f.at(*x, *y, *z), Vec3::new(*r, r * 0.8, *r), 3, 7, rgb(c));
     }
     sway_up(m, mk, f.pos.y, 1.6 * f.s, 3.0 * f.s, 0.55);
-    m.disc(f.p(0.1, 0.04, 0.0), Vec3::Y, 1.9 * f.s, 9, rgb([0.98, 0.8, 0.86]));
+    if p.variant % 3 == 0 {
+        litter(m, f, 1.8, [0.98, 0.8, 0.86], mix(style.ground_a, style.ground_b, 0.5));
+    }
 }
 
 fn pine(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
@@ -832,68 +848,68 @@ fn bunting(m: &mut MeshBuilder, p: &Prop) {
 }
 
 fn spectator(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
-    let shirts = [[0.9, 0.38, 0.38], [0.38, 0.58, 0.9], [0.95, 0.8, 0.3], [0.45, 0.75, 0.45], [0.8, 0.5, 0.85], [0.95, 0.6, 0.3], [0.3, 0.75, 0.78]];
+    // bold, saturated shirts + big heads so crowds read at a distance
+    let shirts = [[0.95, 0.3, 0.3], [0.25, 0.5, 0.95], [1.0, 0.8, 0.15], [0.3, 0.8, 0.35], [0.8, 0.35, 0.9], [1.0, 0.55, 0.15], [0.15, 0.78, 0.8], [0.98, 0.98, 0.96]];
     let skins = [[0.98, 0.82, 0.68], [0.85, 0.65, 0.48], [0.6, 0.42, 0.3], [0.95, 0.75, 0.6]];
     let hairs = [[0.3, 0.22, 0.15], [0.85, 0.65, 0.3], [0.15, 0.12, 0.12], [0.7, 0.35, 0.2]];
     let v = p.variant as usize;
     let k = (f.r(5.0) * 100.0) as usize;
-    let shirt = rgb(shirts[(v + k) % 7]);
+    let shirt_c = shirts[(v + k) % 8];
+    let shirt = rgb(shirt_c);
     let skin = rgb(skins[k % 4]);
     let kid = k % 5 == 0;
-    let s = if kid { 0.72 } else { 1.0 };
+    let s = if kid { 0.75 } else { 1.0 };
     let at = |x: f32, y: f32, z: f32| f.at(x * s, y * s, z * s);
-    m.frustum(at(0.0, 0.38, 0.0), 0.17 * s, 0.15 * s, 0.38 * s, 6, rgb([0.3, 0.34, 0.5]), rgb([0.3, 0.34, 0.5]));
-    m.blob(at(0.0, 1.0, 0.0), Vec3::new(0.25, 0.32, 0.2) * s, 2, 7, shirt);
-    m.blob(at(0.0, 1.5, 0.0), Vec3::splat(0.17 * s), 3, 7, skin);
-    m.blob(at(0.0, 1.58, 0.04), Vec3::new(0.18, 0.12, 0.17) * s, 2, 7, rgb(hairs[(k / 3) % 4]));
-    m.blob(at(-0.06, 1.52, -0.16), Vec3::splat(0.022 * s), 1, 4, rgb(DARK));
-    m.blob(at(0.06, 1.52, -0.16), Vec3::splat(0.022 * s), 1, 4, rgb(DARK));
+    m.frustum(at(0.0, 0.38, 0.0), 0.17 * s, 0.15 * s, 0.38 * s, 5, rgb([0.28, 0.3, 0.45]), rgb([0.28, 0.3, 0.45]));
+    m.blob(at(0.0, 1.0, 0.0), Vec3::new(0.3, 0.34, 0.22) * s, 2, 7, shirt);
+    m.blob(at(0.0, 1.56, 0.0), Vec3::splat(0.23 * s), 3, 7, skin);
+    m.blob(at(0.0, 1.66, 0.05), Vec3::new(0.24, 0.15, 0.22) * s, 2, 7, rgb(hairs[(k / 3) % 4]));
+    m.blob(at(-0.08, 1.58, -0.21), Vec3::splat(0.028 * s), 1, 4, rgb(DARK));
+    m.blob(at(0.08, 1.58, -0.21), Vec3::splat(0.028 * s), 1, 4, rgb(DARK));
+    let arm = |m: &mut MeshBuilder, sx: f32, tip: Vec3| {
+        let a = f.p(sx * 0.24 * s, 1.2 * s, 0.0);
+        let t = f.p_v(tip * s);
+        m.beam(a, t, 0.1 * s, shirt);
+        m.blob(Mat4::from_translation(t), Vec3::splat(0.07 * s * f.s), 1, 4, skin);
+    };
     match v % 6 {
-        0 | 3 => {
-            // cheering, arms up
-            for sx in [-1.0f32, 1.0] {
-                m.beam(f.p(sx * 0.2 * s, 1.18 * s, 0.0), f.p(sx * 0.38 * s, 1.75 * s, -0.05 * s), 0.09 * s, shirt);
-                m.blob(at(sx * 0.39, 1.8, -0.05), Vec3::splat(0.06 * s), 1, 4, skin);
-            }
-            if v % 6 == 3 {
-                m.frustum(at(0.0, 1.7, 0.0), 0.2 * s, 0.14 * s, 0.06 * s, 7, shirt, shirt);
-            }
-        }
         1 | 4 => {
-            // waving a little flag
-            m.beam(f.p(-0.2 * s, 1.18 * s, 0.0), f.p(-0.25 * s, 0.75 * s, 0.0), 0.09 * s, shirt);
-            m.beam(f.p(0.2 * s, 1.18 * s, 0.0), f.p(0.38 * s, 1.6 * s, -0.1 * s), 0.09 * s, shirt);
-            m.beam(f.p(0.38 * s, 1.5 * s, -0.1 * s), f.p(0.38 * s, 2.3 * s, -0.1 * s), 0.03, rgb(WOOD_D));
+            // waving a big flag
+            arm(m, -1.0, Vec3::new(-0.45, 1.85, -0.05));
+            arm(m, 1.0, Vec3::new(0.4, 1.7, -0.1));
+            m.beam(f.p(0.4 * s, 1.5 * s, -0.1 * s), f.p(0.4 * s, 2.5 * s, -0.1 * s), 0.035, rgb(WOOD_D));
             let fc = PASTELS[(v + k + 1) % 6];
             let mk = m.mark();
-            m.quad(f.p(0.38 * s, 2.3 * s, -0.1 * s), f.p(0.38 * s + 0.55, 2.25 * s, -0.1 * s), f.p(0.38 * s + 0.55, 1.95 * s, -0.1 * s), f.p(0.38 * s, 1.95 * s, -0.1 * s), rgb(fc));
-            let px = f.p(0.38 * s, 0.0, -0.1 * s);
-            m.sway_since(mk, move |q| (Vec3::new(q.x - px.x, 0.0, q.z - px.z).length() / 0.55).clamp(0.0, 1.0) * 0.8);
+            m.quad(f.p(0.4 * s, 2.5 * s, -0.1 * s), f.p(0.4 * s + 0.75, 2.45 * s, -0.1 * s), f.p(0.4 * s + 0.75, 2.05 * s, -0.1 * s), f.p(0.4 * s, 2.05 * s, -0.1 * s), rgb(fc));
+            let px = f.p(0.4 * s, 0.0, -0.1 * s);
+            m.sway_since(mk, move |q| (Vec3::new(q.x - px.x, 0.0, q.z - px.z).length() / 0.75).clamp(0.0, 1.0) * 0.8);
         }
         2 => {
             // umbrella
-            m.beam(f.p(0.2 * s, 1.18 * s, 0.0), f.p(0.3 * s, 1.3 * s, -0.15 * s), 0.09 * s, shirt);
-            m.beam(f.p(0.3 * s, 1.0 * s, -0.15 * s), f.p(0.3 * s, 2.3 * s, -0.15 * s), 0.03, rgb(DARK));
+            arm(m, 1.0, Vec3::new(0.3, 1.35, -0.15));
+            arm(m, -1.0, Vec3::new(-0.45, 1.8, -0.05));
+            m.beam(f.p(0.3 * s, 1.0 * s, -0.15 * s), f.p(0.3 * s, 2.35 * s, -0.15 * s), 0.03, rgb(DARK));
             let uc = PASTELS[(k + 2) % 6];
-            let c = f.p(0.3 * s, 2.35 * s, -0.15 * s);
+            let c = f.p(0.3 * s, 2.4 * s, -0.15 * s);
             let segs = 8;
             for i in 0..segs {
                 let a0 = i as f32 / segs as f32 * TAU;
                 let a1 = (i + 1) as f32 / segs as f32 * TAU;
-                let r = 0.75;
+                let r = 0.8;
                 let e = |a: f32| c + Vec3::new(a.cos() * r, -0.32, a.sin() * r);
                 m.tri(c + Vec3::Y * 0.1, e(a0), e(a1), rgb(if i % 2 == 0 { uc } else { WHITE }));
             }
-            m.beam(f.p(-0.2 * s, 1.18 * s, 0.0), f.p(-0.25 * s, 0.75 * s, 0.0), 0.09 * s, shirt);
         }
         _ => {
-            // camera / hands on hips
-            for sx in [-1.0f32, 1.0] {
-                m.beam(f.p(sx * 0.2 * s, 1.18 * s, 0.0), f.p(sx * 0.3 * s, 0.85 * s, -0.05 * s), 0.09 * s, shirt);
+            // cheering, both arms up in a V
+            arm(m, -1.0, Vec3::new(-0.48, 1.9, -0.05));
+            arm(m, 1.0, Vec3::new(0.48, 1.9, -0.05));
+            if v % 6 == 3 {
+                // bobble hat
+                let hc = rgb(PASTELS[(k + 3) % 6]);
+                m.frustum(at(0.0, 1.76, 0.0), 0.23 * s, 0.16 * s, 0.08 * s, 7, hc, hc);
+                m.blob(at(0.0, 1.9, 0.0), Vec3::splat(0.07 * s), 1, 5, rgb(WHITE));
             }
-            m.cube(at(0.0, 1.25, -0.25), Vec3::new(0.1, 0.07, 0.05) * s, rgb(DARK));
-            m.frustum(at(0.0, 1.7, 0.0), 0.24 * s, 0.17 * s, 0.03 * s, 8, rgb([0.95, 0.9, 0.7]), rgb([0.95, 0.9, 0.7]));
-            m.frustum(at(0.0, 1.76, 0.0), 0.15 * s, 0.13 * s, 0.07 * s, 8, rgb([0.95, 0.9, 0.7]), rgb([0.9, 0.4, 0.4]));
         }
     }
 }
@@ -1143,7 +1159,7 @@ pub fn add_prop(m: &mut MeshBuilder, p: &Prop, style: &BiomeStyle) {
     match p.kind {
         Tree => tree(m, &f, p, style),
         Birch => birch(m, &f, p, style),
-        Blossom => blossom(m, &f, p),
+        Blossom => blossom(m, &f, p, style),
         Pine => pine(m, &f, p, style),
         Palm => palm(m, &f, style),
         Bush => bush(m, &f, p, style),
