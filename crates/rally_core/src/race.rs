@@ -30,6 +30,8 @@ pub struct RacerProgress {
     pub wrong_way: bool,
     pub wrong_way_timer: f32,
     pub reset_timer: f32,
+    /// Seconds spent stuck (slow, off the road)
+    pub stuck_timer: f32,
     pub last_safe_s: f32,
     /// Seconds of "ghost" (no car-car collision) after a reset
     pub ghost: f32,
@@ -184,7 +186,11 @@ impl Race {
             let flipped = car.is_upside_down() && car.vel.length() < 4.0;
             let lost = q.dist > smp.half_width + 60.0;
             let wet = car.telemetry.in_water;
-            if flipped || lost || wet {
+            // stuck off the road (e.g. wedged between trees): help them back after a while
+            let edge = smp.half_width + crate::track::SHOULDER;
+            let stuck = racing && !r.finished && ((q.dist > edge + 2.0 && car.vel.length() < 2.5) || q.dist > edge + 14.0);
+            r.stuck_timer = if stuck { r.stuck_timer + dt } else { (r.stuck_timer - dt * 2.0).max(0.0) };
+            if flipped || lost || wet || r.stuck_timer > 4.0 {
                 r.reset_timer += dt;
             } else {
                 r.reset_timer = 0.0;
@@ -198,6 +204,7 @@ impl Race {
                 car.teleport(pos, track.rotation_at(s));
                 car.track_hint = None;
                 r.reset_timer = 0.0;
+                r.stuck_timer = 0.0;
                 r.ghost = 2.5;
                 events.push(RaceEvent::Reset { car: i });
             }

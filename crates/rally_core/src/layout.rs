@@ -43,6 +43,8 @@ pub struct Feature {
     pub main: Option<usize>,
     /// Kink designed to come right after a jump landing
     pub jump_kink: bool,
+    /// Camber factor (1 banked, ~0.3 flat, < 0 off-camber); 1 for straights
+    pub camber: f32,
 }
 
 impl Feature {
@@ -129,13 +131,15 @@ struct Planner<'a> {
 
 impl Planner<'_> {
     fn camber(&mut self, kind: FeatureKind) -> f32 {
-        let off_p = [0.05, 0.14, 0.24][self.d];
+        let off_p = [0.0, 0.12, 0.22][self.d];
         match kind {
-            FeatureKind::Hairpin => {
-                if self.rng.chance(0.7) {
-                    1.0
-                } else {
+            // hairpins are banked like real mountain hairpins (helps everyone round)
+            FeatureKind::Hairpin => 1.25,
+            FeatureKind::Square => {
+                if self.d == 2 && self.rng.chance(0.4) {
                     0.3
+                } else {
+                    1.0
                 }
             }
             FeatureKind::Kink | FeatureKind::Chicane => 0.4,
@@ -655,11 +659,11 @@ pub fn design(rng: &mut Rng, difficulty: u8, length_class: u8, spacing: f32, max
         match *e {
             Elem::Straight { main, .. } => {
                 if main.is_some() {
-                    features.push(Feature { kind: FeatureKind::Straight, s0, s1, main, jump_kink: false });
+                    features.push(Feature { kind: FeatureKind::Straight, s0, s1, main, jump_kink: false, camber: 1.0 });
                 }
             }
             Elem::Curve { kind, camber: cam, tech: t, jump_kink, .. } => {
-                features.push(Feature { kind, s0, s1, main: None, jump_kink });
+                features.push(Feature { kind, s0, s1, main: None, jump_kink, camber: cam });
                 let i0 = (s0 / spacing).floor() as isize;
                 let i1 = i0 + (l / spacing).ceil() as isize;
                 for i in i0 - 6..=i1 + 6 {
@@ -750,8 +754,21 @@ pub fn shape_elevation(elev: &mut [f32], features: &[Feature], curv: &[f32], rng
             continue;
         }
         let over = rng.chance(0.35);
-        let c = if over { f.s0 + rng.range(3.0, 12.0) } else { f.s0 - rng.range(6.0, 22.0) }.rem_euclid(len);
+        let lead = if over { -rng.range(3.0, 12.0) } else { rng.range(6.0, 22.0) };
+        let c = (f.s0 - lead).rem_euclid(len);
         let (amp, w) = if f.kind == FeatureKind::Hairpin { (rng.range(0.9, 1.4), rng.range(26.0, 34.0)) } else { (rng.range(1.3, 2.3), rng.range(24.0, 34.0)) };
+        // keep the crest drivable at the speed a car arrives with: vertical acceleration over
+        // the top (amp * pi^2 / (2 w^2) * v^2) stays below ~0.65 g
+        let i0 = (f.s0 / spacing) as usize;
+        let i1 = i0 + (f.len(len) / spacing) as usize;
+        let k_peak = (i0..=i1).map(|i| curv[i % n].abs()).fold(1e-4, f32::max);
+        let v_corner = (0.8 * 9.81 / k_peak).sqrt().min(40.0);
+        let v = (v_corner * v_corner + 2.0 * 6.0 * lead.max(0.0)).sqrt().min(40.0);
+        let amp_max = 0.65 * 9.81 * 2.0 * w * w / (std::f32::consts::PI.powi(2) * v * v);
+        let amp = amp.min(amp_max);
+        if amp < 0.6 {
+            continue;
+        }
         if near_start(c) || !clear_of_jumps(c, w, &jump_s) || bumps.iter().any(|b| arc_dist(b.0, c, len) < b.2 + w) {
             continue;
         }
@@ -768,7 +785,9 @@ pub fn shape_elevation(elev: &mut [f32], features: &[Feature], curv: &[f32], rng
         if near_start(c) || !clear_of_jumps(c, w, &jump_s) || bumps.iter().any(|b| arc_dist(b.0, c, len) < b.2 + w) {
             continue;
         }
-        bumps.push((c, -rng.range(1.1, 1.9), w));
+        // dips at full speed: keep the compression below ~1.1 g extra
+        let amp_max = 1.1 * 9.81 * 2.0 * w * w / (std::f32::consts::PI.powi(2) * 40.0 * 40.0);
+        bumps.push((c, -rng.range(1.1, 1.9).min(amp_max), w));
     }
     for &(c, amp, w) in &bumps {
         let r = (w / spacing).ceil() as isize;

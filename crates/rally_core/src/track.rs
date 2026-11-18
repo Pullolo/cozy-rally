@@ -347,7 +347,7 @@ impl Track {
             .map(|i| {
                 let b = (curv[i] * 24.0).clamp(-0.14, 0.14);
                 let cam = layout.camber[i];
-                if cam >= 0.0 { b * cam } else { -b * 0.55 }
+                if cam >= 0.0 { b * cam } else { -b * 0.45 }
             })
             .collect();
         smooth_closed_f32(&mut bank, 5, 2);

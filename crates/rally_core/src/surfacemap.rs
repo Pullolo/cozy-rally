@@ -334,13 +334,13 @@ pub fn plan(biome: Biome, mode: SurfaceMode, difficulty: u8, features: &[Feature
         Surface::Sand => (5.0, 11.0, 0.45),
         _ => (7.0, 15.0, 0.38),
     };
+    // patches inside corners only on Expert (the reference AI does not read the surface yet)
     let corner_p = match patch_surface {
         Surface::Ice => [0.0, 0.0, 0.3],
-        Surface::Mud => [0.0, 0.3, 0.4],
-        _ => [0.2, 0.4, 0.5],
+        _ => [0.0, 0.0, 0.4],
     };
     let straights: Vec<&Feature> = features.iter().filter(|f| f.kind == FeatureKind::Straight && f.len(len) > 60.0).collect();
-    let corners: Vec<&Feature> = features.iter().filter(|f| matches!(f.kind, FeatureKind::Medium | FeatureKind::Sweeper | FeatureKind::Opening | FeatureKind::Kink)).collect();
+    let corners: Vec<&Feature> = features.iter().filter(|f| matches!(f.kind, FeatureKind::Medium | FeatureKind::Sweeper | FeatureKind::Opening | FeatureKind::Kink) && f.camber >= 0.0).collect();
     let mut patches: Vec<SurfacePatch> = Vec::new();
     let mut tries = 0;
     while patches.len() < count && tries < 100 {
