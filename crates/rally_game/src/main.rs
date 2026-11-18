@@ -107,7 +107,7 @@ impl Setup {
             players.push(PlayerSlot { car: self.cars[1], paint: self.paints[1], scheme: Scheme::Arrows, name: "Player 2".into() });
         }
         SessionConfig {
-            track: TrackParams { seed: self.seed, biome: if self.biome == 0 { None } else { Some(ALL_BIOMES[self.biome - 1]) }, length_class: self.length, difficulty: self.track_difficulty.min(2) as u8, surface: rally_core::surfacemap::SURFACE_MODES[self.surface_mode.min(4)] }.with_env_overrides(),
+            track: TrackParams { seed: self.seed, biome: if self.biome == 0 { None } else { Some(ALL_BIOMES[self.biome - 1]) }, length_class: self.length, difficulty: self.track_difficulty.min(2) as u8, surface: rally_core::surfacemap::SURFACE_MODES[self.surface_mode.min(4)], ..TrackParams::default() }.with_env_overrides(),
             laps: self.laps,
             players,
             ai_count: if self.mode() == gameplay::GameMode::TimeTrial { 0 } else { self.opponents },
