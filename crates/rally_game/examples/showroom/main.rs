@@ -61,6 +61,92 @@ fn shot(path: &str) {
     println!("saved {path}");
 }
 
+/// Count overlapping, differently-coloured triangle pairs whose planes are closer than `eps`
+/// (these z-fight on real GPUs at distance). Returns (pairs, examples).
+fn coplanar_fights(m: &MeshBuilder, eps: f32) -> (usize, Vec<String>) {
+    let mut tris: Vec<([Vec3; 3], Vec3, f32, [u8; 3])> = Vec::new();
+    for ch in &m.chunks {
+        for t in ch.indices.chunks(3) {
+            let p: [Vec3; 3] = [0, 1, 2].map(|k| Vec3::from(ch.vertices[t[k] as usize].pos));
+            let n = (p[1] - p[0]).cross(p[2] - p[0]);
+            if n.length() < 1e-7 {
+                continue;
+            }
+            let n = n.normalize();
+            let c = ch.vertices[t[0] as usize].color;
+            tris.push((p, n, n.dot(p[0]), [c[0], c[1], c[2]]));
+        }
+    }
+    let mut count = 0;
+    let mut ex = Vec::new();
+    for i in 0..tris.len() {
+        for j in i + 1..tris.len() {
+            let (a, na, da, ca) = &tris[i];
+            let (b, nb, db, cb) = &tris[j];
+            if ca == cb {
+                continue;
+            }
+            let dot = na.dot(*nb);
+            // only same-facing faces can show flicker (opposite = two solids touching, hidden)
+            if dot < 0.9995 {
+                continue;
+            }
+            // faces lying on the ground plane facing down are never seen
+            if na.y < -0.99 && a[0].y.abs() < 0.03 {
+                continue;
+            }
+            let dbb = if dot < 0.0 { -db } else { *db };
+            if (da - dbb).abs() >= eps {
+                continue;
+            }
+            // project to the plane and test 2D overlap (SAT), shrinking slightly to ignore shared edges
+            let u = na.any_orthonormal_vector();
+            let v = na.cross(u);
+            let pr = |t: &[Vec3; 3]| {
+                let c = (t[0] + t[1] + t[2]) / 3.0;
+                t.map(|p| {
+                    let q = c + (p - c) * 0.97;
+                    vec2(q.dot(u), q.dot(v))
+                })
+            };
+            let (ta, tb) = (pr(a), pr(b));
+            let mut sep = false;
+            for t in [&ta, &tb] {
+                for k in 0..3 {
+                    let e = t[(k + 1) % 3] - t[k];
+                    let ax = vec2(-e.y, e.x);
+                    let (mut a0, mut a1, mut b0, mut b1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+                    for p in ta {
+                        let d = p.dot(ax);
+                        a0 = a0.min(d);
+                        a1 = a1.max(d);
+                    }
+                    for p in tb {
+                        let d = p.dot(ax);
+                        b0 = b0.min(d);
+                        b1 = b1.max(d);
+                    }
+                    if a1 <= b0 || b1 <= a0 {
+                        sep = true;
+                        break;
+                    }
+                }
+                if sep {
+                    break;
+                }
+            }
+            if !sep {
+                count += 1;
+                if ex.len() < std::env::var("EX").ok().and_then(|s| s.parse().ok()).unwrap_or(3) {
+                    let (cA, cB) = ((a[0] + a[1] + a[2]) / 3.0, (b[0] + b[1] + b[2]) / 3.0);
+                    ex.push(format!("A({:.2},{:.2},{:.2}) B({:.2},{:.2},{:.2}) n({:.1},{:.1},{:.1}) gap {:.4} {:?}/{:?}", cA.x, cA.y, cA.z, cB.x, cB.y, cB.z, na.x, na.y, na.z, (da - dbb).abs(), ca, cb));
+                }
+            }
+        }
+    }
+    (count, ex)
+}
+
 pub fn catalogue(biome: Biome) -> Vec<Prop> {
     use PropKind::*;
     let kinds = models::catalogue_kinds(biome);
@@ -170,6 +256,72 @@ async fn main() {
                 let v = View::new(view, proj, eye);
                 let e = Environment { sun_dir: Vec3::from(st.sun_dir).normalize(), sun_color: st.sun_color, ambient: st.ambient, fog_color: st.fog, fog_density: st.fog_density, time: 0.0 };
                 gpu.draw_builder(&m, &v, &e, Mat4::IDENTITY, &DrawParams { rim: 0.4, fog: true, ..Default::default() }, 0);
+                gpu.end_3d();
+            }
+            "coplanar" => {
+                if frame == 0 {
+                    let mut total = 0;
+                    for b in 0..5 {
+                        let biome = Biome::from_index(b);
+                        let style = biome.style();
+                        for (k, v) in models::catalogue_kinds(biome) {
+                            let mut m = MeshBuilder::new();
+                            models::add_prop(&mut m, &Prop { kind: k, pos: Vec3::ZERO, rot_y: 0.3, scale: 1.0, radius: 0.0, variant: v }, &style);
+                            let (n, ex) = coplanar_fights(&m, 0.01);
+                            if n > 0 {
+                                println!("{:?} {:?}#{}: {} pairs {:?}", biome, k, v, n, ex);
+                                total += n;
+                            }
+                        }
+                    }
+                    for (i, s) in car_specs().iter().enumerate() {
+                        let cm = models::car_model(s, models::PAINTS[i % models::PAINTS.len()]);
+                        for (name, mesh) in [("body", &cm.body), ("wheel", &cm.wheel)] {
+                            let (n, ex) = coplanar_fights(mesh, 0.008);
+                            if n > 0 {
+                                println!("car {} {} {}: {} pairs {:?}", i, s.name, name, n, ex);
+                                total += n;
+                            }
+                        }
+                    }
+                    println!("TOTAL coplanar fighting pairs: {total}");
+                }
+                if frame == 2 {
+                    return;
+                }
+            }
+            "zfight" => {
+                // signs, decals, buildings and cars at distance D with the in-game near/far planes
+                let d: f32 = std::env::var("D").ok().and_then(|s| s.parse().ok()).unwrap_or(80.0);
+                let jit: f32 = if std::env::var("JITTER").is_ok() { 0.02 } else { 0.0 };
+                let style = Biome::Meadow.style();
+                use PropKind::*;
+                let line = [(Chevron, 0u8), (Chevron, 1), (ArrowSign, 0), (Cottage, 0), (Barn, 0), (Camper, 1), (HayBale, 1), (SkiCabin, 0), (Adobe, 0), (FlagPole, 0), (Picnic, 0), (Cow, 0)];
+                let mut m = MeshBuilder::new();
+                let mut g = MeshBuilder::new();
+                g.cube(Mat4::from_translation(vec3(0.0, -0.05, 0.0)), vec3(120.0, 0.05, 40.0), render::mesh::rgb(style.ground_a));
+                let mut x = -30.0;
+                for (k, v) in line {
+                    let w = match k { Cottage | Barn | SkiCabin | Adobe => 8.5, Camper => 6.0, _ => 3.5 };
+                    x += w * 0.5;
+                    models::add_prop(&mut m, &Prop { kind: k, pos: vec3(x, 0.0, 0.0), rot_y: 0.25, scale: if k == Chevron { 1.3 } else { 1.0 }, radius: 0.0, variant: v }, &style);
+                    x += w * 0.5;
+                }
+                let eye = vec3(jit, 2.0 + jit * 0.5, -d);
+                let target = vec3(0.0, 2.0, 0.0);
+                let fov = 2.0 * (36.0 / d).atan();
+                viewport(&mut gpu, 0.0, 0.0, sw, sh);
+                let view = Mat4::look_at_rh(eye, target, Vec3::Y);
+                let proj = Mat4::perspective_rh_gl(fov, sw / sh, 0.25, 2200.0);
+                let v = View::new(view, proj, eye);
+                let e = env();
+                gpu.draw_builder(&g, &v, &e, Mat4::IDENTITY, &DrawParams::default(), 0);
+                gpu.draw_builder(&m, &v, &e, Mat4::IDENTITY, &DrawParams { rim: 0.4, ..Default::default() }, 0);
+                for (i, car) in [2usize, 3, 0].iter().enumerate() {
+                    let spec = car_specs()[*car].clone();
+                    let y = -(spec.mount_height - spec.susp_rest * 0.8 - spec.wheel_radius);
+                    draw_car(&mut gpu, &v, *car, *car % 4, Mat4::from_rotation_translation(Quat::from_rotation_y(2.6), vec3(-24.0 + i as f32 * 6.0, y, -9.0)), true);
+                }
                 gpu.end_3d();
             }
             "props" => {

@@ -75,7 +75,7 @@ fn gable(m: &mut MeshBuilder, f: &Frame, hx: f32, hz: f32, y0: f32, y1: f32, o: 
         m.tri(f.p(sx * hx, y0, -hz), f.p(sx * hx, y0, hz), f.p(sx * hx, y1, 0.0), rgb(wall));
     }
     // ridge cap
-    m.beam(f.p(-hx - o, y1 + t, 0.0), f.p(hx + o, y1 + t, 0.0), 0.16, rgb(shade(roof, 0.7)));
+    m.beam(f.p(-hx - o - 0.04, y1 + t, 0.0), f.p(hx + o + 0.04, y1 + t, 0.0), 0.16, rgb(shade(roof, 0.7)));
 }
 
 /// Window with frame + cross on a wall facing local `n` (x/z), centred at local c.
@@ -85,13 +85,14 @@ fn window(m: &mut MeshBuilder, f: &Frame, c: Vec3, n: Vec3, w: f32, h: f32, fram
         let o = cc + n * lift;
         m.quad(f.p_v(o - right * hw - Vec3::Y * hh), f.p_v(o + right * hw - Vec3::Y * hh), f.p_v(o + right * hw + Vec3::Y * hh), f.p_v(o - right * hw + Vec3::Y * hh), rgb(col));
     };
-    q(m, c, w * 0.5 + 0.08, h * 0.5 + 0.08, 0.02, frame);
-    q(m, c, w * 0.5, h * 0.5, 0.04, glass);
-    q(m, c, 0.03, h * 0.5, 0.05, frame);
-    q(m, c, w * 0.5, 0.03, 0.05, frame);
+    // frame / glass / mullions 3 cm apart (no coplanar overlap at distance)
+    q(m, c, w * 0.5 + 0.08, h * 0.5 + 0.08, 0.03, frame);
+    q(m, c, w * 0.5, h * 0.5, 0.06, glass);
+    q(m, c, 0.03, h * 0.5, 0.09, frame);
+    q(m, c, w * 0.5, 0.03, 0.09, frame);
     if let Some(sh) = shutters {
         for s in [-1.0f32, 1.0] {
-            q(m, c + right * s * (w * 0.5 + 0.2), 0.16, h * 0.5 + 0.04, 0.03, sh);
+            q(m, c + right * s * (w * 0.5 + 0.2), 0.16, h * 0.5 + 0.04, 0.06, sh);
         }
     }
 }
@@ -179,7 +180,8 @@ fn birch(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
     m.frustum(f.at(0.0, 1.6, 0.0), 0.15, 0.09, 1.6, 6, bark, bark);
     for k in 0..4 {
         let y = 0.5 + k as f32 * 0.65 + f.r(k as f32) * 0.2;
-        m.cube(f.atr(0.0, y, 0.0, Quat::from_rotation_y(k as f32 * 1.3)), Vec3::new(0.15 - y * 0.015, 0.035, 0.05), rgb(DARK));
+        let r = 0.15 - y * 0.01875 + 0.03;
+        m.cube(f.atr(0.0, y, 0.0, Quat::from_rotation_y(k as f32 * 1.3)), Vec3::new(r, 0.035, 0.05), rgb(DARK));
     }
     let c = match b {
         Biome::Autumn => [0.98, 0.78, 0.25],
@@ -413,7 +415,7 @@ fn cottage(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
     m.cube(f.at(0.0, h * 0.5, 0.0), Vec3::new(hx, h * 0.5, hz), rgb(walls));
     // timber corners
     for (sx, sz) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
-        m.cube(f.at(sx * hx, h * 0.5, sz * hz), Vec3::new(0.12, h * 0.5, 0.12), rgb(WOOD_D));
+        m.cube(f.at(sx * hx, h * 0.5 - 0.03, sz * hz), Vec3::new(0.12, h * 0.5 - 0.03, 0.12), rgb(WOOD_D));
     }
     gable(m, f, hx, hz, h, h + 2.0, 0.45, roof, walls);
     // chimney
@@ -421,7 +423,7 @@ fn cottage(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
     m.cube(f.at(1.6, h + 2.9, 0.9), Vec3::new(0.36, 0.08, 0.36), rgb(STONE));
     // door + windows front (-Z) and back
     let door = PASTELS[(p.variant as usize + 1) % 6];
-    m.cube(f.at(0.0, 0.95, -hz - 0.03), Vec3::new(0.5, 0.95, 0.05), rgb(door));
+    m.cube(f.at(0.0, 0.95, -hz - 0.04), Vec3::new(0.5, 0.95, 0.05), rgb(door));
     m.blob(f.at(0.32, 0.95, -hz - 0.1), Vec3::splat(0.06), 1, 4, rgb([0.95, 0.85, 0.4]));
     m.cube(f.at(0.0, 2.0, -hz - 0.2), Vec3::new(0.75, 0.05, 0.3), rgb(roof));
     let sh = Some(shade(door, 0.9));
@@ -454,9 +456,9 @@ fn barn(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
         let z = sz * hz;
         m.poly(&[f.p(-hx, h, z), f.p(-hx * 0.65, h + 1.6, z), f.p(0.0, h + 2.4, z), f.p(hx * 0.65, h + 1.6, z), f.p(hx, h, z)], rgb(red));
         // big doors with white X trim
-        let zz = z + sz * 0.04;
+        let zz = z + sz * 0.03;
         m.quad(f.p(-1.4, 0.0, zz), f.p(1.4, 0.0, zz), f.p(1.4, 2.6, zz), f.p(-1.4, 2.6, zz), rgb(shade(red, 0.85)));
-        let zt = z + sz * 0.07;
+        let zt = z + sz * 0.11;
         for (a, b) in [((-1.4, 0.0), (1.4, 2.6)), ((1.4, 0.0), (-1.4, 2.6)), ((-1.4, 2.6), (1.4, 2.6)), ((-1.4, 0.0), (-1.4, 2.6)), ((1.4, 0.0), (1.4, 2.6)), ((0.0, 0.0), (0.0, 2.6))] {
             m.beam(f.p(a.0, a.1, zt), f.p(b.0, b.1, zt), 0.14, rgb(WHITE));
         }
@@ -513,7 +515,7 @@ fn fence(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
             m.beam(f.p(-2.05, y, 0.0), f.p(2.05, y + 0.04, 0.0), 0.11, rgb(col));
         }
         if b == Biome::Snow {
-            m.cube(f.at(0.0, 0.92, 0.0), Vec3::new(2.0, 0.04, 0.07), rgb(SNOW));
+            m.cube(f.at(0.0, 0.92, 0.0), Vec3::new(2.0, 0.04, 0.11), rgb(SNOW));
         }
     }
 }
@@ -522,11 +524,11 @@ fn hay_bale(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
     let c = [0.93, 0.80, 0.45];
     if p.variant % 2 == 0 {
         m.cylinder(f.at(0.0, 0.5, 0.0) * Mat4::from_rotation_z(FRAC_PI_2), 0.5, 0.95, 9, rgb(c), rgb([0.85, 0.72, 0.38]));
-        m.cylinder(f.at(0.0, 0.5, 0.0) * Mat4::from_rotation_z(FRAC_PI_2), 0.505, 0.06, 9, rgb([0.8, 0.5, 0.3]), rgb([0.8, 0.5, 0.3]));
+        m.cylinder(f.at(0.0, 0.5, 0.0) * Mat4::from_rotation_z(FRAC_PI_2), 0.535, 0.06, 9, rgb([0.8, 0.5, 0.3]), rgb([0.8, 0.5, 0.3]));
     } else {
         m.bevel_box(f.at(0.0, 0.42, 0.0), Vec3::new(1.0, 0.42, 0.5), 0.08, rgb(c));
         for x in [-0.5f32, 0.5] {
-            m.cube(f.at(x, 0.42, 0.0), Vec3::new(0.03, 0.43, 0.51), rgb([0.8, 0.5, 0.3]));
+            m.cube(f.at(x, 0.42, 0.0), Vec3::new(0.03, 0.45, 0.53), rgb([0.8, 0.5, 0.3]));
         }
     }
 }
@@ -546,20 +548,20 @@ fn picnic(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
     m.beam(f.p(0.5, 0.55, 0.3), f.p(0.75, 0.37, 0.3), 0.04, rgb(WOOD_D));
     // plates + cake
     for (x, z) in [(-0.5f32, -0.4f32), (-0.3, 0.45)] {
-        m.cylinder(f.at(x, 0.06, z), 0.18, 0.015, 8, rgb(WHITE), rgb(WHITE));
+        m.cylinder(f.at(x, 0.08, z), 0.18, 0.015, 8, rgb(WHITE), rgb(WHITE));
     }
-    m.cylinder(f.at(-0.1, 0.14, 0.0), 0.2, 0.09, 8, rgb([0.98, 0.85, 0.75]), rgb([0.98, 0.6, 0.7]));
-    m.blob(f.at(-0.1, 0.27, 0.0), Vec3::splat(0.05), 1, 4, rgb([0.9, 0.2, 0.25]));
+    m.cylinder(f.at(-0.1, 0.17, 0.0), 0.2, 0.09, 8, rgb([0.98, 0.85, 0.75]), rgb([0.98, 0.6, 0.7]));
+    m.blob(f.at(-0.1, 0.3, 0.0), Vec3::splat(0.05), 1, 4, rgb([0.9, 0.2, 0.25]));
 }
 
 fn camper(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
     let c = PASTELS[(p.variant as usize + 2) % 6];
     m.bevel_box(f.at(0.0, 1.35, 0.0), Vec3::new(1.05, 0.95, 2.3), 0.3, rgb(CREAM));
-    m.cube(f.at(0.0, 0.95, 0.0), Vec3::new(1.07, 0.5, 2.31), rgb(c));
-    m.cube(f.at(0.0, 1.5, 0.0), Vec3::new(1.075, 0.06, 2.315), rgb(shade(c, 0.85)));
+    m.cube(f.at(0.0, 0.95, 0.0), Vec3::new(1.08, 0.5, 2.32), rgb(c));
+    m.cube(f.at(0.0, 1.5, 0.0), Vec3::new(1.11, 0.06, 2.35), rgb(shade(c, 0.85)));
     for z in [-1.4f32, 1.4] {
         for sx in [-1.0f32, 1.0] {
-            m.cylinder(f.at(sx * 0.92, 0.38, z) * Mat4::from_rotation_z(FRAC_PI_2), 0.38, 0.14, 10, rgb(DARK), rgb([0.85, 0.85, 0.85]));
+            m.cylinder(f.at(sx * 1.0, 0.38, z) * Mat4::from_rotation_z(FRAC_PI_2), 0.38, 0.14, 10, rgb(DARK), rgb([0.85, 0.85, 0.85]));
         }
     }
     // windscreen + side windows
@@ -599,7 +601,7 @@ fn tent(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
     }
     m.tri(f.p(-hw, 0.0, hl), f.p(hw, 0.0, hl), f.p(0.0, h, hl), rgb(shade(c, 0.9)));
     m.tri(f.p(-hw, 0.0, -hl), f.p(hw, 0.0, -hl), f.p(0.0, h, -hl), rgb(shade(c, 0.9)));
-    m.tri(f.p(-0.45, 0.0, -hl - 0.01), f.p(0.45, 0.0, -hl - 0.01), f.p(0.0, 1.0, -hl - 0.01), rgb(DARK));
+    m.tri(f.p(-0.45, 0.0, -hl - 0.035), f.p(0.45, 0.0, -hl - 0.035), f.p(0.0, 1.0, -hl - 0.035), rgb(DARK));
     m.beam(f.p(0.0, 0.0, -hl - 0.05), f.p(0.0, h + 0.3, -hl - 0.05), 0.05, rgb(WOOD_D));
     let mk = m.mark();
     m.tri(f.p(0.0, h + 0.3, -hl - 0.05), f.p(0.0, h + 0.05, -hl - 0.05), f.p(0.45, h + 0.2, -hl - 0.05), rgb(PASTELS[(p.variant as usize + 3) % 6]));
@@ -609,7 +611,7 @@ fn tent(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
 fn hay_wagon(m: &mut MeshBuilder, f: &Frame, _p: &Prop) {
     m.cube(f.at(0.0, 0.85, 0.0), Vec3::new(1.0, 0.1, 1.8), rgb(WOOD));
     for sx in [-1.0f32, 1.0] {
-        m.cube(f.at(sx * 1.0, 1.1, 0.0), Vec3::new(0.05, 0.25, 1.8), rgb(WOOD_D));
+        m.cube(f.at(sx * 1.0, 1.1, 0.0), Vec3::new(0.05, 0.25, 1.83), rgb(WOOD_D));
         for z in [-1.2f32, 1.2] {
             m.cylinder(f.at(sx * 1.08, 0.5, z) * Mat4::from_rotation_z(FRAC_PI_2), 0.5, 0.06, 10, rgb(WOOD_D), rgb([0.8, 0.3, 0.25]));
         }
@@ -712,13 +714,13 @@ fn cow(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
     legs(m, f, 0.3, 0.6, 0.7, if brown { [0.6, 0.42, 0.3] } else { [0.95, 0.94, 0.9] });
     m.bevel_box(f.at(0.0, 0.95, 0.0), Vec3::new(0.42, 0.36, 0.8), 0.18, rgb(body));
     if !brown {
-        for (x, y, z, r) in [(0.43f32, 1.0f32, 0.2f32, 0.22f32), (-0.43, 0.9, -0.3, 0.25), (0.43, 0.85, -0.4, 0.15), (0.0, 1.32, 0.3, 0.2)] {
+        for (x, y, z, r) in [(0.45f32, 1.0f32, 0.2f32, 0.22f32), (-0.45, 0.9, -0.3, 0.25), (0.45, 0.85, -0.4, 0.15), (0.0, 1.34, 0.3, 0.2)] {
             let n = if y > 1.3 { Vec3::Y } else { Vec3::X * x.signum() };
             m.disc(f.p(x, y, z), f.base.transform_vector3(n), r * f.s, 7, rgb(DARK));
         }
     }
     for k in 0..4 {
-        m.beam(f.p(-0.2 + (k % 2) as f32 * 0.4, 0.0, 0.62 * if k < 2 { -1.0 } else { 1.0 }), f.p(-0.2 + (k % 2) as f32 * 0.4, 0.05, 0.62 * if k < 2 { -1.0 } else { 1.0 }), 0.13, rgb(DARK));
+        m.beam(f.p(-0.2 + (k % 2) as f32 * 0.4, 0.0, 0.62 * if k < 2 { -1.0 } else { 1.0 }), f.p(-0.2 + (k % 2) as f32 * 0.4, 0.05, 0.62 * if k < 2 { -1.0 } else { 1.0 }), 0.16, rgb(DARK));
     }
     let graze = p.variant % 2 == 0;
     let (hy, hz) = if graze { (0.45, -0.95) } else { (1.15, -0.95) };
@@ -763,11 +765,12 @@ fn chevron(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
     }
     let (hw, y0, y1) = (0.85, 1.0, 1.65);
     m.bevel_box(f.at(0.0, (y0 + y1) * 0.5, 0.0), Vec3::new(hw + 0.05, (y1 - y0) * 0.5 + 0.05, 0.035), 0.03, rgb(WHITE));
-    m.cube(f.at(0.0, (y0 + y1) * 0.5, -0.02), Vec3::new(hw - 0.02, (y1 - y0) * 0.5 - 0.02, 0.03), rgb([0.99, 0.84, 0.3]));
+    // layers 3 cm apart so nothing z-fights at 150 m (board front z=-0.035, panel -0.065, arrows -0.095)
+    m.cube(f.at(0.0, (y0 + y1) * 0.5, -0.035), Vec3::new(hw - 0.02, (y1 - y0) * 0.5 - 0.02, 0.03), rgb([0.99, 0.84, 0.3]));
     let red = rgb([0.86, 0.24, 0.22]);
     // board front is local -Z, so the viewer's right is local -X
     let dir = if p.variant % 2 == 0 { -1.0 } else { 1.0 };
-    let z = -0.05;
+    let z = -0.095;
     for k in 0..3 {
         let x = (k as f32 - 1.0) * 0.5 * dir;
         let (yc, hh, w, t) = ((y0 + y1) * 0.5, 0.24, 0.18, 0.14);
@@ -781,7 +784,7 @@ fn chevron(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
         m.quad(f.p_v(tip_i), f.p_v(tip), f.p_v(bot), f.p_v(bot_i), red);
     }
     // back of the board: wooden brace
-    m.cube(f.at(0.0, 1.33, 0.06), Vec3::new(hw * 0.9, 0.05, 0.02), rgb(WOOD_D));
+    m.cube(f.at(0.0, 1.33, 0.115), Vec3::new(hw * 0.9, 0.05, 0.02), rgb(WOOD_D));
 }
 
 fn arrow_sign(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
@@ -789,7 +792,7 @@ fn arrow_sign(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
     // front is local -Z: viewer's right is local -X
     let dir = if p.variant % 2 == 0 { -1.0 } else { 1.0 };
     let col = rgb([0.98, 0.88, 0.5]);
-    let z = -0.08;
+    let z = -0.11;
     let y = 1.45;
     let pts = [Vec3::new(-0.6 * dir, y - 0.18, z), Vec3::new(0.25 * dir, y - 0.18, z), Vec3::new(0.25 * dir, y - 0.32, z), Vec3::new(0.7 * dir, y, z), Vec3::new(0.25 * dir, y + 0.32, z), Vec3::new(0.25 * dir, y + 0.18, z), Vec3::new(-0.6 * dir, y + 0.18, z)];
     let w: Vec<Vec3> = pts.iter().map(|v| f.p_v(*v)).collect();
@@ -798,7 +801,7 @@ fn arrow_sign(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
     let back: Vec<Vec3> = pts.iter().map(|v| f.p_v(*v + Vec3::Z * 0.06)).collect();
     m.poly(&[back[0], back[1], back[5], back[6]], rgb(WOOD));
     m.poly(&[back[2], back[3], back[4]], rgb(WOOD));
-    m.cube(f.at(-0.1 * dir, y, z - 0.01), Vec3::new(0.32, 0.03, 0.005), rgb([0.85, 0.4, 0.3]));
+    m.cube(f.at(-0.1 * dir, y, z - 0.035), Vec3::new(0.32, 0.03, 0.005), rgb([0.85, 0.4, 0.3]));
 }
 
 fn flag_pole(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
@@ -976,11 +979,17 @@ fn beach_umbrella(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
     // towel + beach ball
     let tc = PASTELS[(p.variant as usize + 3) % 6];
     m.quad(f.p(0.6, 0.05, -0.5), f.p(1.4, 0.05, -0.5), f.p(1.4, 0.05, 1.3), f.p(0.6, 0.05, 1.3), rgb(tc));
-    m.quad(f.p(0.6, 0.06, -0.2), f.p(1.4, 0.06, -0.2), f.p(1.4, 0.06, 0.0), f.p(0.6, 0.06, 0.0), rgb(WHITE));
+    m.quad(f.p(0.6, 0.08, -0.2), f.p(1.4, 0.08, -0.2), f.p(1.4, 0.08, 0.0), f.p(0.6, 0.08, 0.0), rgb(WHITE));
     if p.variant % 2 == 0 {
-        for (k, c) in [[0.95, 0.4, 0.4], WHITE, [0.4, 0.6, 0.95], [0.98, 0.85, 0.35]].iter().enumerate() {
-            m.blob(f.atr(-0.9, 0.25, 0.6, Quat::from_rotation_y(k as f32 * FRAC_PI_2)), Vec3::new(0.25, 0.25, 0.1), 2, 6, rgb(*c));
-        }
+        // beach ball: one sphere, segments coloured by angle (no overlapping shells)
+        let mk = m.mark();
+        m.blob(f.at(-0.9, 0.25, 0.6), Vec3::splat(0.25), 3, 8, rgb(WHITE));
+        let c = f.p(-0.9, 0.25, 0.6);
+        m.recolor_tris_since(mk, |cen| {
+            let a = (cen.z - c.z).atan2(cen.x - c.x);
+            let k = (((a / TAU) + 1.0) * 4.0) as usize % 4;
+            rgb([[0.95, 0.4, 0.4], WHITE, [0.4, 0.6, 0.95], [0.98, 0.85, 0.35]][k])
+        });
     }
 }
 
@@ -1056,7 +1065,7 @@ fn adobe(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
     window(m, f, Vec3::new(1.2, 1.5, -2.3), Vec3::NEG_Z, 0.7, 0.6, [0.35, 0.6, 0.75], [0.3, 0.25, 0.25], None);
     // chili string + pots
     for k in 0..5 {
-        m.blob(f.at(0.2, 2.0 - k as f32 * 0.17, -2.4), Vec3::new(0.06, 0.09, 0.06), 1, 4, rgb([0.85, 0.2, 0.18]));
+        m.blob(f.at(0.2, 2.0 - k as f32 * 0.17, -2.42), Vec3::new(0.06, 0.09, 0.06), 1, 4, rgb([0.85, 0.2, 0.18]));
     }
     for (k, x) in [-2.0f32, -1.6].iter().enumerate() {
         m.frustum(f.at(*x, 0.25, -2.7), 0.18, 0.26, 0.25, 7, rgb([0.82, 0.45, 0.3]), rgb([0.4, 0.3, 0.25]));
@@ -1085,7 +1094,7 @@ fn snowman(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
     if p.variant % 2 == 0 {
         m.cylinder(f.at(0.0, 2.1, 0.0), 0.28, 0.02, 8, rgb(DARK), rgb(DARK));
         m.cylinder(f.at(0.0, 2.3, 0.0), 0.18, 0.2, 8, rgb(DARK), rgb(DARK));
-        m.cylinder(f.at(0.0, 2.15, 0.0), 0.185, 0.04, 8, rgb([0.85, 0.25, 0.25]), rgb([0.85, 0.25, 0.25]));
+        m.cylinder(f.at(0.0, 2.15, 0.0), 0.21, 0.04, 8, rgb([0.85, 0.25, 0.25]), rgb([0.85, 0.25, 0.25]));
     } else {
         m.blob(f.at(0.0, 2.08, 0.0), Vec3::new(0.27, 0.16, 0.27), 2, 7, rgb(sc));
         m.blob(f.at(0.0, 2.27, 0.0), Vec3::splat(0.08), 1, 5, rgb(WHITE));
@@ -1097,18 +1106,20 @@ fn ski_cabin(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
     plinth(m, f, hx, hz);
     let logs = [[0.55, 0.38, 0.26], [0.5, 0.34, 0.23]];
     for k in 0..8 {
+        // logs stack edge to edge (no overlapping bands) and alternate a little in depth
         let y = 0.17 + k as f32 * 0.33;
         let c = rgb(logs[k % 2]);
-        m.beam(f.p(-hx - 0.2, y, -hz), f.p(hx + 0.2, y, -hz), 0.34, c);
-        m.beam(f.p(-hx - 0.2, y, hz), f.p(hx + 0.2, y, hz), 0.34, c);
-        m.beam(f.p(-hx, y + 0.16, -hz - 0.2), f.p(-hx, y + 0.16, hz + 0.2), 0.34, c);
-        m.beam(f.p(hx, y + 0.16, -hz - 0.2), f.p(hx, y + 0.16, hz + 0.2), 0.34, c);
+        let (d, t, e) = if k % 2 == 0 { (0.0, 0.33, 0.22) } else { (0.03, 0.29, 0.16) };
+        m.beam(f.p(-hx - e, y, -hz + d), f.p(hx + e, y, -hz + d), t, c);
+        m.beam(f.p(-hx - e, y, hz - d), f.p(hx + e, y, hz - d), t, c);
+        m.beam(f.p(-hx + d, y + 0.16, -hz - e), f.p(-hx + d, y + 0.16, hz + e), t, c);
+        m.beam(f.p(hx - d, y + 0.16, -hz - e), f.p(hx - d, y + 0.16, hz + e), t, c);
     }
     gable(m, f, hx, hz, h, h + 2.6, 0.5, SNOW, logs[0]);
     m.cube(f.at(-1.5, h + 2.0, 0.8), Vec3::new(0.3, 1.0, 0.3), rgb(STONE));
-    m.cube(f.at(0.0, 0.95, -hz - 0.15), Vec3::new(0.5, 0.95, 0.04), rgb([0.75, 0.3, 0.28]));
+    m.cube(f.at(0.0, 0.95, -hz - 0.17), Vec3::new(0.5, 0.95, 0.05), rgb([0.75, 0.3, 0.28]));
     for sx in [-1.0f32, 1.0] {
-        window(m, f, Vec3::new(sx * 1.8, 1.5, -hz - 0.15), Vec3::NEG_Z, 0.8, 0.7, [0.95, 0.9, 0.8], [1.0, 0.85, 0.5], Some([0.3, 0.45, 0.35]));
+        window(m, f, Vec3::new(sx * 1.8, 1.5, -hz - 0.17), Vec3::NEG_Z, 0.8, 0.7, [0.95, 0.9, 0.8], [1.0, 0.85, 0.5], Some([0.3, 0.45, 0.35]));
     }
     // skis leaning on the wall
     for (k, x) in [1.0f32, 1.25].iter().enumerate() {

@@ -14,6 +14,8 @@ pub trait MeshExt {
     /// Set the wind-sway weight of every vertex appended since `mark` from its position.
     /// Weights must be a pure function of position so shared corners never crack apart.
     fn sway_since(&mut self, mark: Mark, f: impl Fn(Vec3) -> f32);
+    /// Recolour every triangle appended since `mark` from its centroid (keeps sway alpha)
+    fn recolor_tris_since(&mut self, mark: Mark, f: impl Fn(Vec3) -> [u8; 4]);
     /// Transform every vertex appended since `mark` (positions + normals)
     fn transform_since(&mut self, mark: Mark, m: Mat4);
     /// Convex planar polygon (fan triangulated)
@@ -49,6 +51,22 @@ impl MeshExt for MeshBuilder {
             for v in ch.vertices.iter_mut().skip(start) {
                 let w = f(Vec3::from(v.pos));
                 v.color = sway(v.color, w);
+            }
+        }
+    }
+
+    fn recolor_tris_since(&mut self, mark: Mark, f: impl Fn(Vec3) -> [u8; 4]) {
+        for (ci, ch) in self.chunks.iter_mut().enumerate().skip(mark.0) {
+            let start = if ci == mark.0 { mark.1 } else { 0 };
+            // flat-shaded triangles are 3 consecutive vertices
+            let mut k = start;
+            while k + 2 < ch.vertices.len() {
+                let cen = (Vec3::from(ch.vertices[k].pos) + Vec3::from(ch.vertices[k + 1].pos) + Vec3::from(ch.vertices[k + 2].pos)) / 3.0;
+                let c = f(cen);
+                for v in &mut ch.vertices[k..k + 3] {
+                    v.color = [c[0], c[1], c[2], v.color[3]];
+                }
+                k += 3;
             }
         }
     }
@@ -259,7 +277,8 @@ pub fn roundel(m: &mut MeshBuilder, c: Vec3, n: Vec3, up: Vec3, r: f32, number: 
     let n = n.normalize();
     m.disc(c, n, r, 12, rgb(disc_c));
     let right = up.cross(n).normalize();
-    let c2 = c + n * 0.006;
+    // digits sit 1.2 cm off the disc: no coplanar overlap even when the car is far away
+    let c2 = c + n * 0.012;
     if number >= 10 {
         digit(m, c2 - right * r * 0.3, right, up, r * 1.05, number / 10, rgb(ink));
         digit(m, c2 + right * r * 0.3, right, up, r * 1.05, number % 10, rgb(ink));
