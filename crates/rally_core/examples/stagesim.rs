@@ -30,7 +30,7 @@ fn main() {
         let first: u64 = std::env::var("SEED_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
         for seed in first..=seeds {
             let t0 = Instant::now();
-            let track = Arc::new(Track::generate(&TrackParams { seed, biome, length_class: 1, difficulty: diff, surface }));
+            let track = Arc::new(Track::generate(&TrackParams { seed, biome, length_class: 1, difficulty: diff, surface, ..Default::default() }));
             gen_max = gen_max.max(t0.elapsed().as_millis());
             len_sum += track.length;
             changes += track.surface_map.transitions.len() + track.surface_map.patches.len();
