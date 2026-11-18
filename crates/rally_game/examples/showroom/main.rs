@@ -64,12 +64,12 @@ fn shot(path: &str) {
 pub fn catalogue(biome: Biome) -> Vec<Prop> {
     use PropKind::*;
     let kinds = models::catalogue_kinds(biome);
-    let cols = 8;
+    let cols = 7;
     let mut v = Vec::new();
     for (i, (k, var)) in kinds.iter().enumerate() {
         let (cx, cz) = ((i % cols) as f32, (i / cols) as f32);
         let _ = Tree;
-        v.push(Prop { kind: *k, pos: vec3((cx - cols as f32 * 0.5) * 9.0, 0.0, cz * 10.0), rot_y: 0.6, scale: 1.0, radius: 0.0, variant: *var });
+        v.push(Prop { kind: *k, pos: vec3(-(cx - (cols - 1) as f32 * 0.5) * 11.0, 0.0, cz * 11.0), rot_y: 0.6, scale: 1.0, radius: 0.0, variant: *var });
     }
     v
 }
@@ -122,9 +122,16 @@ async fn main() {
                     models::add_prop(&mut m, p, &style);
                 }
                 viewport(&mut gpu, 0.0, 0.0, sw, sh);
-                let rows = (props.len() as f32 / 8.0).ceil();
-                let center = vec3(-4.5, 1.5, rows * 5.0 - 5.0);
-                let eye = center + vec3(0.0, 26.0 + rows * 3.0, -24.0 - rows * 4.0);
+                let rows = (props.len() as f32 / 7.0).ceil();
+                let half: usize = std::env::var("HALF").ok().and_then(|s| s.parse().ok()).unwrap_or(2);
+                let (z0, z1) = match half {
+                    0 => (0.0, (rows / 2.0).ceil() * 11.0 - 11.0),
+                    1 => ((rows / 2.0).ceil() * 11.0, rows * 11.0 - 11.0),
+                    _ => (0.0, rows * 11.0 - 11.0),
+                };
+                let center = vec3(0.0, 1.5, (z0 + z1) * 0.5);
+                let span = z1 - z0 + 11.0;
+                let eye = center + vec3(0.0, 14.0 + span * 0.55, -22.0 - span * 0.6);
                 let view = Mat4::look_at_rh(eye, center, Vec3::Y);
                 let proj = Mat4::perspective_rh_gl(45f32.to_radians(), sw / sh, 0.5, 400.0);
                 let v = View::new(view, proj, eye);

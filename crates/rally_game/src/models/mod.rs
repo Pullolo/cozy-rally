@@ -3,6 +3,7 @@ mod car;
 pub mod parts;
 mod props;
 
+#[allow(unused_imports)]
 pub use car::{car_model, wheel_mesh, CarModel};
 pub use props::{add_prop, catalogue_kinds};
 
