@@ -32,8 +32,83 @@ fn front_slip(c: &Car) -> f32 {
     theta - c.steer
 }
 
+/// Throttle-in-corner: settle in a steady corner at `kmh` with `steer` input (speed held),
+/// then full throttle for 2 s. Driver after the throttle stab:
+///   "hold"  : keeps the steering where it was
+///   "catch" : counter-steers once the slide passes 6 deg (proportional), keeps the throttle
+///   "lift"  : lifts off once the slide passes 12 deg
+/// Returns (peak drift deg, yaw gain = peak yaw / steady yaw, spun, recovered: drift < 5 deg
+/// within 2.5 s after the stab ends).
+fn throttle_in_corner(spec: usize, track: &Track, assist: f32, kmh: f32, steer: f32, driver: &str) -> (f32, f32, bool, bool) {
+    let mut c = fresh(spec, track, assist, kmh);
+    let mut steady_yaw = 0.0f32;
+    for k in 0..(3.0 / DT) as i32 {
+        let err = kmh / 3.6 - c.vel.length();
+        c.input = CarInput { throttle: (err * 0.5).clamp(0.0, 1.0), brake: (-err * 0.3).clamp(0.0, 1.0), steer, ..Default::default() };
+        c.step(DT, track);
+        if k as f32 * DT > 2.5 {
+            steady_yaw = steady_yaw.max(c.ang_vel.y.abs());
+        }
+    }
+    let (mut peak_beta, mut peak_yaw, mut spun) = (0.0f32, 0.0f32, false);
+    let mut lifted = false;
+    for _ in 0..(2.0 / DT) as i32 {
+        let beta = c.telemetry.drift_angle;
+        let mut inp = CarInput { throttle: 1.0, steer, ..Default::default() };
+        match driver {
+            "catch" if beta.abs() > 6f32.to_radians() => {
+                // steer toward the direction of travel (velocity is on the side beta points to)
+                inp.steer = (beta.signum() * ((beta.abs().to_degrees() - 6.0) / 14.0)).clamp(-1.0, 1.0);
+            }
+            "lift" if beta.abs() > 12f32.to_radians() || lifted => {
+                lifted = true;
+                inp.throttle = 0.0;
+            }
+            _ => {}
+        }
+        c.input = inp;
+        c.step(DT, track);
+        if std::env::var("TIC_TRACE").is_ok_and(|v| v == c.spec.name) && driver == "hold" {
+            let w = &c.wheels;
+            println!("  g{} rpm{:5.0} v{:4.1} beta{:5.1} yaw{:5.2} | rear k{:5.2}/{:5.2} a{:5.2}/{:5.2} tc{:.2}/{:.2} tl{:.2}/{:.2} | front k{:5.2} a{:5.2} tc{:.2}", c.gear, c.rpm, c.vel.length() * 3.6, c.telemetry.drift_angle.to_degrees(), c.ang_vel.y, w[2].slip_ratio, w[3].slip_ratio, w[2].slip_angle, w[3].slip_angle, w[2].tc_cut, w[3].tc_cut, w[2].traction_loss, w[3].traction_loss, w[0].slip_ratio, w[0].slip_angle, w[0].tc_cut);
+        }
+        peak_beta = peak_beta.max(c.telemetry.drift_angle.abs());
+        peak_yaw = peak_yaw.max(c.ang_vel.y.abs());
+        spun |= c.telemetry.drift_angle.abs() > 70f32.to_radians();
+    }
+    // stab over: neutral throttle, centre steering (or keep catching)
+    let mut recovered = false;
+    for _ in 0..(2.5 / DT) as i32 {
+        let beta = c.telemetry.drift_angle;
+        let st = if driver == "hold" { steer * 0.5 } else { (beta.signum() * (beta.abs().to_degrees() / 15.0)).clamp(-1.0, 1.0) };
+        c.input = CarInput { throttle: 0.3, steer: st, ..Default::default() };
+        c.step(DT, track);
+        spun |= c.telemetry.drift_angle.abs() > 70f32.to_radians();
+        if c.telemetry.drift_angle.abs() < 5f32.to_radians() {
+            recovered = true;
+        }
+    }
+    (peak_beta.to_degrees(), peak_yaw / steady_yaw.max(0.05), spun, recovered && !spun)
+}
+
 fn main() {
     let assist: f32 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(1.0);
+    if std::env::args().nth(2).as_deref() == Some("tic") {
+        println!("=== THROTTLE IN CORNER (assist {assist}): steady corner at 70 km/h near the limit (steer 0.9), then full throttle 2 s. peak drift deg / yaw gain / spin / recovered, for driver hold | catch | lift");
+        for surf in [Surface::Gravel, Surface::Asphalt] {
+            let track = Track::flat_for_tests(surf);
+            for spec in 0..4 {
+                let mut line = format!("{:?} {:8}", surf, car_specs()[spec].name);
+                for d in ["hold", "catch", "lift"] {
+                    let st: f32 = std::env::var("TIC_STEER").ok().and_then(|v| v.parse().ok()).unwrap_or(0.9);
+                    let (b, g, sp, rec) = throttle_in_corner(spec, &track, assist, 70.0, st, d);
+                    line += &format!(" | {d:5} {b:5.1}deg x{g:3.1}{}{}", if sp { " SPIN" } else { "" }, if rec { " rec" } else { " NOREC" });
+                }
+                println!("{line}");
+            }
+        }
+        return;
+    }
     println!("=== STEERING (assist {assist}): speed held, steady-state over 1.5-4 s. latG / front slip deg (peak ~8.6) / front skid (screech 0..1) / yaw rad/s");
     for surf in [Surface::Gravel, Surface::Asphalt] {
         let track = Track::flat_for_tests(surf);
