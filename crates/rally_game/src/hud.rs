@@ -76,6 +76,9 @@ pub fn draw_hud(s: &RaceSession, player: usize, vp: &Viewport) {
     // --- minimap (bottom left)
     draw_minimap(s, player, vp.x + pad, vp.y + vp.h - pad - 170.0 * k, 170.0 * k);
 
+    // --- pace notes strip (top centre; toggled with N / PACE_NOTES_ENABLED)
+    crate::pacenotes_hud::draw_pace_notes(s, player, vp);
+
     // --- centre messages
     let mx = vp.x + vp.w * 0.5;
     let my = vp.y + vp.h * 0.36;

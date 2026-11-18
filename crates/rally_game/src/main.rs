@@ -7,6 +7,7 @@ mod game;
 mod hud;
 mod input;
 mod models;
+mod pacenotes_hud;
 mod render;
 mod ui;
 

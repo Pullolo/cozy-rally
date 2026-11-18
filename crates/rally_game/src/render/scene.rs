@@ -6,6 +6,7 @@ use macroquad::math::{Mat4, Vec3};
 use rally_core::biome::{Biome, BiomeStyle};
 use rally_core::noise;
 use rally_core::surface::Surface;
+use rally_core::surfacemap::road_color;
 use rally_core::track::{Track, SHOULDER};
 
 pub struct Scene {
@@ -65,38 +66,52 @@ pub fn terrain_mesh(track: &Track) -> MeshBuilder {
     m
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum StripKind {
+    Shoulder,
+    Edge,
+    /// White edge line, only visible on tarmac
+    Line,
+    /// Road surface; `rut` = darker wheel tracks on loose surfaces
+    Road { rut: bool, bright: f32 },
+}
+
 struct Strip {
     from: f32,
     to: f32,
-    color: [f32; 3],
+    kind: StripKind,
     lift: f32,
 }
 
-fn road_strips(st: &BiomeStyle, hw: f32) -> Vec<Strip> {
-    let road = st.road;
-    let rut = shade(road, 0.86);
-    let edge = st.road_edge;
-    let sh = st.shoulder;
-    let mut v = vec![
-        Strip { from: -(hw + SHOULDER), to: -hw, color: sh, lift: 0.03 },
-        Strip { from: -hw, to: -hw + 0.6, color: edge, lift: 0.05 },
-    ];
-    if st.road_surface == Surface::Asphalt {
-        v.push(Strip { from: -hw + 0.6, to: -hw + 0.85, color: [0.95, 0.95, 0.92], lift: 0.055 });
-        v.push(Strip { from: -hw + 0.85, to: hw - 0.85, color: road, lift: 0.05 });
-        v.push(Strip { from: hw - 0.85, to: hw - 0.6, color: [0.95, 0.95, 0.92], lift: 0.055 });
-    } else {
-        let r1 = -hw * 0.42;
-        let r2 = hw * 0.42;
-        v.push(Strip { from: -hw + 0.6, to: r1 - 0.45, color: road, lift: 0.05 });
-        v.push(Strip { from: r1 - 0.45, to: r1 + 0.45, color: rut, lift: 0.05 });
-        v.push(Strip { from: r1 + 0.45, to: r2 - 0.45, color: shade(road, 1.04), lift: 0.05 });
-        v.push(Strip { from: r2 - 0.45, to: r2 + 0.45, color: rut, lift: 0.05 });
-        v.push(Strip { from: r2 + 0.45, to: hw - 0.6, color: road, lift: 0.05 });
-    }
-    v.push(Strip { from: hw - 0.6, to: hw, color: edge, lift: 0.05 });
-    v.push(Strip { from: hw, to: hw + SHOULDER, color: sh, lift: 0.03 });
-    v
+/// One cross-section layout for every surface; colours come per quad from the track's
+/// (blended) surface map so sections and patches change smoothly.
+fn road_strips(hw: f32) -> Vec<Strip> {
+    let r1 = -hw * 0.42;
+    let r2 = hw * 0.42;
+    let road = |from: f32, to: f32, rut: bool, bright: f32| Strip { from, to, kind: StripKind::Road { rut, bright }, lift: 0.05 };
+    vec![
+        Strip { from: -(hw + SHOULDER), to: -hw, kind: StripKind::Shoulder, lift: 0.03 },
+        Strip { from: -hw, to: -hw + 0.6, kind: StripKind::Edge, lift: 0.05 },
+        Strip { from: -hw + 0.6, to: -hw + 0.85, kind: StripKind::Line, lift: 0.055 },
+        road(-hw + 0.85, r1 - 0.45, false, 1.0),
+        road(r1 - 0.45, r1 + 0.45, true, 1.0),
+        road(r1 + 0.45, 0.0, false, 1.04),
+        road(0.0, r2 - 0.45, false, 1.04),
+        road(r2 - 0.45, r2 + 0.45, true, 1.0),
+        road(r2 + 0.45, hw - 0.85, false, 1.0),
+        Strip { from: hw - 0.85, to: hw - 0.6, kind: StripKind::Line, lift: 0.055 },
+        Strip { from: hw - 0.6, to: hw, kind: StripKind::Edge, lift: 0.05 },
+        Strip { from: hw, to: hw + SHOULDER, kind: StripKind::Shoulder, lift: 0.03 },
+    ]
+}
+
+/// Blended road colour, tarmac weight and weight of the biome's own road surface at (s, lateral)
+fn surface_color(track: &Track, s: f32, lat: f32) -> ([f32; 3], f32, f32) {
+    let m = track.surface_mix_at(s, lat);
+    let c = mix(road_color(track.biome, m.a), road_color(track.biome, m.b), m.t);
+    let w = |x: Surface, y: Surface| if x == y { 1.0 } else { 0.0 };
+    let own = track.biome.style().road_surface;
+    (c, w(m.a, Surface::Asphalt) * (1.0 - m.t) + w(m.b, Surface::Asphalt) * m.t, w(m.a, own) * (1.0 - m.t) + w(m.b, own) * m.t)
 }
 
 pub fn road_mesh(track: &Track) -> MeshBuilder {
@@ -115,21 +130,30 @@ pub fn road_mesh(track: &Track) -> MeshBuilder {
         let fa = Vec3::new(a.right.x, 0.0, a.right.z).normalize();
         let fb = Vec3::new(b.right.x, 0.0, b.right.z).normalize();
         let var = 0.96 + rally_core::rng::hash2(i as i32, 7, seed) * 0.06;
-        for s in road_strips(st, a.half_width) {
+        let s_mid = a.s + 1.0;
+        for s in road_strips(a.half_width) {
             let sb_scale = b.half_width / a.half_width;
             let a0 = ground(a.pos + fa * s.from, s.lift);
             let a1 = ground(a.pos + fa * s.to, s.lift);
             let b0 = ground(b.pos + fb * s.from * sb_scale, s.lift);
             let b1 = ground(b.pos + fb * s.to * sb_scale, s.lift);
-            m.quad(a0, a1, b1, b0, rgb(shade(s.color, var)));
+            let (road, tar, own) = surface_color(track, s_mid, (s.from + s.to) * 0.5);
+            let color = match s.kind {
+                StripKind::Shoulder => st.shoulder,
+                StripKind::Edge => mix(shade(road, 0.84), st.road_edge, own),
+                StripKind::Line => mix(shade(road, 0.84), [0.95, 0.95, 0.92], tar),
+                StripKind::Road { rut, bright } => shade(road, if rut { 0.86 + 0.14 * tar } else { bright }),
+            };
+            m.quad(a0, a1, b1, b0, rgb(shade(color, var)));
         }
-        // dashed centre line on asphalt
-        if st.road_surface == Surface::Asphalt && (i / 3) % 2 == 0 {
+        // dashed centre line on tarmac
+        let (road, tar, _) = surface_color(track, s_mid, 0.0);
+        if tar > 0.05 && (i / 3) % 2 == 0 {
             let a0 = ground(a.pos - fa * 0.12, 0.058);
             let a1 = ground(a.pos + fa * 0.12, 0.058);
             let b0 = ground(b.pos - fb * 0.12, 0.058);
             let b1 = ground(b.pos + fb * 0.12, 0.058);
-            m.quad(a0, a1, b1, b0, rgb([0.97, 0.9, 0.5]));
+            m.quad(a0, a1, b1, b0, rgb(mix(road, [0.97, 0.9, 0.5], tar)));
         }
     }
     // chequered start line
