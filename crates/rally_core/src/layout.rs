@@ -8,9 +8,7 @@
 //! exactly by solving a tiny weighted least-squares problem for the main straight lengths.
 //! Candidates that come too close to themselves are rejected (the planner is cheap; the caller
 //! retries).
-use crate::biome::Biome;
 use crate::rng::Rng;
-use crate::surface::Surface;
 use glam::Vec2;
 use std::f32::consts::TAU;
 
@@ -815,90 +813,4 @@ pub fn shape_elevation(elev: &mut [f32], features: &[Feature], curv: &[f32], rng
         jumps.push(j.rem_euclid(n as isize) as usize);
     }
     jumps
-}
-
-/// Per-sample road surface: tarmac/gravel sections on the coast, ice / mud / sand patches.
-#[allow(clippy::too_many_arguments)]
-pub fn surface_patches(biome: Biome, base: Surface, features: &[Feature], jumps: &[usize], rng: &mut Rng, difficulty: u8, n: usize, spacing: f32) -> Vec<Surface> {
-    let d = (difficulty as usize).min(2);
-    let len = n as f32 * spacing;
-    let mut surf = vec![base; n];
-    let jump_s: Vec<f32> = jumps.iter().map(|&j| j as f32 * spacing).collect();
-    let mut taken: Vec<(f32, f32)> = Vec::new();
-    let blocked = |s0: f32, l: f32, taken: &[(f32, f32)]| {
-        let mid = s0 + l * 0.5;
-        let near_start = (0..=4).any(|k| {
-            let s = (s0 + l * k as f32 / 4.0).rem_euclid(len);
-            s.min(len - s) < 60.0
-        });
-        near_start
-            || jump_s.iter().any(|&j| arc_dist(j, mid, len) < l * 0.5 + 45.0)
-            || taken.iter().any(|&(a, b)| arc_dist((a + b) * 0.5, mid, len) < (b - a) * 0.5 + l * 0.5 + 30.0)
-    };
-    let paint = |s0: f32, l: f32, sf: Surface, surf: &mut Vec<Surface>| {
-        let i0 = (s0 / spacing).round() as isize;
-        let cnt = (l / spacing).round() as isize;
-        for k in 0..cnt {
-            surf[(i0 + k).rem_euclid(n as isize) as usize] = sf;
-        }
-    };
-    let straights: Vec<&Feature> = features.iter().filter(|f| f.kind == FeatureKind::Straight && f.len(len) > 60.0).collect();
-    let corners: Vec<&Feature> = features.iter().filter(|f| matches!(f.kind, FeatureKind::Medium | FeatureKind::Sweeper | FeatureKind::Opening | FeatureKind::Kink)).collect();
-    match biome {
-        Biome::Coast => {
-            // gravel sections on the tarmac
-            let count = [1, 1 + rng.chance(0.5) as usize, 2][d];
-            let mut tries = 0;
-            while taken.len() < count && tries < 40 {
-                tries += 1;
-                let f = features[rng.range_i(0, features.len() as i32) as usize];
-                let l = rng.range(170.0, 360.0);
-                let s0 = f.s0;
-                let near_start = (0..=8).any(|k| {
-                    let s = (s0 + l * k as f32 / 8.0).rem_euclid(len);
-                    s.min(len - s) < 70.0
-                });
-                if near_start || taken.iter().any(|&(a, b)| arc_dist((a + b) * 0.5, s0 + l * 0.5, len) < (b - a) * 0.5 + l * 0.5 + 80.0) {
-                    continue;
-                }
-                paint(s0, l, Surface::Gravel, &mut surf);
-                taken.push((s0, s0 + l));
-            }
-        }
-        _ => {
-            let (sf, counts, lmin, lmax, corner_p) = match biome {
-                Biome::Snow => (Surface::Ice, [1, 2, 3], 14.0, 28.0, [0.0, 0.0, 0.3]),
-                Biome::Autumn => (Surface::Mud, [1, 2, 3], 15.0, 30.0, [0.0, 0.3, 0.4]),
-                Biome::Desert => (Surface::Sand, [1, 3, 4], 10.0, 22.0, [0.2, 0.4, 0.5]),
-                _ => (Surface::Mud, [0, 1, 2], 10.0, 18.0, [0.0, 0.2, 0.3]),
-            };
-            let count = counts[d] + (len > 2200.0) as usize;
-            let mut tries = 0;
-            while taken.len() < count && tries < 80 {
-                tries += 1;
-                let l = rng.range(lmin, lmax);
-                let s0 = if rng.chance(corner_p[d]) && !corners.is_empty() {
-                    let f = corners[rng.range_i(0, corners.len() as i32) as usize];
-                    if sf == Surface::Ice {
-                        // icy braking zone (Expert): ends just before the corner
-                        f.s0 - l - rng.range(4.0, 12.0)
-                    } else {
-                        f.s0 + rng.range(-6.0, f.len(len) * 0.5)
-                    }
-                } else if !straights.is_empty() {
-                    let f = straights[rng.range_i(0, straights.len() as i32) as usize];
-                    f.s0 + rng.range(15.0, (f.len(len) - 15.0 - l).max(16.0))
-                } else {
-                    continue;
-                };
-                let s0 = s0.rem_euclid(len);
-                if blocked(s0, l, &taken) {
-                    continue;
-                }
-                paint(s0, l, sf, &mut surf);
-                taken.push((s0, s0 + l));
-            }
-        }
-    }
-    surf
 }

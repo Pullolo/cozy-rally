@@ -7,7 +7,8 @@
 use crate::biome::{Biome, BiomeStyle};
 use crate::noise;
 use crate::rng::Rng;
-use crate::surface::Surface;
+use crate::surface::{Surface, SurfaceProps};
+use crate::surfacemap::{SurfaceMap, SurfaceMix, SurfaceMode};
 use crate::terrain::Heightfield;
 use glam::{Mat3, Quat, Vec2, Vec3};
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,9 @@ pub struct TrackParams {
     /// 2 = Expert (more hairpins, narrower, more surface patches, kinks after jumps)
     #[serde(default = "default_difficulty")]
     pub difficulty: u8,
+    /// Road surface layout (biome default, forced single surface, or mixed stage)
+    #[serde(default)]
+    pub surface: SurfaceMode,
 }
 
 fn default_difficulty() -> u8 {
@@ -35,9 +39,27 @@ fn default_difficulty() -> u8 {
 
 pub const DIFFICULTY_NAMES: [&str; 3] = ["Relaxed", "Rally", "Expert"];
 
+impl TrackParams {
+    /// Test hook: `COZY_TRACK_STYLE=0..2` (Relaxed/Rally/Expert) and
+    /// `COZY_SURFACE=biome|gravel|tarmac|snow|mixed` (or 0..4) override the params.
+    pub fn with_env_overrides(mut self) -> Self {
+        if let Some(d) = std::env::var("COZY_TRACK_STYLE").ok().and_then(|v| v.parse::<u8>().ok()) {
+            self.difficulty = d.min(2);
+        }
+        if let Ok(v) = std::env::var("COZY_SURFACE") {
+            let v = v.to_lowercase();
+            let modes = crate::surfacemap::SURFACE_MODES;
+            if let Some(m) = v.parse::<usize>().ok().and_then(|i| modes.get(i).copied()).or_else(|| modes.iter().copied().find(|m| m.name().to_lowercase() == v)) {
+                self.surface = m;
+            }
+        }
+        self
+    }
+}
+
 impl Default for TrackParams {
     fn default() -> Self {
-        TrackParams { seed: 1, biome: None, length_class: 1, difficulty: default_difficulty() }
+        TrackParams { seed: 1, biome: None, length_class: 1, difficulty: default_difficulty(), surface: SurfaceMode::BiomeDefault }
     }
 }
 
@@ -56,8 +78,13 @@ pub struct TrackSample {
     pub bank: f32,
     /// Signed curvature (1/m), positive = left turn
     pub curvature: f32,
-    /// Driving surface of the road at this sample (patches of ice/mud/sand, tarmac sections...)
+    /// Dominant road surface on the centre line here (sections, patches...)
     pub surface: Surface,
+    /// The other surface blended in on the centre line (== `surface` when pure)
+    pub surface_next: Surface,
+    /// Weight of `surface_next` on the centre line (0 ..= 0.5); colour/grip = lerp(surface,
+    /// surface_next, surface_blend). Use `Track::surface_mix_at` for exact values off-centre.
+    pub surface_blend: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +124,20 @@ pub struct TrackQuery {
     pub lateral: f32,
     /// Distance in XZ to the centre line
     pub dist: f32,
+}
+
+/// Blended ground under a point (see `Track::ground_at`).
+#[derive(Clone, Copy, Debug)]
+pub struct GroundInfo {
+    /// Dominant surface
+    pub primary: Surface,
+    /// Second surface in the blend (== primary when pure)
+    pub secondary: Surface,
+    /// Weight of `secondary` (0 ..= 0.5)
+    pub blend: f32,
+    /// Blended tyre/handling properties (continuous across every surface change)
+    pub props: SurfaceProps,
+    pub query: TrackQuery,
 }
 
 struct SpatialGrid {
@@ -157,6 +198,8 @@ pub struct Track {
     pub jumps: Vec<usize>,
     /// Designed layout pieces (corners/straights) in arc length, for stats and hints
     pub features: Vec<crate::layout::Feature>,
+    /// Surface sections / transitions / patches
+    pub surface_map: SurfaceMap,
     grid: SpatialGrid,
     prop_grid: SpatialGrid,
 }
@@ -242,7 +285,7 @@ impl Track {
     fn try_generate(params: &TrackParams, attempt: u64) -> Option<Track> {
         let mut rng = Rng::new(params.seed.wrapping_mul(31).wrapping_add(attempt * 7919));
         let biome = params.biome.unwrap_or_else(|| Biome::from_index((Rng::new(params.seed).next_u64() % 5) as usize));
-        let style = biome.style();
+        let mut style = biome.style();
         let noise_seed = (params.seed as u32).wrapping_mul(2654435761);
 
         // ---- 1-3. designed layout (corner complexes + straights, closed exactly)
@@ -288,7 +331,18 @@ impl Track {
         smooth_closed_f32(&mut tech, 6, 2);
         let mut width_noise: Vec<f32> = (0..n).map(|i| noise::value2(i as f32 * 0.03, 3.3, noise_seed) * 0.25).collect();
         smooth_closed_f32(&mut width_noise, 4, 1);
-        let surfaces = crate::layout::surface_patches(biome, style.road_surface, &layout.features, &jumps, &mut rng, diff, n, SAMPLE_SPACING);
+        let hws: Vec<f32> = (0..n)
+            .map(|i| {
+                let start_wide = smoothstep(40.0, 10.0, (i.min(n - i)) as f32);
+                (hw_wide + (hw_narrow - hw_wide) * tech[i].clamp(0.0, 1.0) + width_noise[i]).max(3.25) + start_wide
+            })
+            .collect();
+        let splan = crate::surfacemap::plan(biome, params.surface, diff, &layout.features, &jumps, &hws, SAMPLE_SPACING, &mut rng);
+        if splan.main != style.road_surface {
+            style.road = crate::surfacemap::road_color(biome, splan.map.base);
+            style.road_surface = splan.main;
+        }
+        let surface_map = splan.map;
         let mut bank: Vec<f32> = (0..n)
             .map(|i| {
                 let b = (curv[i] * 24.0).clamp(-0.14, 0.14);
@@ -310,18 +364,19 @@ impl Track {
             // tilt the right vector: positive bank lifts the right side
             let right = (flat_right * bank[i].cos() + Vec3::Y * bank[i].sin()).normalize();
             let up = right.cross(tangent).normalize();
-            let start_wide = smoothstep(40.0, 10.0, (i.min(n - i)) as f32) * 1.0;
-            let hw = (hw_wide + (hw_narrow - hw_wide) * tech[i].clamp(0.0, 1.0) + width_noise[i]).max(3.25);
+            let (sf, sf_next, sf_blend) = surface_map.mix_at(i as f32 * SAMPLE_SPACING, 0.0).dominant();
             samples.push(TrackSample {
                 pos: p,
                 tangent,
                 right,
                 up,
                 s: i as f32 * SAMPLE_SPACING,
-                half_width: hw + start_wide,
+                half_width: hws[i],
                 bank: bank[i],
                 curvature: curv[i],
-                surface: surfaces[i],
+                surface: sf,
+                surface_next: sf_next,
+                surface_blend: sf_blend,
             });
         }
 
@@ -419,6 +474,7 @@ impl Track {
             water_level,
             jumps,
             features: layout.features,
+            surface_map,
             grid,
             prop_grid: SpatialGrid::new(&[Vec2::ZERO], 32.0, 1.0),
         };
@@ -612,22 +668,59 @@ impl Track {
         res
     }
 
+    /// Dominant surface under a point (see `ground_at` for the smooth blend).
     pub fn surface_at(&self, p: Vec3, hint: Option<usize>) -> (Surface, TrackQuery) {
+        let g = self.ground_at(p, hint);
+        (g.primary, g.query)
+    }
+
+    /// Road surface blend at arc length `s` and lateral offset `lat` (+ = right), ignoring the
+    /// road edge. Renderers use this to colour the road continuously.
+    pub fn surface_mix_at(&self, s: f32, lat: f32) -> SurfaceMix {
+        self.surface_map.mix_at(s, lat)
+    }
+
+    /// Blended ground (surface pair + continuous tyre properties) under a point: section
+    /// transitions and patches are smooth along and across the road, and the road edge blends
+    /// into the shoulder and then the off-road surface over ~0.6-0.8 m.
+    pub fn ground_at(&self, p: Vec3, hint: Option<usize>) -> GroundInfo {
+        use crate::surfacemap::{shoulder_of, smoothstep as ss};
         let q = self.query(p, hint);
-        let smp = &self.samples[q.index];
-        let hw = smp.half_width;
-        let s = if q.dist <= hw + 0.4 {
-            smp.surface
-        } else if q.dist <= hw + SHOULDER {
-            match smp.surface {
-                Surface::Asphalt => Surface::Gravel,
-                Surface::Ice => Surface::Snow,
-                other => other,
+        let hw = self.samples[q.index].half_width;
+        let off = self.style.offroad_surface;
+        let e2 = ss(hw + SHOULDER - 0.4, hw + SHOULDER + 0.4, q.dist);
+        if e2 >= 1.0 {
+            return GroundInfo { primary: off, secondary: off, blend: 0.0, props: off.props(), query: q };
+        }
+        let m = self.surface_map.mix_at(q.s, q.lateral.clamp(-(hw + SHOULDER), hw + SHOULDER));
+        let e1 = ss(hw + 0.1, hw + 0.7, q.dist);
+        let road = SurfaceProps::lerp(m.a.props(), m.b.props(), m.t);
+        let (sa, sb) = (shoulder_of(m.a), shoulder_of(m.b));
+        let shoulder = SurfaceProps::lerp(sa.props(), sb.props(), m.t);
+        let props = SurfaceProps::lerp(SurfaceProps::lerp(road, shoulder, e1), off.props(), e2);
+        // dominant two surfaces by weight
+        let parts = [
+            (m.a, (1.0 - m.t) * (1.0 - e1) * (1.0 - e2)),
+            (m.b, m.t * (1.0 - e1) * (1.0 - e2)),
+            (sa, (1.0 - m.t) * e1 * (1.0 - e2)),
+            (sb, m.t * e1 * (1.0 - e2)),
+            (off, e2),
+        ];
+        let mut acc: [(Surface, f32); 5] = [(off, 0.0); 5];
+        let mut k = 0;
+        for (sf, w) in parts {
+            if let Some(e) = acc[..k].iter_mut().find(|e| e.0 == sf) {
+                e.1 += w;
+            } else {
+                acc[k] = (sf, w);
+                k += 1;
             }
-        } else {
-            self.style.offroad_surface
-        };
-        (s, q)
+        }
+        let acc = &mut acc[..k];
+        acc.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        let (primary, w1) = acc[0];
+        let (secondary, w2) = if acc.len() > 1 { acc[1] } else { (primary, 0.0) };
+        GroundInfo { primary, secondary, blend: w2 / (w1 + w2).max(1e-6), props, query: q }
     }
 
     /// Interpolated centre-line frame at arc length s: (position, tangent, right, up)
@@ -737,7 +830,12 @@ impl Track {
         let mut t = Track::generate(&TrackParams { seed: 7, biome: Some(Biome::Meadow), length_class: 2, ..Default::default() });
         t.terrain.heights.iter_mut().for_each(|h| *h = 0.0);
         t.style.road_surface = surface;
-        t.samples.iter_mut().for_each(|s| s.surface = surface);
+        t.samples.iter_mut().for_each(|s| {
+            s.surface = surface;
+            s.surface_next = surface;
+            s.surface_blend = 0.0;
+        });
+        t.surface_map = SurfaceMap::uniform(surface, t.length);
         t.style.offroad_surface = surface;
         t.water_level = None;
         t.props.clear();

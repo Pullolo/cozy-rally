@@ -17,7 +17,7 @@ fn main() {
         let mut jumps = 0;
         for seed in 1..=seeds {
             let t0 = Instant::now();
-            let t = Track::generate(&TrackParams { seed, biome: None, length_class: lc, difficulty: diff });
+            let t = Track::generate(&TrackParams { seed, biome: None, length_class: lc, difficulty: diff, ..Default::default() }.with_env_overrides());
             let ms = t0.elapsed().as_millis();
             max_ms = max_ms.max(ms);
             ms_sum += ms;

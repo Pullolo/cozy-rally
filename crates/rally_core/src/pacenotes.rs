@@ -85,6 +85,8 @@ pub enum Modifier {
     DoubleCaution,
     /// No gap to the next note
     Into,
+    /// The surface change is a short patch (ice patch, mud, sand drift), not a new section
+    Patch,
 }
 
 impl Modifier {
@@ -104,6 +106,7 @@ impl Modifier {
             Modifier::Caution => "caution".into(),
             Modifier::DoubleCaution => "double caution".into(),
             Modifier::Into => "into".into(),
+            Modifier::Patch => "patch".into(),
         }
     }
 }
@@ -182,6 +185,10 @@ impl PaceNote {
         }
         for m in &self.modifiers {
             match m {
+                Modifier::SurfaceChange(sf) if self.has(Modifier::Patch) => w.push(match sf {
+                    Surface::Sand => "sand drift".into(),
+                    other => format!("{} patch", surface_word(*other)),
+                }),
                 Modifier::Long | Modifier::OverCrest | Modifier::Compression | Modifier::OffCamber | Modifier::Narrows | Modifier::DontCut | Modifier::SurfaceChange(_) => w.push(m.word()),
                 Modifier::Tightens | Modifier::Opens => match self.exit_severity {
                     Some(e) if e.abs_diff(self.severity) >= 2 => w.push(format!("{} {e}", m.word())),
@@ -562,48 +569,35 @@ pub fn notes_for(track: &Track) -> PaceNotes {
     }
 
     // ---- 4. surface changes and narrowing
-    // runs of equal surface, starting at a boundary
-    let surf = |i: usize| track.samples[i % n].surface;
-    let base = track.style.road_surface;
-    if let Some(b0) = (0..n).find(|&i| surf(i) != surf((i + n - 1) % n)) {
-        let mut surf_runs: Vec<(usize, usize, Surface)> = Vec::new(); // (start, len, surface)
-        let mut i = b0;
-        while i < b0 + n {
-            let sf = surf(i);
-            let mut e = i;
-            while e < b0 + n && surf(e) == sf {
-                e += 1;
-            }
-            surf_runs.push((i % n, e - i, sf));
-            i = e;
+    // surface changes, called where the transition / patch *starts*
+    let map = &track.surface_map;
+    let mut events: Vec<(f32, f32, Surface, Surface, bool)> = Vec::new(); // (s, length, from, to, patch)
+    for tr in &map.transitions {
+        events.push((tr.s, tr.len, tr.from, tr.to, false));
+    }
+    for p in &map.patches {
+        let base = map.section_mix(p.s, 0.0);
+        let base = if base.t >= 0.5 { base.b } else { base.a };
+        events.push((p.s_start(len), p.half_len * 2.0, base, p.surface, true));
+    }
+    for (s, run, from, to, patch) in events {
+        let slippery = to == Surface::Ice || to.props().grip < from.props().grip - 0.12;
+        let mut mods = vec![Modifier::SurfaceChange(to)];
+        if patch {
+            mods.push(Modifier::Patch);
         }
-        let rn = surf_runs.len();
-        for k in 0..rn {
-            let (i0, cnt, new) = surf_runs[k];
-            let prev_len = surf_runs[(k + rn - 1) % rn].1 as f32 * ds;
-            // the end of a short patch (back to the normal surface) is not called
-            if new == base && prev_len < 80.0 {
-                continue;
-            }
-            let s = i0 as f32 * ds;
-            let run = cnt as f32 * ds;
-            let slippery = new.props().grip < base.props().grip - 0.15 || new == Surface::Ice;
-            // attach to a corner that starts within 30 m or that contains it
-            let target = notes.iter().position(|nt| {
-                let to_start = fwd(s, nt.s_start);
-                let span = fwd(nt.s_start, nt.s_end);
-                to_start <= 30.0 || fwd(nt.s_start, s) <= span
-            });
-            match target {
-                Some(t) => notes[t].modifiers.push(Modifier::SurfaceChange(new)),
-                None => {
-                    let mut m = vec![Modifier::SurfaceChange(new)];
-                    if slippery {
-                        m.insert(0, Modifier::Caution);
-                    }
-                    let end = if run < 60.0 { s + run } else { s + 10.0 };
-                    extra.push(blank(s, end, NoteKind::Hazard, m));
+        // inside a corner: attach to it; otherwise its own note at the start of the change
+        let target = notes.iter().position(|nt| {
+            let span = fwd(nt.s_start, nt.s_end);
+            fwd(nt.s_start, s) <= span
+        });
+        match target {
+            Some(t) => notes[t].modifiers.extend(mods),
+            None => {
+                if slippery {
+                    mods.insert(0, Modifier::Caution);
                 }
+                extra.push(blank(s, s + run.min(40.0), NoteKind::Hazard, mods));
             }
         }
     }
@@ -688,7 +682,7 @@ pub fn notes_for(track: &Track) -> PaceNotes {
         if nt.has(Modifier::Tightens) && nt.exit_severity.unwrap_or(6) <= 2 {
             score += 1;
         }
-        if matches!(nt.surface_change(), Some(Surface::Ice) | Some(Surface::Mud)) {
+        if matches!(nt.surface_change(), Some(Surface::Ice) | Some(Surface::Mud) | Some(Surface::Sand)) {
             score += 1;
         }
         if nt.has(Modifier::OffCamber) && nt.severity <= 3 {

@@ -66,7 +66,7 @@ impl Setup {
             players.push(PlayerSlot { car: self.cars[1], paint: self.paints[1], scheme: Scheme::Arrows, name: "Player 2".into() });
         }
         SessionConfig {
-            track: TrackParams { seed: self.seed, biome: if self.biome == 0 { None } else { Some(ALL_BIOMES[self.biome - 1]) }, length_class: self.length },
+            track: TrackParams { seed: self.seed, biome: if self.biome == 0 { None } else { Some(ALL_BIOMES[self.biome - 1]) }, length_class: self.length, ..Default::default() }.with_env_overrides(),
             laps: self.laps,
             players,
             ai_count: self.opponents,
