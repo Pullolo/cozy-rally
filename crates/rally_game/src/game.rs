@@ -45,6 +45,10 @@ pub struct LocalPlayer {
 pub struct CarRender {
     pub body: GpuMesh,
     pub wheel: GpuMesh,
+    pub glass: GpuMesh,
+    pub head_lights: GpuMesh,
+    pub brake_lights: GpuMesh,
+    pub reverse_lights: GpuMesh,
 }
 
 pub struct RaceSession {
@@ -110,7 +114,14 @@ impl RaceSession {
             .zip(paints.iter())
             .map(|(c, &p)| {
                 let m = car_model(&c.spec, PAINTS[p % PAINTS.len()]);
-                CarRender { body: gpu.upload(&m.body), wheel: gpu.upload(&m.wheel) }
+                CarRender {
+                    body: gpu.upload(&m.body),
+                    wheel: gpu.upload(&m.wheel),
+                    glass: gpu.upload(&m.glass),
+                    head_lights: gpu.upload(&m.head_lights),
+                    brake_lights: gpu.upload(&m.brake_lights),
+                    reverse_lights: gpu.upload(&m.reverse_lights),
+                }
             })
             .collect();
         let ais = world
@@ -140,6 +151,10 @@ impl RaceSession {
         for c in self.cars {
             gpu.free(c.body);
             gpu.free(c.wheel);
+            gpu.free(c.glass);
+            gpu.free(c.head_lights);
+            gpu.free(c.brake_lights);
+            gpu.free(c.reverse_lights);
         }
     }
 
@@ -293,6 +308,18 @@ impl RaceSession {
                 let wm = m * Mat4::from_translation(local) * Mat4::from_rotation_y(-w.steer_angle) * Mat4::from_rotation_x(-w.spin_angle);
                 gpu.draw(&self.cars[i].wheel, view, &env, wm, &DrawParams::default(), false);
             }
+            // lights: emissive lenses (unlit, over-bright tint so they glow / bloom)
+            let cr = &self.cars[i];
+            let lamp = |tint: [f32; 4]| DrawParams { unlit: 1.0, tint, ..Default::default() };
+            gpu.draw(&cr.head_lights, view, &env, m, &lamp([1.35, 1.3, 1.15, 1.0]), false);
+            if car.telemetry.brake > 0.05 || car.frozen {
+                gpu.draw(&cr.brake_lights, view, &env, m, &lamp([2.4, 0.28, 0.22, 1.0]), false);
+            }
+            if car.gear < 0 {
+                gpu.draw(&cr.reverse_lights, view, &env, m, &lamp([1.6, 1.6, 1.6, 1.0]), false);
+            }
+            // translucent glass last so the drivers show through
+            gpu.draw(&cr.glass, view, &env, m, &DrawParams { rim: 0.8, ..Default::default() }, true);
         }
     }
 
