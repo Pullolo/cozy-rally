@@ -144,7 +144,8 @@ impl Fx {
                 let roll = (speed / 26.0).clamp(0.0, 1.0);
                 let in_water = water.is_some_and(|wl| cp.y < wl + 0.12);
                 let props = surface.props();
-                if props.loose && !in_water && (rear || trail_surf.is_none()) {
+                // grass and mud don't raise dust clouds
+                if props.loose && !in_water && !matches!(surface, Surface::Grass | Surface::Mud) && (rear || trail_surf.is_none()) {
                     trail_surf = Some(surface);
                 }
 
@@ -180,15 +181,18 @@ impl Fx {
                     continue;
                 }
                 let hard = !props.loose;
-                let dcol = dust_color(surface);
-                let dirt = mix(shade(props.dust, 0.78), dcol, 0.25);
+                // grass throws clippings and a little soil, not big clouds
+                let grassy = matches!(surface, Surface::Grass | Surface::Mud);
+                let dcol = if grassy { [0.78, 0.72, 0.58] } else { dust_color(surface) };
+                let puff_k = if grassy { 0.4 } else { 1.0 };
+                let dirt = if grassy { [0.62, 0.55, 0.42] } else { mix(shade(props.dust, 0.8), dcol, 0.4) };
                 let smoke_col = if surface == Surface::Ice { [0.92, 0.96, 1.0] } else { [0.93, 0.93, 0.96] };
 
                 // ---- WHEELSPIN: a narrow jet of dark dirt + debris (or smoke) shooting backwards
                 if tr.spin > 0.05 {
                     let back = -tr.fwd * tr.surf_sign;
                     let acc = &mut self.cars[ci].acc[wi][0];
-                    *acc += if hard { 22.0 } else { 34.0 } * tr.spin * dt * lod;
+                    *acc += if hard { 22.0 } else { 20.0 } * tr.spin * dt * lod;
                     let n = acc.floor() as usize;
                     *acc -= n as f32;
                     for _ in 0..n.min(8) {
@@ -198,19 +202,21 @@ impl Fx {
                         if hard {
                             self.puff(pos, v, smoke_col, 0.4, (2.2, 3.0), 0.3 + 0.35 * tr.spin, (1.8, 2.8), 2.2, -0.05, u * dt, Prio::Spray);
                         } else {
-                            let szr = (0.9, 1.4);
-                            self.puff(pos, v, dirt, 0.25, szr, 0.85, (0.8, 1.3), 3.0, 0.15, u * dt, Prio::Spray);
+                            let v = v + Vec3::Y * 1.2;
+                            self.puff(pos, v, dirt, 0.2, (0.6, 1.0), 0.75 * puff_k, (0.7, 1.1), 3.0, 0.15, u * dt, Prio::Spray);
                         }
                     }
                     if !hard {
                         let acc = &mut self.cars[ci].acc[wi][1];
-                        *acc += 75.0 * tr.spin * dt * lod;
+                        *acc += 90.0 * tr.spin * dt * lod;
                         let n = acc.floor() as usize;
                         *acc -= n as f32;
-                        for _ in 0..n.min(12) {
+                        for _ in 0..n.min(14) {
                             let u = self.rng.f();
-                            let v = car.vel * 0.5 + back * self.rng.r(6.0, 13.0) + Vec3::Y * self.rng.r(1.5, 4.0) + self.rng.ball() * 0.9;
-                            self.spawn_debris(surface, prev.lerp(cp, 1.0 - u) + Vec3::Y * 0.15 + v * (u * dt), v, Prio::Spray);
+                            // a rooster-tail fountain: backwards and up in a tight arc
+                            let v = car.vel * 0.5 + back * self.rng.r(4.5, 9.0) + Vec3::Y * self.rng.r(3.0, 6.5) + self.rng.ball() * 0.7;
+                            let sc = self.rng.r(1.3, 2.0);
+                            self.spawn_debris_s(surface, prev.lerp(cp, 1.0 - u) + Vec3::Y * 0.15 + v * (u * dt), v, Prio::Spray, sc);
                         }
                     }
                 }
@@ -225,10 +231,10 @@ impl Fx {
                         let v = car.vel * 0.45 + tr.lat_dir * (self.rng.r(3.0, 7.0) * (0.5 + 0.5 * tr.slide)) + tr.fwd * self.rng.r(-2.5, 2.5) + Vec3::Y * self.rng.r(0.8, 2.2);
                         let pos = prev.lerp(cp, 1.0 - u) + Vec3::Y * 0.25 + v * (u * dt);
                         if hard {
-                            self.puff(pos, v, smoke_col, 0.4, (2.4, 3.4), 0.25 + 0.3 * tr.slide, (2.0, 3.0), 1.8, -0.05, u * dt, Prio::Spray);
+                            self.puff(pos, v, smoke_col, 0.4, (2.2, 3.0), 0.2 + 0.25 * tr.slide, (1.8, 2.6), 1.8, -0.05, u * dt, Prio::Spray);
                         } else {
                             let szr = (1.4, 2.2);
-                            self.puff(pos, v, dcol, 0.35, szr, 0.62, (1.3, 2.0), 2.2, -0.02, u * dt, Prio::Spray);
+                            self.puff(pos, v, dcol, 0.35, szr, 0.62 * puff_k, (1.3, 2.0), 2.2, -0.02, u * dt, Prio::Spray);
                         }
                     }
                     if !hard {
@@ -251,11 +257,10 @@ impl Fx {
                     *acc -= n as f32;
                     for _ in 0..n.min(8) {
                         let u = self.rng.f();
-                        let v = car.vel * 0.7 + self.rng.hdir() * self.rng.r(0.3, 1.4) + Vec3::Y * self.rng.r(0.4, 1.3);
+                        let v = car.vel * 0.3 + self.rng.hdir() * self.rng.r(0.3, 1.4) + Vec3::Y * self.rng.r(0.4, 1.3);
                         let pos = prev.lerp(cp, 1.0 - u) + Vec3::Y * 0.25 + v * (u * dt);
                         let c = if hard { smoke_col } else { dcol };
-                        let szr = (1.6, 2.4);
-                        self.puff(pos, v, c, 0.4, szr, 0.5 + 0.2 * tr.lock, (1.4, 2.2), 2.5, -0.04, u * dt, Prio::Spray);
+                        self.puff(pos, v, c, 0.4, (1.3, 1.9), (0.4 + 0.15 * tr.lock) * if hard { 1.0 } else { puff_k }, (1.2, 1.9), 2.5, -0.04, u * dt, Prio::Spray);
                     }
                     if !hard {
                         let acc = &mut self.cars[ci].acc[wi][5];
@@ -299,7 +304,7 @@ impl Fx {
                 let k = ((speed - 3.0) / 22.0).clamp(0.0, 1.0);
                 if k > 0.0 {
                     let acc = &mut self.cars[ci].trail_acc;
-                    *acc += (6.0 + 16.0 * k) * dt * lod;
+                    *acc += (7.0 + 20.0 * k) * dt * lod;
                     let n = acc.floor() as usize;
                     *acc -= n as f32;
                     let dcol = dust_color(surf);
@@ -324,9 +329,9 @@ impl Fx {
                             age: u * dt,
                             life: self.rng.r(3.5, 5.5),
                             size0: self.rng.r(0.7, 1.0),
-                            size1: self.rng.r(3.4, 5.2) * (0.65 + 0.35 * k) * size_k,
+                            size1: self.rng.r(4.0, 6.0) * (0.65 + 0.35 * k) * size_k,
                             color: [dcol[0] * sk, dcol[1] * sk, dcol[2] * sk],
-                            alpha: (0.26 + 0.16 * k) * alpha_k,
+                            alpha: (0.3 + 0.2 * k) * alpha_k,
                             shape: Shape::Puff,
                             ground: Ground::Hover,
                             rot: self.rng.r(0.0, 6.28),
@@ -526,6 +531,11 @@ impl Fx {
 
     /// One piece of surface debris
     fn spawn_debris(&mut self, surface: Surface, pos: Vec3, vel: Vec3, prio: Prio) {
+        self.spawn_debris_s(surface, pos, vel, prio, 1.0);
+    }
+
+    /// Debris with a size multiplier (roost chunks are chunkier so they read on screen)
+    fn spawn_debris_s(&mut self, surface: Surface, pos: Vec3, vel: Vec3, prio: Prio, scale: f32) {
         let dust = surface.props().dust;
         let (shape, color, size, grav, drag, ground) = match surface {
             Surface::Grass => {
@@ -545,8 +555,8 @@ impl Fx {
             pos,
             vel,
             life: self.rng.r(1.4, 2.4),
-            size0: size,
-            size1: size,
+            size0: size * scale,
+            size1: size * scale,
             color,
             alpha: 1.0,
             shape,

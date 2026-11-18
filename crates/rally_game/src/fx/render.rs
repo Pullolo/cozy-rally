@@ -130,6 +130,18 @@ fn near_fade(dist: f32, size: f32) -> f32 {
     ((dist - 1.0 - size * 0.5) / (1.0 + size * 0.8)).clamp(0.0, 1.0)
 }
 
+/// Squash the lower half of a cloud billboard: dust sits on the ground with a soft flat
+/// base instead of slicing into it (no hard depth-clipped edges).
+#[inline]
+fn flat_bottom(d: Vec3, up: Vec3) -> Vec3 {
+    let y = d.dot(up);
+    if y < 0.0 {
+        d - up * (y * 0.5)
+    } else {
+        d
+    }
+}
+
 /// Keep the followed car readable: clouds between the camera and the car fade where they
 /// overlap the car on screen; clouds beside/above it (and everything beyond it) stay.
 #[inline]
@@ -174,7 +186,7 @@ pub fn puff(b: &mut Batches, bs: &Basis, circ: &Circle, p: &Particle, dist: f32,
     let fwd = (bs.toward + Vec3::Y * 0.9).normalize();
     let tone = |d: Vec3, k: f32| {
         let y = d.dot(bs.up);
-        let f = 1.0 + (0.07 * y.max(0.0) - 0.13 * (-y).max(0.0)) * k;
+        let f = 1.0 + (0.08 * y.max(0.0) - 0.16 * (-y).max(0.0)) * k;
         [p.color[0] * f, p.color[1] * f, p.color[2] * f]
     };
     let detailed = r / dist.max(0.1) > 0.012;
@@ -184,15 +196,15 @@ pub fn puff(b: &mut Batches, bs: &Basis, circ: &Circle, p: &Particle, dist: f32,
         // 8 inner (dense core, 92% opacity) + 8 outer (transparent, lumpy) vertices
         for k in 0..8 {
             let (x, y) = circ.pts16[k * 2];
-            let d = ax * x + ay * y;
+            let d = flat_bottom(ax * x + ay * y, bs.up);
             let wob = 1.0 + 0.1 * ((k as f32) * 2.3 + p.seed * 31.0).sin();
-            batch.vert(c + d * (r * 0.58 * wob), (fwd + d * 0.8).normalize(), col(tone(d, 1.0), a * 0.92));
+            batch.vert(c + d * (r * 0.58 * wob), (fwd + d * 0.3).normalize(), col(tone(d, 1.0), a * 0.92));
         }
         for k in 0..8 {
             let (x, y) = circ.pts16[k * 2 + 1];
-            let d = ax * x + ay * y;
+            let d = flat_bottom(ax * x + ay * y, bs.up);
             let wob = 1.0 + 0.14 * ((k as f32) * 1.7 + p.seed * 17.0).sin();
-            batch.vert(c + d * (r * wob), (fwd * 0.4 + d).normalize(), col(tone(d, 1.0), 0.0));
+            batch.vert(c + d * (r * wob), (fwd + d * 0.5).normalize(), col(tone(d, 1.0), 0.0));
         }
         for k in 0..8u16 {
             let i0 = base + 1 + k;
@@ -209,8 +221,8 @@ pub fn puff(b: &mut Batches, bs: &Basis, circ: &Circle, p: &Particle, dist: f32,
         let base = batch.vert(c, fwd, col(p.color, a * 0.85));
         for k in 0..8 {
             let (x, y) = circ.pts16[k * 2];
-            let d = ax * x + ay * y;
-            batch.vert(c + d * r, (fwd * 0.4 + d).normalize(), col(tone(d, 1.0), 0.0));
+            let d = flat_bottom(ax * x + ay * y, bs.up);
+            batch.vert(c + d * r, (fwd + d * 0.5).normalize(), col(tone(d, 1.0), 0.0));
         }
         for k in 0..8u16 {
             batch.tri(base, base + 1 + k, base + 1 + (k + 1) % 8);

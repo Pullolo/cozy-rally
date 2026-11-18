@@ -194,7 +194,7 @@ pub fn step(p: &mut Particle, dt: f32, cx: &SimCtx) {
     let tr = cx.track;
     match p.ground {
         Ground::Hover => {
-            let h = tr.visual_height(p.pos.x, p.pos.z) + p.size() * 0.3;
+            let h = tr.visual_height(p.pos.x, p.pos.z) + p.size() * 0.42;
             if p.pos.y < h {
                 p.pos.y += (h - p.pos.y) * (1.0 - (-8.0 * dt).exp());
                 p.vel.y = p.vel.y.max(0.0);

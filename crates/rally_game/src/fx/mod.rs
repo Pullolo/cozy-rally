@@ -143,6 +143,8 @@ pub struct Fx {
     /// `COZY_FX_TEST=launch|slide|lock`: force that traction state on player 1's car
     test: Option<TestMode>,
     test_announced: bool,
+    /// `COZY_FX_OFF=1`: skip all FX drawing (debug: tell FX apart from scene issues)
+    disabled: bool,
     go_time: Option<f32>,
 }
 
@@ -207,6 +209,7 @@ impl Fx {
                 _ => None,
             },
             test_announced: false,
+            disabled: std::env::var("COZY_FX_OFF").is_ok(),
             go_time: None,
         }
     }
@@ -315,6 +318,9 @@ impl Fx {
 
     /// Called per viewport inside the 3D pass, after opaque geometry and cars.
     pub fn draw(&self, gpu: &mut Gpu, view: &View, env: &Environment) {
+        if self.disabled {
+            return;
+        }
         let t0 = if self.stats { Some(std::time::Instant::now()) } else { None };
         let mut guard = self.scratch.borrow_mut();
         let sc = &mut *guard;

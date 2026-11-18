@@ -30,11 +30,11 @@ const GROUPS: usize = 11;
 
 fn population(b: Biome) -> &'static [(Group, u16)] {
     match b {
-        Biome::Meadow => &[(Group::Petal, 110), (Group::Butterfly, 14), (Group::Firefly, 6), (Group::Sparkle, 14)],
+        Biome::Meadow => &[(Group::Petal, 110), (Group::Butterfly, 10), (Group::Firefly, 6), (Group::Sparkle, 14)],
         Biome::Autumn => &[(Group::Leaf, 150), (Group::Firefly, 16), (Group::Butterfly, 3), (Group::Sparkle, 10)],
         Biome::Snow => &[(Group::Snow, 360), (Group::Diamond, 40)],
         Biome::Desert => &[(Group::Mote, 70), (Group::Tumbleweed, 5), (Group::Butterfly, 2)],
-        Biome::Coast => &[(Group::Sparkle, 90), (Group::Gull, 8), (Group::Petal, 30), (Group::Butterfly, 4)],
+        Biome::Coast => &[(Group::Sparkle, 120), (Group::Gull, 8), (Group::Petal, 30), (Group::Butterfly, 4)],
     }
 }
 
@@ -141,14 +141,16 @@ impl Fx {
             Group::Leaf => {
                 let at = self.disc(centre, 2.0, SPAWN_RADIUS);
                 let gh = track.visual_height(at.x, at.z);
-                let (x, z, h) = match near_tree(track, at, 7.0) {
+                // half the leaves fall around trees, the rest drift over the road
+                let tree = if self.rng.f() < 0.5 { near_tree(track, at, 7.0) } else { None };
+                let (x, z, h) = match tree {
                     Some(t) => (t.x + self.rng.r(-2.0, 2.0), t.z + self.rng.r(-2.0, 2.0), self.rng.r(2.5, 6.0)),
                     None => (at.x, at.z, self.rng.r(3.0, 9.0)),
                 };
                 p.pos = Vec3::new(x, gh + h, z);
                 p.vel = self.wind;
                 p.life = self.rng.r(12.0, 18.0);
-                p.size0 = self.rng.r(0.12, 0.19);
+                p.size0 = self.rng.r(0.18, 0.26);
                 p.size1 = p.size0;
                 let c = self.rng.pick(&track.style.leaves);
                 let k = self.rng.r(0.9, 1.1);
@@ -165,15 +167,15 @@ impl Fx {
                 p.aspect = 0.62;
             }
             Group::Butterfly => {
-                let at = self.disc(centre, 3.0, SPAWN_RADIUS * 0.65);
+                let at = self.disc(centre, 2.0, SPAWN_RADIUS * 0.45);
                 let gh = track.visual_height(at.x, at.z);
                 if track.water_level.is_some_and(|w| gh < w + 0.2) {
                     return true;
                 }
-                p.pos = Vec3::new(at.x, gh + self.rng.r(0.6, 1.8), at.z);
+                p.pos = Vec3::new(at.x, gh + self.rng.r(0.9, 2.2), at.z);
                 p.home = p.pos;
                 p.life = self.rng.r(25.0, 40.0);
-                p.size0 = self.rng.r(0.26, 0.34);
+                p.size0 = self.rng.r(0.34, 0.42);
                 p.size1 = p.size0;
                 p.color = self.rng.pick(&[[1.0, 0.86, 0.36], [0.62, 0.80, 1.0], [1.0, 0.72, 0.82], [1.0, 0.99, 0.95], [1.0, 0.64, 0.38], [0.78, 0.66, 1.0]]);
                 p.shape = Shape::Butterfly;
@@ -264,7 +266,7 @@ impl Fx {
                 let Some(at) = found else { return true };
                 p.pos = Vec3::new(at.x, wl + self.rng.r(0.05, 0.3), at.z);
                 p.life = self.rng.r(0.6, 1.6);
-                p.size0 = self.rng.r(0.2, 0.32);
+                p.size0 = self.rng.r(0.32, 0.48);
                 p.size1 = p.size0 * 0.6;
                 p.color = [1.0, 1.0, 0.97];
                 p.alpha = 0.95;
@@ -278,7 +280,7 @@ impl Fx {
                 p.home = Vec3::new(at.x, gh.max(track.water_level.unwrap_or(gh)) + self.rng.r(6.0, 11.0), at.z);
                 p.pos = p.home;
                 p.life = self.rng.r(35.0, 50.0);
-                p.size0 = self.rng.r(1.3, 1.6);
+                p.size0 = self.rng.r(1.7, 2.0);
                 p.size1 = p.size0;
                 p.color = [0.98, 0.98, 0.96];
                 p.shape = Shape::Gull;
