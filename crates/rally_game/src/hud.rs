@@ -367,7 +367,7 @@ pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
     let cy = vp.y + vp.h - sr - pad;
     draw_speedo(car, h, cx, cy, sr, k, t);
     if crate::settings::get().show_traction {
-        draw_traction(car, h, cx - sr - 52.0 * k, cy + 4.0 * k, k);
+        draw_traction(car, h, cx - sr - 64.0 * k, cy - 4.0 * k, k);
     }
 
     // ---------------------------------------------------------------- minimap (bottom left)
@@ -385,12 +385,12 @@ pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
                 let a = (1.0 - (age - 0.8) / 0.5).clamp(0.0, 1.0);
                 let sc = pop(age * 1.2) * (1.0 + age * 0.15);
                 draw_lights(mx, my - 112.0 * k, k, 3, true, a);
-                text_outlined_centered("GO!", mx, my + 40.0 * k * sc, 130.0 * k * sc.max(0.01), with_alpha(MINT, a));
+                text_sticker_centered("GO!", mx, my + 50.0 * k * sc, 150.0 * k * sc.max(0.01), MINT, a);
             }
             if let Some(fa) = h.finish_age {
                 let sc = pop(fa * 1.1);
                 let msg = if r.place == 1 { "You win!".to_string() } else { format!("Finished {}!", ordinal(r.place)) };
-                text_outlined_centered(&msg, mx, my + 20.0 * k, (76.0 * k * sc).max(1.0), BUTTER);
+                text_sticker_centered(&msg, mx, my + 26.0 * k, (80.0 * k * sc).max(1.0), BUTTER, 1.0);
                 if fa > 0.4 {
                     let a = ((fa - 0.4) / 0.4).min(1.0);
                     text_outlined_centered(&format!("Time {}", format_time(r.finish_time.unwrap_or(0.0))), mx, my + 66.0 * k, 30.0 * k, with_alpha(CREAM, a));
@@ -562,7 +562,7 @@ fn draw_speedo(car: &Car, h: &PlayerHud, cx: f32, cy: f32, r: f32, k: f32, t: f3
 
 /// Top-down car with four tyres tinting neutral -> butter -> berry as each loses grip
 fn draw_traction(car: &Car, h: &PlayerHud, cx: f32, cy: f32, k: f32) {
-    let k = k * 1.12;
+    let k = k * 1.38;
     let w = 64.0 * k;
     let hh = 104.0 * k;
     rounded_rect(cx - w * 0.5, cy - hh * 0.5 + 4.0 * k, w, hh, 18.0 * k, Color::new(0.2, 0.12, 0.25, 0.14));
@@ -601,7 +601,7 @@ fn draw_traction(car: &Car, h: &PlayerHud, cx: f32, cy: f32, k: f32) {
             text_mid(label, px, py, 9.0 * k, with_alpha(INK, if *on { 1.0 } else { 0.4 }));
         }
     } else {
-        text_mid("GRIP", cx, cy + hh * 0.5 - 12.0 * k, 12.0 * k, INK_SOFT);
+        text_mid("GRIP", cx, cy + hh * 0.5 - 12.0 * k, 11.0 * k, INK_SOFT);
     }
 }
 
@@ -645,12 +645,13 @@ fn draw_countdown(s: &RaceSession, ct: f32, mx: f32, my: f32, k: f32) {
     let lit = (4 - n).clamp(0, 3) as usize;
     draw_lights(mx, my - 112.0 * k, k, lit, false, 1.0);
     let sc = pop(age * 1.15).max(0.0);
-    let a = (1.0 - (age - 0.75) / 0.25).clamp(0.0, 1.0);
     let col = [MINT, BUTTER, PEACH][((n - 1).clamp(0, 2)) as usize];
     // soft burst ring behind the number
     let ring = ease_out(age) * 110.0 * k;
-    circle(mx, my, ring + 4.0 * k, with_alpha(col, 0.25 * (1.0 - age)));
-    text_outlined_centered(&format!("{n}"), mx, my + 50.0 * k * sc, (150.0 * k * sc).max(1.0), with_alpha(col, a));
+    circle(mx, my, ring + 4.0 * k, with_alpha(col, 0.22 * (1.0 - age)));
+    // solid sticker digit; only the last ~0.1 s of each second fades
+    let a = (1.0 - (age - 0.9) / 0.1).clamp(0.0, 1.0);
+    text_sticker_centered(&format!("{n}"), mx, my + 58.0 * k * sc, (170.0 * k * sc).max(1.0), col, a);
 }
 
 /// A banner ribbon that sweeps across the viewport
