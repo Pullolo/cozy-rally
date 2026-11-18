@@ -1,0 +1,12 @@
+#[path = "../../src/render/gpu.rs"]
+pub mod gpu;
+#[path = "../../src/render/mesh.rs"]
+pub mod mesh;
+#[path = "../../src/render/post.rs"]
+pub mod post;
+#[path = "../../src/render/quality.rs"]
+pub mod quality;
+#[path = "../../src/render/shaders.rs"]
+pub mod shaders;
+#[path = "../../src/render/shadow.rs"]
+pub mod shadow;

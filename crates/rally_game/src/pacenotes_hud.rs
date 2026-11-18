@@ -23,6 +23,12 @@ pub fn set_enabled(on: bool) {
     PACE_NOTES_ENABLED.store(on, Ordering::Relaxed);
 }
 
+/// Pick up the persisted setting (called every frame, so a settings screen change applies
+/// immediately).
+pub fn sync_from_settings() {
+    set_enabled(crate::settings::get().pace_notes);
+}
+
 #[derive(Default, Clone)]
 struct PlayerAnim {
     head: Option<usize>,
@@ -72,8 +78,14 @@ fn with_alpha(c: Color, a: f32) -> Color {
 
 /// Draw the pace notes for one local player. Also handles the N toggle (once per frame).
 pub fn draw_pace_notes(session: &RaceSession, player: usize, vp: &Viewport) {
+    if player == 0 {
+        sync_from_settings();
+    }
     if player == 0 && is_key_pressed(KeyCode::N) {
-        set_enabled(!enabled());
+        let on = !enabled();
+        set_enabled(on);
+        crate::settings::update(|st| st.pace_notes = on);
+        crate::settings::save();
         STATE.with(|st| {
             if let Some(s) = st.borrow_mut().as_mut() {
                 s.toast_until = get_time() + 1.6;
@@ -89,7 +101,7 @@ pub fn draw_pace_notes(session: &RaceSession, player: usize, vp: &Viewport) {
             *st = Some(HudState { key, notes: notes_for(track), players: Vec::new(), toast_until: toast });
         }
         let state = st.as_mut().unwrap();
-        let k = scale() * (vp.h / screen_height()).max(0.6);
+        let k = crate::hud::hud_scale(vp);
         if get_time() < state.toast_until && player == 0 {
             let msg = if enabled() { "Pace notes on" } else { "Pace notes off" };
             text_outlined_centered(msg, vp.x + vp.w * 0.5, vp.y + vp.h * 0.62, 30.0 * k, CREAM);
@@ -142,7 +154,8 @@ fn draw_strip(state: &mut HudState, player: usize, s: f32, speed: f32, biome: ra
     let small = 84.0 * k;
     let gap = 18.0 * k;
     let strip_w = big + 2.0 * small + 2.0 * gap;
-    let free = vp.w - 2.0 * pad - (190.0 + 210.0) * k - 2.0 * gap;
+    // position card (214) on the left, timer card (230) on the right
+    let free = vp.w - 2.0 * pad - (214.0 + 230.0) * k - 2.0 * gap;
     let (cs, top) = if free >= strip_w { (1.0, vp.y + pad) } else { (((vp.w - 2.0 * pad) / strip_w).min(1.0), vp.y + pad + 110.0 * k) };
     let big = big * cs;
     let small = small * cs;
