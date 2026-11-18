@@ -26,6 +26,8 @@ pub struct ChaseCam {
     pub fov: f32,
     pub mode: CamMode,
     look_dir: Vec3,
+    /// smoothed sideways look-ahead into the next corner
+    ahead: Vec3,
     shake: f32,
     time: f32,
     initialized: bool,
@@ -33,7 +35,7 @@ pub struct ChaseCam {
 
 impl ChaseCam {
     pub fn new() -> Self {
-        ChaseCam { eye: Vec3::ZERO, target: Vec3::ZERO, fov: 62f32.to_radians(), mode: CamMode::Chase, look_dir: Vec3::NEG_Z, shake: 0.0, time: 0.0, initialized: false }
+        ChaseCam { eye: Vec3::ZERO, target: Vec3::ZERO, fov: 62f32.to_radians(), mode: CamMode::Chase, look_dir: Vec3::NEG_Z, ahead: Vec3::ZERO, shake: 0.0, time: 0.0, initialized: false }
     }
 
     pub fn add_shake(&mut self, amount: f32) {
@@ -86,7 +88,24 @@ impl ChaseCam {
         // keep a minimum height above whatever terrain we drifted over
         let g = track.visual_height(self.eye.x, self.eye.z);
         self.eye.y = self.eye.y.max(g + 0.8);
-        self.target = car_pos + Vec3::Y * look_h + self.look_dir * 2.0;
+        // gently look into upcoming corners: aim a little towards the road ~16 m ahead
+        let mut want_ahead = Vec3::ZERO;
+        if let Some(h) = car.track_hint {
+            let n = track.samples.len();
+            if n > 0 && speed > 4.0 {
+                let p = track.samples[(h + 8) % n].pos;
+                let to = Vec3::new(p.x - car_pos.x, 0.0, p.z - car_pos.z);
+                let lateral = to - self.look_dir * to.dot(self.look_dir);
+                let w = ((speed - 4.0) / 16.0).clamp(0.0, 1.0);
+                want_ahead = lateral.clamp_length_max(5.0) * 0.32 * w;
+            }
+        }
+        let k_ahead = 1.0 - (-dt * 2.5).exp();
+        if !self.initialized {
+            self.ahead = want_ahead;
+        }
+        self.ahead = self.ahead.lerp(want_ahead, k_ahead);
+        self.target = car_pos + Vec3::Y * look_h + self.look_dir * 2.0 + self.ahead;
         let target_fov = (62.0 + (speed * 3.6 - 40.0).max(0.0) * 0.11).min(80.0);
         self.fov += (target_fov.to_radians() - self.fov) * k;
         // shake
