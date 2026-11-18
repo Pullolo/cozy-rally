@@ -61,6 +61,11 @@ pub struct RaceSession {
     pub frame_events: Vec<WorldEvent>,
     pub paused: bool,
     pub fx: Fx,
+    /// Paint index per car (for UI colour coding: minimap dots, standings, results)
+    pub paints: Vec<usize>,
+    /// Cinematic camera override (title attract mode, results): (eye, target, fov radians).
+    /// When set, a single full-screen viewport is rendered from this camera.
+    pub cam_override: Option<(Vec3, Vec3, f32)>,
 }
 
 const AI_NAMES: [&str; 8] = ["Hazel", "Juniper", "Basil", "Clover", "Fern", "Rowan", "Maple", "Pebble"];
@@ -127,7 +132,7 @@ impl RaceSession {
             .map(|(i, p)| LocalPlayer { car: n_ai + i, input: PlayerInput::new(p.scheme), cam: ChaseCam::new(), name: p.name.clone() })
             .collect();
         let fx = Fx::new(&world);
-        RaceSession { config, world, scene, cars, names, ais, players, alpha: 0.0, time: 0.0, frame_events: Vec::new(), paused: false, fx }
+        RaceSession { config, world, scene, cars, names, ais, players, alpha: 0.0, time: 0.0, frame_events: Vec::new(), paused: false, fx, paints, cam_override: None }
     }
 
     pub fn free(self, gpu: &mut Gpu) {
@@ -208,7 +213,9 @@ impl RaceSession {
             p.cam.update(pos, &self.world.cars[p.car], &track, dt);
         }
         self.fx.update(&self.world, &self.frame_events, self.alpha, dt);
-        crate::audio::race_frame(self, dt);
+        if !self.players.is_empty() {
+            crate::audio::race_frame(self, dt);
+        }
     }
 
     pub fn is_over(&self) -> bool {
@@ -217,6 +224,9 @@ impl RaceSession {
 
     /// Viewports in logical pixels for each local player
     pub fn viewports(&self, sw: f32, sh: f32) -> Vec<Viewport> {
+        if self.cam_override.is_some() {
+            return vec![Viewport { x: 0.0, y: 0.0, w: sw, h: sh }];
+        }
         match self.players.len() {
             0 | 1 => vec![Viewport { x: 0.0, y: 0.0, w: sw, h: sh }],
             2 => {
@@ -235,6 +245,11 @@ impl RaceSession {
     }
 
     pub fn view_for(&self, player: usize, vp: &Viewport) -> View {
+        if let Some((eye, target, fov)) = self.cam_override {
+            let view = Mat4::look_at_rh(eye, target, Vec3::Y);
+            let proj = Mat4::perspective_rh_gl(fov, vp.w / vp.h.max(1.0), 0.25, 2200.0);
+            return View::new(view, proj, eye);
+        }
         let cam = &self.players[player].cam;
         let (v, p) = cam.matrices(vp.w / vp.h.max(1.0));
         View::new(v, p, cam.eye)
