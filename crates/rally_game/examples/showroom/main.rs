@@ -11,7 +11,7 @@ mod models;
 
 use macroquad::prelude::*;
 use rally_core::biome::Biome;
-use rally_core::track::{Prop, PropKind, Track, TrackParams};
+use rally_core::track::{LayoutKind, Prop, PropKind, Track, TrackParams};
 use rally_core::vehicle::car_specs;
 use render::gpu::{DrawParams, Environment, Gpu, View};
 use render::mesh::MeshBuilder;
@@ -175,7 +175,11 @@ fn coplanar_fights(m: &MeshBuilder, eps: f32) -> (usize, Vec<String>) {
 
 pub fn catalogue(biome: Biome) -> Vec<Prop> {
     use PropKind::*;
-    let kinds = models::catalogue_kinds(biome);
+    let filt = std::env::var("KINDS").ok();
+    let kinds: Vec<(PropKind, u8)> = models::catalogue_kinds(biome)
+        .into_iter()
+        .filter(|(k, _)| filt.as_ref().map_or(true, |f| f.split(',').any(|n| n == format!("{:?}", k))))
+        .collect();
     let cols = 7;
     let mut v = Vec::new();
     for (i, (k, var)) in kinds.iter().enumerate() {
@@ -231,7 +235,9 @@ async fn main() {
                 let b: usize = std::env::var("BIOME").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
                 let k: usize = std::env::var("K").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
                 let what = std::env::var("KIND").unwrap_or_else(|_| "ArrowSign".into());
-                let t = Track::generate(&TrackParams { seed: 3, biome: Some(Biome::from_index(b.max(1) - 1)), length_class: 1, ..Default::default() });
+                let layout = if std::env::var("LAYOUT").map_or(false, |v| v == "p2p") { LayoutKind::PointToPoint { length_m: 1500.0 } } else { LayoutKind::Loop };
+                let len: u8 = std::env::var("LEN").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+                let t = Track::generate(&TrackParams { seed: 3, biome: Some(Biome::from_index(b.max(1) - 1)), length_class: len, layout, ..Default::default() });
                 let st = &t.style;
                 let target = t.props.iter().filter(|p| format!("{:?}", p.kind) == what).nth(k).cloned();
                 let Some(sign) = target else {
@@ -240,9 +246,9 @@ async fn main() {
                 };
                 let q = t.query(sign.pos, None);
                 let s = t.samples[q.index];
-                let back = s.pos - s.tangent * 18.0 + Vec3::Y * 3.0;
-                let eye = back;
-                let look = s.pos + s.tangent * 25.0;
+                let dist: f32 = std::env::var("BACK").ok().and_then(|v| v.parse().ok()).unwrap_or(18.0);
+                let eye = s.pos - s.tangent * dist + Vec3::Y * 2.6;
+                let look = if std::env::var("AIM").is_ok() { sign.pos + Vec3::Y * 1.5 } else { s.pos + s.tangent * 25.0 };
                 let mut m = MeshBuilder::new();
                 let hf = &t.terrain;
                 let c = vec2(eye.x, eye.z);
@@ -401,17 +407,30 @@ async fn main() {
                     }
                     for b in 0..5 {
                         for len in [1u8, 2] {
-                            let t = Track::generate(&TrackParams { seed: 3, biome: Some(Biome::from_index(b)), length_class: len, ..Default::default() });
+                            let layout = if std::env::var("LAYOUT").map_or(false, |v| v == "p2p") { LayoutKind::PointToPoint { length_m: 2000.0 } } else { LayoutKind::Loop };
+                            let t = Track::generate(&TrackParams { seed: 3, biome: Some(Biome::from_index(b)), length_class: len, layout, ..Default::default() });
                             let mut m = MeshBuilder::new();
                             for p in &t.props {
                                 models::add_prop(&mut m, p, &t.style);
                             }
-                            println!("{:?} len{}: {} props, {} verts", t.biome, len, t.props.len(), m.vertex_count());
+                            println!("{:?} len{}: {:.0} m, {} props, {} verts ({:.0}k/km)", t.biome, len, t.length, t.props.len(), m.vertex_count(), m.vertex_count() as f32 / t.length);
                             let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
                             for p in &t.props {
                                 *counts.entry(format!("{:?}", p.kind)).or_default() += 1;
                             }
-                            println!("    {:?}", counts);
+                            if std::env::var("BYKIND").is_ok() {
+                                let mut vk: std::collections::BTreeMap<String, usize> = Default::default();
+                                for p in &t.props {
+                                    let mut mm = MeshBuilder::new();
+                                    models::add_prop(&mut mm, p, &t.style);
+                                    *vk.entry(format!("{:?}", p.kind)).or_default() += mm.vertex_count();
+                                }
+                                let mut v: Vec<_> = vk.into_iter().collect();
+                                v.sort_by(|a, b| b.1.cmp(&a.1));
+                                println!("    verts by kind: {:?}", &v[..v.len().min(12)]);
+                            } else {
+                                println!("    {:?}", counts);
+                            }
                         }
                     }
                 }

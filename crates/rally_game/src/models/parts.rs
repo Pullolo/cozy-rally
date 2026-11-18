@@ -292,3 +292,62 @@ pub fn h01(a: f32, b: f32) -> f32 {
     let v = (a * 12.9898 + b * 78.233).sin() * 43758.547;
     v - v.floor()
 }
+
+/// 5x5 block-letter glyph rows (bit 4 = leftmost); unknown chars render blank.
+fn glyph(c: char) -> [u8; 5] {
+    match c {
+        'A' => [0b01110, 0b10001, 0b11111, 0b10001, 0b10001],
+        'F' => [0b11111, 0b10000, 0b11110, 0b10000, 0b10000],
+        'H' => [0b10001, 0b10001, 0b11111, 0b10001, 0b10001],
+        'I' => [0b11111, 0b00100, 0b00100, 0b00100, 0b11111],
+        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+        'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001],
+        'O' | '0' => [0b01110, 0b10001, 0b10001, 0b10001, 0b01110],
+        'P' => [0b11110, 0b10001, 0b11110, 0b10000, 0b10000],
+        'R' => [0b11110, 0b10001, 0b11110, 0b10100, 0b10011],
+        'S' => [0b01111, 0b10000, 0b01110, 0b00001, 0b11110],
+        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100],
+        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b01110],
+        '2' => [0b11110, 0b00001, 0b01110, 0b10000, 0b11111],
+        '3' => [0b11110, 0b00001, 0b01110, 0b00001, 0b11110],
+        '4' => [0b10010, 0b10010, 0b11111, 0b00010, 0b00010],
+        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b11110],
+        '6' => [0b01110, 0b10000, 0b11110, 0b10001, 0b01110],
+        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b00100],
+        '8' => [0b01110, 0b10001, 0b01110, 0b10001, 0b01110],
+        '9' => [0b01110, 0b10001, 0b01111, 0b00001, 0b01110],
+        '!' => [0b00100, 0b00100, 0b00100, 0b00000, 0b00100],
+        _ => [0; 5],
+    }
+}
+
+/// Block text centred at `c` on a plane (right/up in-plane axes), letter height `h`.
+/// Pixel runs are merged into one quad per row so text stays cheap.
+pub fn block_text(m: &mut MeshBuilder, c: Vec3, right: Vec3, up: Vec3, h: f32, text: &str, color: [u8; 4]) {
+    let px = h / 5.0;
+    let adv = px * 6.0;
+    let n = text.chars().count() as f32;
+    let x0 = -(n * adv - px) * 0.5;
+    for (i, ch) in text.chars().enumerate() {
+        let g = glyph(ch);
+        for (row, bits) in g.iter().enumerate() {
+            let y1 = h * 0.5 - row as f32 * px;
+            let y0 = y1 - px;
+            let mut col = 0;
+            while col < 5 {
+                if bits & (1 << (4 - col)) != 0 {
+                    let start = col;
+                    while col < 5 && bits & (1 << (4 - col)) != 0 {
+                        col += 1;
+                    }
+                    let xa = x0 + i as f32 * adv + start as f32 * px;
+                    let xb = x0 + i as f32 * adv + col as f32 * px;
+                    let p = |x: f32, y: f32| c + right * x + up * y;
+                    m.quad(p(xa, y0), p(xb, y0), p(xb, y1), p(xa, y1), color);
+                } else {
+                    col += 1;
+                }
+            }
+        }
+    }
+}

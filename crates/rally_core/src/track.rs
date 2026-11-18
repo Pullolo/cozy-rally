@@ -151,6 +151,23 @@ pub enum PropKind {
     HayWagon,
     Beehive,
     FlowerField,
+    // --- open-stage (point-to-point) furniture
+    /// Gantry spanning the road (legs at local x = ±5 m * scale); variant 0 = START (countdown
+    /// lights), 1 = FINISH (chequered)
+    Gantry,
+    /// Roadside board; variant & 7: 0 = flying FINISH, 1 = STOP control, 2 = SPLIT (number in
+    /// variant >> 3), 3 = START/time control
+    StageBoard,
+    /// Timing hut with timekeepers
+    TimingHut,
+    /// Marshal with flag, radio sign and chair
+    MarshalPost,
+    /// Red/white safety tape on posts along local X; length = 10 m * scale
+    SafetyTape,
+    /// Triangular warning sign; variant 0 hairpin left, 1 hairpin right, 2 jump, 3 ford, 4 caution
+    WarningSign,
+    /// Bridge parapet segment along local X (4 m * scale)
+    BridgeRail,
 }
 
 impl PropKind {
@@ -824,12 +841,25 @@ struct PropPlacer<'a> {
 impl<'a> PropPlacer<'a> {
     fn run(t: &'a Track, rng: &mut Rng, noise_seed: u32) -> Vec<Prop> {
         let mut pp = PropPlacer { t, props: Vec::new(), keep_out: Vec::new() };
-        pp.start_area(rng);
+        if pp.open() {
+            pp.stage_start(rng);
+            pp.stage_finish(rng);
+            pp.stage_splits(rng);
+            pp.marshal_posts(rng);
+            pp.villages(rng);
+        } else {
+            pp.start_area(rng);
+        }
         pp.corners(rng);
+        pp.warnings();
+        pp.water_crossings();
         pp.set_pieces(rng);
         pp.fences(noise_seed);
         pp.roadside(rng);
         pp.scatter(rng, noise_seed);
+        if pp.open() {
+            pp.jump_crowds(rng);
+        }
         pp.jump_cones();
         pp.props
     }
@@ -838,9 +868,318 @@ impl<'a> PropPlacer<'a> {
         self.t.samples.len()
     }
 
+    /// Sample i; wraps on loops, clamps on point-to-point stages.
     fn smp(&self, i: isize) -> TrackSample {
-        self.t.samples[wrap(i, self.n())]
+        if self.open() {
+            self.t.samples[i.clamp(0, self.n() as isize - 1) as usize]
+        } else {
+            self.t.samples[wrap(i, self.n())]
+        }
     }
+
+    fn open(&self) -> bool {
+        matches!(self.t.params.layout, LayoutKind::PointToPoint { .. })
+    }
+
+    /// Finish line sample on a stage: at `length_m` when the road runs on past it (the run-out
+    /// to the stop control), otherwise just before the end of the road.
+    fn finish_idx(&self) -> isize {
+        let n = self.n() as isize;
+        let s = match self.t.params.layout {
+            LayoutKind::PointToPoint { length_m } if length_m > 100.0 && length_m < self.t.length - 60.0 => length_m,
+            _ => self.t.length - 24.0,
+        };
+        ((s / SAMPLE_SPACING) as isize).clamp(10, n - 2)
+    }
+
+    fn edge(&self, i: isize) -> f32 {
+        self.smp(i).half_width + SHOULDER
+    }
+
+    fn fwd(&self, i: isize) -> Vec3 {
+        let t = self.smp(i).tangent;
+        Vec3::new(t.x, 0.0, t.z).normalize()
+    }
+
+    /// Board on the `side` of the road at sample i, front facing the approaching driver.
+    fn board(&mut self, kind: PropKind, i: isize, side: f32, extra: f32, variant: u8) {
+        let p = self.beside(i, side * (self.edge(i) + extra), 0.0);
+        if self.clearance(p) < extra - 0.6 || self.under_water(p.y, 0.2) {
+            return;
+        }
+        let s = self.smp(i);
+        let face = (-self.fwd(i) - Self::flat_right(&s) * side * 0.3).normalize();
+        // board fronts are local -Z
+        self.push(kind, p, yaw_facing(-face), 1.0, 0.0, variant);
+    }
+
+    /// A small hut/tent-like solid placed beside the road facing it
+    fn beside_facing(&mut self, kind: PropKind, i: isize, lat: f32, along: f32, radius: f32, variant: u8) -> bool {
+        let p = self.beside(i, lat, along);
+        if self.clearance(p) < radius + 1.5 || self.under_water(p.y, 0.4) || self.blocked(p, radius) {
+            return false;
+        }
+        let s = self.smp(i);
+        let to_road = ((s.pos - p) * Vec3::new(1.0, 0.0, 1.0)).normalize_or_zero();
+        // fronts (local -Z) look at the road
+        self.push(kind, p, yaw_facing(-to_road), 1.0, radius, variant);
+        self.keep_out.push((Vec2::new(p.x, p.z), radius + 2.0));
+        true
+    }
+
+    fn gantry(&mut self, i: isize, variant: u8) {
+        let s = self.smp(i);
+        let half = self.edge(i) + 1.2;
+        let p = Vec3::new(s.pos.x, self.ground(s.pos.x, s.pos.z), s.pos.z);
+        // local X runs to the driver's left so the gantry's -Z face greets them
+        self.push(PropKind::Gantry, p, yaw_along(-Self::flat_right(&s)), half / 5.0, 0.0, variant);
+        self.keep_out.push((Vec2::new(p.x, p.z), half + 4.0));
+    }
+
+    fn tape_line(&mut self, i0: isize, i1: isize, lat: f32) {
+        let mut i = i0;
+        while i + 5 <= i1 {
+            let a = self.beside(i, lat, 0.0);
+            let b = self.beside(i + 5, lat, 0.0);
+            let d = (b - a) * Vec3::new(1.0, 0.0, 1.0);
+            let len = d.length();
+            if len > 1.0 && self.clearance(a) > lat.abs() - self.edge(i) - 0.8 && self.clearance(b) > 0.8 && (a.y - b.y).abs() < 1.5 {
+                self.push(PropKind::SafetyTape, a, yaw_along(d / len), len / 10.0, 0.0, 0);
+            }
+            i += 5;
+        }
+    }
+
+    fn stage_start(&mut self, rng: &mut Rng) {
+        let s0 = self.smp(0);
+        self.beside_facing(PropKind::TimingHut, 2, -(self.edge(2) + 4.5), 0.0, 1.8, 0);
+        self.keep_out.push((Vec2::new(s0.pos.x, s0.pos.z), 36.0));
+        self.gantry(3, 0);
+        self.board(PropKind::StageBoard, 0, 1.0, 1.4, 3);
+        for (i, side) in [(6isize, 1.0f32), (12, -1.0)] {
+            self.beside_facing(PropKind::MarshalPost, i, side * (self.edge(i) + 3.0), 0.0, 0.0, rng.range_i(0, 3) as u8);
+        }
+        for side in [-1.0f32, 1.0] {
+            let e = self.edge(10);
+            self.tape_line(6, 36, side * (e + 2.2));
+            for k in 0..4 {
+                let c = rng.range_i(3, 6);
+                self.crowd(rng, 9 + k * 7, side, 4.0, c, 1.3);
+            }
+            self.bunting_line(rng, 4, 34, side * (e + 7.5));
+            let p = self.beside(20, side * (e + rng.range(13.0, 17.0)), 0.0);
+            if self.clearance(p) > 11.0 && !self.under_water(p.y, 0.5) {
+                let kind = if side > 0.0 { PropKind::Camper } else { PropKind::Tent };
+                self.push(kind, p, rng.range(0.0, 6.28), 1.0, if kind == PropKind::Camper { 2.4 } else { 1.6 }, rng.range_i(0, 6) as u8);
+            }
+        }
+    }
+
+    fn stage_finish(&mut self, rng: &mut Rng) {
+        let fi = self.finish_idx();
+        let n = self.n() as isize;
+        // flying-finish warning board ~100 m before, the finish gantry, timing hut + crowd
+        self.board(PropKind::StageBoard, fi - 50, 1.0, 1.4, 0);
+        self.board(PropKind::StageBoard, fi - 50, -1.0, 1.4, 0);
+        self.beside_facing(PropKind::TimingHut, fi + 1, -(self.edge(fi) + 4.5), 0.0, 1.8, 1);
+        self.gantry(fi, 1);
+        self.beside_facing(PropKind::MarshalPost, fi - 4, self.edge(fi) + 3.0, 0.0, 0.0, 1);
+        for side in [-1.0f32, 1.0] {
+            let e = self.edge(fi);
+            self.tape_line(fi - 30, fi - 3, side * (e + 2.2));
+            for k in 0..3 {
+                let c = rng.range_i(3, 6);
+                self.crowd(rng, fi - 24 + k * 8, side, 4.0, c, 1.3);
+            }
+            self.bunting_line(rng, fi - 25, fi + 5, side * (e + 7.0));
+        }
+        // stop control ~150 m after the flying finish (or at the end of the road)
+        let si = (fi + 75).min(n - 3);
+        if si > fi + 15 {
+            self.board(PropKind::StageBoard, si, 1.0, 1.4, 1);
+            self.beside_facing(PropKind::TimingHut, si + 2, self.edge(si) + 4.5, 0.0, 1.8, 0);
+            self.beside_facing(PropKind::MarshalPost, si - 3, -(self.edge(si) + 3.0), 0.0, 0.0, 2);
+            self.board(PropKind::StageBoard, si - 25, -1.0, 1.4, 1);
+        }
+        let f = self.smp(fi).pos;
+        self.keep_out.push((Vec2::new(f.x, f.z), 30.0));
+    }
+
+    fn stage_splits(&mut self, rng: &mut Rng) {
+        let fi = self.finish_idx();
+        let mut k = 0u8;
+        let cps = self.t.checkpoints.clone();
+        for &c in cps.iter().skip(1) {
+            let c = c as isize;
+            if c < 100 || c > fi - 100 {
+                continue;
+            }
+            k += 1;
+            self.board(PropKind::StageBoard, c, 1.0, 1.4, 2 | (k.min(31) << 3));
+            self.beside_facing(PropKind::MarshalPost, c + 2, -(self.edge(c) + 3.0), 0.0, 0.0, rng.range_i(0, 3) as u8);
+            let p = self.smp(c).pos;
+            self.keep_out.push((Vec2::new(p.x, p.z), 8.0));
+        }
+    }
+
+    /// Marshal posts every ~450 m along long stages (alternating sides).
+    fn marshal_posts(&mut self, rng: &mut Rng) {
+        let fi = self.finish_idx();
+        let step = 225isize;
+        let mut i = 160isize;
+        let mut side = 1.0f32;
+        while i < fi - 120 {
+            let j = i + rng.range_i(-20, 20) as isize;
+            if self.smp(j).curvature.abs() < 1.0 / 60.0 {
+                let e = self.edge(j);
+                self.beside_facing(PropKind::MarshalPost, j, side * (e + 3.2), 0.0, 0.0, rng.range_i(0, 3) as u8);
+                if rng.chance(0.5) {
+                    let p = self.beside(j, side * (e + rng.range(7.0, 10.0)), rng.range(-3.0, 3.0));
+                    if self.clearance(p) > 6.0 && !self.under_water(p.y, 0.4) {
+                        self.push(PropKind::Picnic, p, rng.range(0.0, 6.28), 1.0, 0.0, rng.range_i(0, 6) as u8);
+                    }
+                }
+            }
+            side = -side;
+            i += step;
+        }
+    }
+
+    /// Small villages the stage runs through, on calm straights away from start/finish.
+    fn villages(&mut self, rng: &mut Rng) {
+        let fi = self.finish_idx();
+        let want = (self.t.length / 2500.0) as usize + 1;
+        let mut spots: Vec<isize> = Vec::new();
+        for f in &self.t.features {
+            if f.kind.is_corner() || f.s1 < f.s0 {
+                continue;
+            }
+            let (a, b) = ((f.s0 / SAMPLE_SPACING) as isize, (f.s1 / SAMPLE_SPACING) as isize);
+            if b - a > 70 {
+                let c = (a + b) / 2;
+                if c > 150 && c < fi - 150 && spots.iter().all(|&x| (x - c).abs() > 400) {
+                    spots.push(c);
+                }
+            }
+        }
+        if spots.is_empty() {
+            // no layout features: use the calmest stretches
+            let mut i = 300;
+            while i < fi - 300 {
+                if (-30..=30).all(|k| self.smp(i + k).curvature.abs() < 1.0 / 90.0) {
+                    spots.push(i);
+                    i += 500;
+                }
+                i += 20;
+            }
+        }
+        for &c in spots.iter().take(want) {
+            for side in [-1.0f32, 1.0] {
+                for k in -3..=3 {
+                    if !rng.chance(0.75) {
+                        continue;
+                    }
+                    let j = c + k * 10;
+                    let lat = side * (self.edge(j) + rng.range(11.0, 15.0));
+                    let kind = if rng.chance(0.85) { PropKind::Cottage } else { PropKind::Barn };
+                    if self.beside_facing(kind, j, lat, rng.range(-2.0, 2.0), if kind == PropKind::Cottage { 3.6 } else { 4.6 }, rng.range_i(0, 3) as u8) {
+                        // garden fence + flowers in front
+                        let fp = self.beside(j, side * (self.edge(j) + 5.5), 0.0);
+                        if self.clearance(fp) > 4.0 {
+                            self.push(PropKind::Fence, fp, yaw_along(self.fwd(j)), 1.0, 0.0, 1);
+                        }
+                        let q = self.beside(j, side * (self.edge(j) + 7.0), rng.range(-3.0, 3.0));
+                        self.push(PropKind::Flowers, q, rng.range(0.0, 6.28), 1.0, 0.0, 0);
+                    }
+                }
+                let cnt = rng.range_i(2, 5);
+                let at = c + rng.range_i(-15, 15) as isize;
+                self.crowd(rng, at, side, 3.5, cnt, 1.5);
+            }
+            // bunting strung across the road at both ends of the village
+            for j in [c - 35, c + 35] {
+                let e = self.edge(j) + 1.5;
+                let a = self.beside(j, -e, 0.0);
+                let b = self.beside(j, e, 0.0);
+                let d = (b - a) * Vec3::new(1.0, 0.0, 1.0);
+                if (a.y - b.y).abs() < 1.0 && self.clearance(a) > 1.0 && self.clearance(b) > 1.0 {
+                    self.push(PropKind::Bunting, a, yaw_along(d.normalize()), d.length() / 10.0, 0.0, rng.range_i(0, 6) as u8);
+                }
+            }
+            let p = self.smp(c).pos;
+            self.keep_out.push((Vec2::new(p.x, p.z), 45.0));
+        }
+    }
+
+    /// Warning signs ~70 m before hairpins, nasty corners, jumps (both layouts).
+    fn warnings(&mut self) {
+        let n = self.n() as isize;
+        let mut hazards: Vec<(isize, u8)> = Vec::new();
+        for f in &self.t.features {
+            let a = (f.s0 / SAMPLE_SPACING) as isize;
+            let b = if f.s1 >= f.s0 { (f.s1 / SAMPLE_SPACING) as isize } else { a + 20 };
+            let mid = (a + b) / 2;
+            let left = self.smp(mid).curvature > 0.0;
+            match f.kind {
+                crate::layout::FeatureKind::Hairpin => hazards.push((a, if left { 0 } else { 1 })),
+                crate::layout::FeatureKind::Tightening | crate::layout::FeatureKind::Chicane | crate::layout::FeatureKind::Square => hazards.push((a, 4)),
+                _ => {}
+            }
+        }
+        if self.t.features.is_empty() {
+            for i in 0..n {
+                let c = self.smp(i).curvature;
+                if c.abs() > 1.0 / 22.0 && (-8..=8).all(|k| self.smp(i + k).curvature.abs() <= c.abs()) {
+                    hazards.push((i - 10, if c > 0.0 { 0 } else { 1 }));
+                }
+            }
+        }
+        for &j in &self.t.jumps.clone() {
+            hazards.push((j as isize, 2));
+        }
+        hazards.sort();
+        let mut last = -1000isize;
+        for (a, v) in hazards {
+            let i = a - 35;
+            if (!self.open() && (i < 40 || i > n - 40)) || (self.open() && (i < 25 || i > self.finish_idx() - 10)) || i - last < 30 {
+                continue;
+            }
+            self.board(PropKind::WarningSign, i, 1.0, 1.6, v);
+            last = i;
+        }
+    }
+
+    /// Bridge parapets where the road crosses water; ford warnings where it runs through it.
+    fn water_crossings(&mut self) {
+        let Some(w) = self.t.water_level else { return };
+        let n = self.n() as isize;
+        let (lo, hi) = if self.open() { (0, n - 1) } else { (0, n) };
+        let mut in_ford = false;
+        let mut i = lo;
+        while i < hi {
+            let s = self.smp(i);
+            let e = self.edge(i);
+            let road_y = s.pos.y;
+            let wet_l = self.beside(i, -(e + 8.0), 0.0).y < w - 0.3;
+            let wet_r = self.beside(i, e + 8.0, 0.0).y < w - 0.3;
+            if road_y < w + 0.6 {
+                if !in_ford {
+                    self.board(PropKind::WarningSign, i - 30, 1.0, 1.6, 3);
+                }
+                in_ford = true;
+            } else {
+                in_ford = false;
+                if wet_l && wet_r && i % 2 == 0 {
+                    for side in [-1.0f32, 1.0] {
+                        let p = self.beside(i, side * (e + 0.4), 0.0);
+                        self.push(PropKind::BridgeRail, Vec3::new(p.x, road_y, p.z), yaw_along(self.fwd(i)), 1.0, 0.0, 0);
+                    }
+                }
+            }
+            i += 1;
+        }
+    }
+
 
     fn flat_right(s: &TrackSample) -> Vec3 {
         Vec3::new(s.right.x, 0.0, s.right.z).normalize()
@@ -1002,7 +1341,13 @@ impl<'a> PropPlacer<'a> {
                     self.push(PropKind::ArrowSign, p, yaw_facing(t), 1.0, 0.0, variant);
                 }
             }
-            if c > 1.0 / 48.0 && spectator_spots < 7 {
+            if self.open() && c > 1.0 / 30.0 {
+                // stages: safety tape behind the chevrons on the outside of tight bends
+                let e = self.edge(i);
+                self.tape_line(i - 12, i + 12, outside * (e + 3.2));
+            }
+            let max_spots = if self.open() { (self.t.length / 450.0) as usize + 3 } else { 7 };
+            if c > 1.0 / 48.0 && spectator_spots < max_spots {
                 spectator_spots += 1;
                 let j = i + 6;
                 let sj = self.smp(j);
@@ -1070,7 +1415,7 @@ impl<'a> PropPlacer<'a> {
     fn set_pieces(&mut self, rng: &mut Rng) {
         let n = self.n() as i32;
         let biome = self.t.biome;
-        let target = (self.t.length / 260.0).round() as usize + 2;
+        let target = ((self.t.length / 260.0).round() as usize + 2).min(if self.open() { 18 } else { 99 });
         let mut placed: Vec<Vec3> = Vec::new();
         let start = self.t.samples[0].pos;
         let mut kit = rng.range_i(0, 4) as usize;
@@ -1288,8 +1633,15 @@ impl<'a> PropPlacer<'a> {
                 let mut density = style.tree_density * smoothstep(0.35, 0.75, forest) + 0.04;
                 let q = t.query(Vec3::new(x, 0.0, z), None);
                 let hw = t.samples[q.index].half_width;
-                // thinner far from the road, where only fog sees it
-                density *= 1.0 - 0.55 * smoothstep(70.0, 160.0, q.dist);
+                // thinner far from the road, where only fog sees it; long open stages keep a band
+                if self.open() {
+                    if q.dist > 60.0 {
+                        continue;
+                    }
+                    density *= 0.6 - 0.4 * smoothstep(18.0, 60.0, q.dist);
+                } else {
+                    density *= 1.0 - 0.72 * smoothstep(50.0, 140.0, q.dist);
+                }
                 if !rng.chance(density) {
                     continue;
                 }
@@ -1351,6 +1703,18 @@ impl<'a> PropPlacer<'a> {
                     continue;
                 }
                 self.push(kind, Vec3::new(x, y, z), rng.range(0.0, 6.283), scale, radius, rng.range_i(0, 3) as u8);
+            }
+        }
+    }
+
+    fn jump_crowds(&mut self, rng: &mut Rng) {
+        for &j in &self.t.jumps.clone() {
+            let j = j as isize + 8;
+            for side in [-1.0f32, 1.0] {
+                let e = self.edge(j);
+                let cnt = rng.range_i(3, 6);
+                self.crowd(rng, j, side, 5.0, cnt, 1.4);
+                self.tape_line(j - 6, j + 6, side * (e + 2.6));
             }
         }
     }
