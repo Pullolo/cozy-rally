@@ -32,7 +32,7 @@ fn main() {
         for skill in sk.split(',').filter_map(|v| v.parse::<f32>().ok()) {
             let (mut best_sum, mut off_sum, mut spins) = (0.0, 0.0, 0);
             for seed in 1..=seeds {
-                let track = Arc::new(Track::generate(&TrackParams { seed, biome: None, length_class: 1 }));
+                let track = Arc::new(Track::generate(&TrackParams { seed, biome: None, length_class: 1, ..Default::default() }.with_env_overrides()));
                 let mut world = World::new(track.clone(), &[RacerSetup { car_spec: car, controller: Controller::Local(0) }], 3);
                 world.cars[0].assist_level = assist;
                 let mut ai = AiDriver::with_personality(Personality { skill, aggression: 1.0, consistency: 1.0 }, RubberBand::default(), seed);
@@ -60,7 +60,7 @@ fn main() {
     println!("=== SKILL TEST: assist {assist}, car {car}, 3 laps per track");
     let mut totals = [(0.0f32, 0.0f32, 0u32, 0.0f32, 0u32); 4];
     for seed in 1..=seeds {
-        let track = Arc::new(Track::generate(&TrackParams { seed, biome: None, length_class: 1 }));
+        let track = Arc::new(Track::generate(&TrackParams { seed, biome: None, length_class: 1, ..Default::default() }.with_env_overrides()));
         let mut line = format!("seed {seed:2} {:9}", format!("{:?}", track.style.road_surface));
         for (d, name) in NAMES.iter().enumerate() {
             let mut world = World::new(track.clone(), &[RacerSetup { car_spec: car, controller: Controller::Local(0) }], 3);

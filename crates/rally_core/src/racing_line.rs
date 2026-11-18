@@ -8,7 +8,6 @@
 //! The speed profile turns line curvature (horizontal + vertical) into a cornering speed
 //! limit, then a backward pass adds braking zones (friction-circle aware) and a forward
 //! pass predicts acceleration (used for lap-time estimates).
-use crate::surface::Surface;
 use crate::track::{Track, SAMPLE_SPACING};
 use crate::vehicle::{CarSpec, Drivetrain, GRAVITY};
 use glam::{Vec2, Vec3};
@@ -35,6 +34,11 @@ pub struct RacingLine {
     pub seg: Vec<f32>,
     /// true for samples inside a jump's take-off / flight zone
     pub jump_zone: Vec<bool>,
+    /// Surface grip multiplier where the line runs (per-sample surfaces + patches, blended;
+    /// min over neighbouring samples so patches are seen early)
+    pub grip: Vec<f32>,
+    /// Road bank towards the inside of the line's turn (rad; negative = off-camber)
+    pub bank_into: Vec<f32>,
     pub length: f32,
 }
 
@@ -162,7 +166,17 @@ impl RacingLine {
             .collect();
         smooth_closed(&mut vcurv, 2, 2);
         let length = seg.iter().sum();
-        RacingLine { offset, limit, pos, curvature, vcurv, seg, jump_zone, length }
+        let raw_grip: Vec<f32> = (0..n)
+            .map(|i| {
+                let m = track.surface_map.mix_at(track.samples[i].s, offset[i]);
+                let a = m.a.props().grip;
+                let b = m.b.props().grip;
+                a + (b - a) * m.t
+            })
+            .collect();
+        let grip: Vec<f32> = (0..n).map(|i| (-2isize..=2).map(|k| raw_grip[wrap(i as isize + k, n)]).fold(f32::MAX, f32::min)).collect();
+        let bank_into: Vec<f32> = (0..n).map(|i| track.samples[i].bank * curvature[i].signum()).collect();
+        RacingLine { offset, limit, pos, curvature, vcurv, seg, jump_zone, grip, bank_into, length }
     }
 
     /// Interpolated line offset at track arc length s
@@ -192,12 +206,14 @@ impl RacingLine {
 /// Car capability used to build a speed profile.
 #[derive(Clone, Copy, Debug)]
 pub struct SpeedParams {
-    /// Lateral friction coefficient used for cornering
+    /// Tyre friction coefficient used for cornering (x surface grip per sample)
     pub mu: f32,
-    /// Braking deceleration (m/s^2)
-    pub brake: f32,
-    /// Traction-limited acceleration (m/s^2)
-    pub traction: f32,
+    /// Brake system deceleration limit (m/s^2), before grip
+    pub brake_sys: f32,
+    /// Fraction of the available braking a driver uses
+    pub brake_use: f32,
+    /// Fraction of tyre grip the driven wheels can use for traction
+    pub traction_frac: f32,
     /// Effective engine power / mass (W/kg)
     pub power_per_kg: f32,
     /// Aero drag / mass
@@ -210,12 +226,11 @@ pub struct SpeedParams {
 }
 
 impl SpeedParams {
-    /// Capability of `spec` on `surface`. `grip_use` (0..1) = fraction of the grip a driver
-    /// dares to use when cornering, `brake_use` the same for braking.
-    pub fn for_car(spec: &CarSpec, surface: Surface, grip_use: f32, brake_use: f32) -> SpeedParams {
-        let mu_raw = spec.tire_grip * surface.props().grip;
+    /// Capability of `spec`. `grip_use` = fraction of the grip a driver dares to use when
+    /// cornering, `brake_use` the same for braking. Surface grip is applied per sample.
+    pub fn for_car(spec: &CarSpec, grip_use: f32, brake_use: f32) -> SpeedParams {
+        let mu_raw = spec.tire_grip;
         let m = spec.mass;
-        let brake = (spec.brake_force / m).min(mu_raw * GRAVITY) * brake_use;
         let driven = match spec.drivetrain {
             Drivetrain::Fwd => 0.58,
             Drivetrain::Rwd => 0.50,
@@ -224,8 +239,9 @@ impl SpeedParams {
         let peak_power = spec.peak_torque * spec.peak_rpm * std::f32::consts::TAU / 60.0;
         SpeedParams {
             mu: mu_raw * grip_use,
-            brake,
-            traction: mu_raw * GRAVITY * driven * 0.85,
+            brake_sys: spec.brake_force / m,
+            brake_use,
+            traction_frac: driven * 0.85 * mu_raw,
             power_per_kg: peak_power * 0.88 * 0.82 / m,
             drag_per_kg: spec.drag / m,
             down_per_kg: spec.downforce / m,
@@ -253,11 +269,23 @@ impl SpeedProfile {
         // cornering limit: v^2 * |k| <= mu * (g + v^2 * kv + v^2 * down)
         //  -> v^2 <= mu g / (|k| - mu kv - mu down)
         let mut corner = vec![p.v_max; n];
+        // per-sample friction: tyre x surface; tight corners (R < ~25 m) give a bit less
+        // (load transfer, steering lock, slow-speed traction)
+        let mu_at = |i: usize| {
+            let r = 1.0 / line.curvature[i].abs().max(1e-4);
+            let tight = 1.0 - 0.13 * (((28.0 - r) / 16.0).clamp(0.0, 1.0));
+            p.mu * line.grip[i] * tight
+        };
         for i in 0..n {
             let k = line.curvature[i].abs();
             let kv = if line.jump_zone[i] { 0.0 } else { line.vcurv[i].clamp(-0.08, 0.08) };
-            let denom = k - p.mu * kv - p.mu * p.down_per_kg;
-            let mut v = if denom > 1e-5 { (p.mu * g / denom).sqrt() } else { p.v_max };
+            let mu = mu_at(i);
+            // banking towards the inside helps, off-camber hurts
+            let tb = line.bank_into[i].clamp(-0.3, 0.3).tan();
+            let num = (mu + tb).max(0.05);
+            let den = (1.0 - mu * tb).max(0.2);
+            let denom = k * den - mu * kv - mu * p.down_per_kg;
+            let mut v = if denom > 1e-5 { (g * num / denom).sqrt() } else { p.v_max };
             // crests: don't take off on a hump that isn't a jump (keeps normal load positive)
             if kv < -1e-4 && !line.jump_zone[i] {
                 v = v.min((g * 1.15 / -kv).sqrt());
@@ -279,9 +307,11 @@ impl SpeedProfile {
                 let ds = line.seg[i];
                 let v = limit[j];
                 // friction circle: braking grip left after the lateral demand
+                let mu = mu_at(i);
                 let lat = v * v * line.curvature[i].abs();
-                let lat_frac = (lat / (p.mu * g).max(0.1)).min(1.0);
-                let avail = p.brake * (1.0 - lat_frac * lat_frac).max(0.12).sqrt();
+                let lat_frac = (lat / (mu * g).max(0.1)).min(1.0);
+                let brake = p.brake_sys.min(mu * g * 1.05) * p.brake_use;
+                let avail = brake * (1.0 - lat_frac * lat_frac).max(0.12).sqrt();
                 // can't brake in the air
                 let avail = if line.jump_zone[i] && !line.jump_zone[wrap(i as isize - 14, n)] { avail } else if line.jump_zone[i] { avail * 0.15 } else { avail };
                 let vb = (v * v + 2.0 * avail * ds).sqrt() + p.drag_per_kg * v * v * ds / v.max(1.0);
@@ -296,9 +326,10 @@ impl SpeedProfile {
             for i in 0..n {
                 let j = (i + 1) % n;
                 let v = pred[i].max(1.0);
+                let mu = mu_at(i);
                 let lat = v * v * line.curvature[i].abs();
-                let lat_frac = (lat / (p.mu * g).max(0.1)).min(1.0);
-                let trac = p.traction * (1.0 - lat_frac * lat_frac).max(0.1).sqrt();
+                let lat_frac = (lat / (mu * g).max(0.1)).min(1.0);
+                let trac = p.traction_frac * line.grip[i] * g * (1.0 - lat_frac * lat_frac).max(0.1).sqrt();
                 let a = trac.min(p.power_per_kg / v) - p.drag_per_kg * v * v - 0.02 * g;
                 let va = (v * v + 2.0 * a.max(0.0) * line.seg[i]).sqrt();
                 if va < pred[j] {

@@ -120,7 +120,7 @@ pub fn car_specs() -> Vec<CarSpec> {
             reverse_ratio: 3.2,
             engine_inertia: 0.10,
             lsd: 0.1,
-            ai_grip: 1.22,
+            ai_grip: 1.0,
             brake_force: 11500.0,
             brake_bias_front: 0.66,
             handbrake_force: 5000.0,
@@ -155,7 +155,7 @@ pub fn car_specs() -> Vec<CarSpec> {
             max_steer: 0.62,
             drivetrain: Drivetrain::Rwd,
             awd_front_split: 0.0,
-            peak_torque: 300.0,
+            peak_torque: 325.0,
             peak_rpm: 4800.0,
             idle_rpm: 850.0,
             redline: 6800.0,
@@ -164,7 +164,7 @@ pub fn car_specs() -> Vec<CarSpec> {
             reverse_ratio: 3.2,
             engine_inertia: 0.20,
             lsd: 0.35,
-            ai_grip: 0.94,
+            ai_grip: 0.92,
             brake_force: 14500.0,
             brake_bias_front: 0.64,
             handbrake_force: 6500.0,
@@ -208,7 +208,7 @@ pub fn car_specs() -> Vec<CarSpec> {
             reverse_ratio: 3.2,
             engine_inertia: 0.15,
             lsd: 0.3,
-            ai_grip: 1.06,
+            ai_grip: 0.9,
             brake_force: 16000.0,
             brake_bias_front: 0.62,
             handbrake_force: 7000.0,
@@ -252,7 +252,7 @@ pub fn car_specs() -> Vec<CarSpec> {
             reverse_ratio: 3.5,
             engine_inertia: 0.25,
             lsd: 0.3,
-            ai_grip: 1.0,
+            ai_grip: 0.9,
             brake_force: 19000.0,
             brake_bias_front: 0.62,
             handbrake_force: 8000.0,
@@ -1151,8 +1151,8 @@ pub fn abs_strength(assist_level: f32) -> f32 {
 /// (grip must vary continuously as each wheel crosses a transition).
 #[inline]
 pub fn wheel_ground(track: &Track, contact: Vec3, hint: Option<usize>) -> (SurfaceProps, Option<Surface>, TrackQuery) {
-    let (surface, q) = track.surface_at(contact, hint);
-    (surface.props(), Some(surface), q)
+    let g = track.ground_at(contact, hint);
+    (g.props, Some(g.primary), g.query)
 }
 
 /// Slip ratio at peak longitudinal friction. A continuous function of the surface properties

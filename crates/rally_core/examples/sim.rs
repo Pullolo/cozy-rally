@@ -45,7 +45,7 @@ fn main() {
             continue;
         }
         let t0 = Instant::now();
-        let track = Arc::new(Track::generate(&TrackParams { seed, biome: None, length_class: 1 }));
+        let track = Arc::new(Track::generate(&TrackParams { seed, biome: None, length_class: 1, ..Default::default() }.with_env_overrides()));
         let gen_ms = t0.elapsed().as_millis();
         println!(
             "seed {seed}: {} ({:?}) len {:.0}m jumps {} gen {gen_ms}ms",
@@ -180,7 +180,7 @@ fn main() {
                 _ => String::new(),
             };
             println!(
-                "   P{} {:8} {who} finish {:>9} laps [{}] pred {} resets {} off {:.1}s vmax {:.0}{pace}",
+                "   P{} #{i} {:8} {who} finish {:>9} laps [{}] pred {} resets {} off {:.1}s vmax {:.0}{pace}",
                 r.place,
                 world.cars[i].spec.name,
                 r.finish_time.map(format_time).unwrap_or("DNF".into()),

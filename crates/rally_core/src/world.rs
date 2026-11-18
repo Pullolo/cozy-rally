@@ -2,7 +2,7 @@
 //! race logic and an event stream for audio/FX/UI.
 use crate::input::CarInput;
 use crate::race::{Race, RaceEvent};
-use crate::track::{PropKind, Track};
+use crate::track::Track;
 use crate::vehicle::{car_specs, Car};
 use glam::Vec3;
 use std::sync::Arc;
@@ -227,11 +227,7 @@ impl World {
                 if p.radius <= 0.0 {
                     return;
                 }
-                let height = match p.kind {
-                    PropKind::Rock => 1.2 * p.scale,
-                    PropKind::HayBale => 1.0,
-                    _ => 6.0,
-                };
+                let height = p.kind.collision_height(p.scale);
                 for (c, r) in spheres {
                     if c.y > p.pos.y + height + r || c.y < p.pos.y - 1.0 {
                         continue;

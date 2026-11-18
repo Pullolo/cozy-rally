@@ -128,6 +128,8 @@ pub struct AiDriver {
     start_progress: f32,
     prev_v_along: f32,
     accel_along: f32,
+    /// Tyre friction the speed plan assumes (x surface grip per sample)
+    mu_plan: f32,
 }
 
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
@@ -188,6 +190,7 @@ impl AiDriver {
             start_progress: 0.0,
             prev_v_along: 0.0,
             accel_along: 0.0,
+            mu_plan: 1.0,
         }
     }
 
@@ -205,9 +208,9 @@ impl AiDriver {
     }
 
     fn grip_use(&self) -> f32 {
-        // calibrated with `skilltest SKILL_SWEEP`: the planner is conservative, the lap-time
-        // optimum is around 1.2 (Chill 0.89, Normal 1.06, Spicy ~1.2 = near the optimum)
-        0.72 + 0.48 * self.personality.skill
+        // calibrated with `skilltest SKILL_SWEEP` on the designed rally stages: the lap-time
+        // optimum is ~0.95 (Chill 0.73, Normal 0.84, Spicy 0.93 = just under it)
+        0.62 + 0.31 * self.personality.skill
     }
 
     fn ensure_plan(&mut self, car: &Car, track: &Track) {
@@ -217,7 +220,8 @@ impl AiDriver {
             self.profile = None;
         }
         if self.profile.as_ref().map(|p| p.0) != Some(car.spec.id) {
-            let sp = SpeedParams::for_car(&car.spec, track.style.road_surface, self.grip_use() * car.spec.ai_grip, 0.6 + 0.45 * self.personality.skill);
+            let sp = SpeedParams::for_car(&car.spec, self.grip_use() * car.spec.ai_grip, 0.6 + 0.45 * self.personality.skill);
+            self.mu_plan = sp.mu;
             let prof = SpeedProfile::build(self.line.as_ref().unwrap(), &sp);
             self.profile = Some((car.spec.id, prof));
         }
@@ -286,7 +290,22 @@ impl AiDriver {
         self.reset_cooldown = (self.reset_cooldown - dt).max(0.0);
         self.mistake_cooldown = (self.mistake_cooldown - dt).max(0.0);
 
-        let q = track.query(car.pos, car.track_hint);
+        // track position, kept continuous: if the nearest-point query suddenly jumps to another
+        // part of the stage (we left the road where the course loops back nearby), ignore it
+        // and head back to where we left, so no checkpoint gets skipped
+        let n_samples = track.samples.len();
+        let hint = self.last_s.map(|ls| ((ls / crate::track::SAMPLE_SPACING) as usize) % n_samples).or(car.track_hint);
+        let mut q = track.query(car.pos, hint);
+        let mut rejoining = false;
+        if let Some(ls) = self.last_s {
+            if wrap_half(q.s - ls, track.length).abs() > 40.0 {
+                rejoining = true;
+                let i = ((ls / crate::track::SAMPLE_SPACING) as usize) % n_samples;
+                let (p0, _, r0, _) = track.frame_at(ls);
+                let d = car.pos - p0;
+                q = crate::track::TrackQuery { index: i, s: ls, lateral: d.dot(r0), dist: (d - r0 * d.dot(r0)).length().max(d.dot(r0).abs()) };
+            }
+        }
         let smp = &track.samples[q.index];
         let speed = car.vel.length();
         let fwd = car.forward();
@@ -297,7 +316,12 @@ impl AiDriver {
         if let Some(ls) = self.last_s {
             self.progress += wrap_half(q.s - ls, track.length);
         }
-        self.last_s = Some(q.s);
+        if !rejoining {
+            self.last_s = Some(q.s);
+        } else if speed > 3.0 {
+            // driving back to the road is progress too
+            self.no_progress = 0.0;
+        }
         let off = q.dist > smp.half_width + 1.0;
         if off && !car.frozen {
             self.stats.off_track_time += dt;
@@ -332,7 +356,9 @@ impl AiDriver {
         let wheelbase = car.spec.cg_to_front + car.spec.cg_to_rear;
         let ld = (5.5 + speed * 0.42).clamp(6.0, 28.0);
         let s_t = q.s + ld;
-        let mut line_off_t = line.offset_at(s_t, track) + self.lane_bias * 0.3;
+        // lane bias shrinks on narrow roads so it never pushes a car onto the shoulder
+        let width_k = ((line.limit_at(s_t, track) - 0.5) / 3.5).clamp(0.0, 1.0);
+        let mut line_off_t = line.offset_at(s_t, track) + self.lane_bias * 0.3 * width_k;
         // off the grid: keep our lane for the first stretch, then merge onto the line
         if car.frozen {
             self.start_lat = Some(q.lateral);
@@ -394,7 +420,9 @@ impl AiDriver {
                 let ttc = (o.ds - 4.6).max(0.1) / closing.max(0.1);
                 // want to pass if closing fast, or if stuck behind a slower car we could beat
                 let faster = free_speed > o.v_along + 0.4 && o.ds < 16.0 + p.aggression * 14.0;
-                if ttc < 2.8 + p.aggression * 1.5 || faster {
+                // no new moves into tight corners (hairpins / squares): wait for the exit
+                let tight_ahead = line.max_curv_ahead(q.index, 35.0).abs() > 1.0 / 30.0;
+                if (ttc < 2.8 + p.aggression * 1.5 || faster) && (!tight_ahead || self.avoid.abs() > 1.0) {
                     // try a pass: pick a feasible side, preferring the racing line ahead
                     let lim_o = line.limit_at(q.s + o.ds, track) + 0.4;
                     let ahead_line = line.offset_at(q.s + o.ds + 15.0, track);
@@ -531,6 +559,12 @@ impl AiDriver {
             // commit to the move
             scale *= 1.0 + 0.03 * p.aggression;
         }
+        // off the racing line the corners are tighter than planned: slow down for them
+        if self.avoid.abs() > 0.8 {
+            let c = line.max_curv_ahead(q.index, 25.0).abs();
+            let tight = ((c - 1.0 / 80.0) / (1.0 / 20.0 - 1.0 / 80.0)).clamp(0.0, 1.0);
+            scale *= 1.0 - 0.12 * tight * (self.avoid.abs() / 3.0).min(1.0);
+        }
         v_target *= scale;
         if off {
             // gentle on grass/sand: get back onto the road first
@@ -558,6 +592,18 @@ impl AiDriver {
         }
         if self.mistake == Mistake::Lift {
             throttle = throttle.min(0.45);
+        }
+        // corner exits: don't feed in full power while the tyres are still busy turning
+        // (stops running wide out of hairpins)
+        {
+            let i = q.index;
+            let n = line.curvature.len();
+            let c = line.curvature[i].abs().max(line.curvature[(i + 2) % n].abs());
+            let mu = self.mu_plan * line.grip[i];
+            let lat_use = speed * speed * c / (mu * crate::vehicle::GRAVITY).max(0.5);
+            if lat_use > 0.8 && throttle > 0.0 {
+                throttle *= (1.0 - (lat_use - 0.8) * 2.5).clamp(0.35, 1.0);
+            }
         }
         // own feel for traction on top of the car's TC: ease off in big slides
         let drift = car.telemetry.drift_angle.abs();

@@ -252,7 +252,6 @@ fn any_pad_pressed(b: PadButton) -> bool {
 }
 
 /// Menu navigation from gamepads (keyboard is handled by ui::Focus itself)
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MenuNav {
     pub up: bool,
@@ -451,6 +450,7 @@ pub fn apply_menu_nav(f: &mut crate::ui::Focus) {
         crate::audio::ui_sound(crate::audio::UiSound::Move);
     }
     f.activated |= nav.accept;
+    f.back |= nav.back;
     f.left |= nav.left;
     f.right |= nav.right;
 }

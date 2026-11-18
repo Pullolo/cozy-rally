@@ -157,7 +157,7 @@ fn rest_table() {
     use rally_core::track::TrackParams;
     println!("=== REST (6 s, idle in gear / handbrake held): drift m / max wheel omega rad/s / max body speed m/s");
     let flat = Track::flat_for_tests(Surface::Gravel);
-    let hill = Track::generate(&TrackParams { seed: 6, biome: None, length_class: 1 });
+    let hill = Track::generate(&TrackParams { seed: 6, biome: None, length_class: 1, ..Default::default() }.with_env_overrides());
     // steepest sample
     let n = hill.samples.len();
     let (mut best, mut grade) = (0, 0.0f32);

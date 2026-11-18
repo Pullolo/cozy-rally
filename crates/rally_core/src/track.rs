@@ -7,7 +7,8 @@
 use crate::biome::{Biome, BiomeStyle};
 use crate::noise;
 use crate::rng::Rng;
-use crate::surface::Surface;
+use crate::surface::{Surface, SurfaceProps};
+use crate::surfacemap::{SurfaceMap, SurfaceMix, SurfaceMode};
 use crate::terrain::Heightfield;
 use glam::{Mat3, Quat, Vec2, Vec3};
 use serde::{Deserialize, Serialize};
@@ -21,13 +22,44 @@ pub const TERRAIN_CELL: f32 = 2.5;
 pub struct TrackParams {
     pub seed: u64,
     pub biome: Option<Biome>,
-    /// 0 = short (~1.4km), 1 = medium (~2km), 2 = long (~2.8km)
+    /// 0 = short (~1.3km), 1 = medium (~1.8km), 2 = long (~2.5km)
     pub length_class: u8,
+    /// Track style / technicality: 0 = Relaxed (flowing, wide), 1 = Rally (default),
+    /// 2 = Expert (more hairpins, narrower, more surface patches, kinks after jumps)
+    #[serde(default = "default_difficulty")]
+    pub difficulty: u8,
+    /// Road surface layout (biome default, forced single surface, or mixed stage)
+    #[serde(default)]
+    pub surface: SurfaceMode,
+}
+
+fn default_difficulty() -> u8 {
+    1
+}
+
+pub const DIFFICULTY_NAMES: [&str; 3] = ["Relaxed", "Rally", "Expert"];
+
+impl TrackParams {
+    /// Test hook: `COZY_TRACK_STYLE=0..2` (Relaxed/Rally/Expert) and
+    /// `COZY_SURFACE=biome|gravel|tarmac|snow|mixed` (or 0..4) override the params.
+    pub fn with_env_overrides(mut self) -> Self {
+        if let Some(d) = std::env::var("COZY_TRACK_STYLE").ok().and_then(|v| v.parse::<u8>().ok()) {
+            self.difficulty = d.min(2);
+        }
+        if let Ok(v) = std::env::var("COZY_SURFACE") {
+            let v = v.to_lowercase();
+            let modes = crate::surfacemap::SURFACE_MODES;
+            if let Some(m) = v.parse::<usize>().ok().and_then(|i| modes.get(i).copied()).or_else(|| modes.iter().copied().find(|m| m.name().to_lowercase() == v)) {
+                self.surface = m;
+            }
+        }
+        self
+    }
 }
 
 impl Default for TrackParams {
     fn default() -> Self {
-        TrackParams { seed: 1, biome: None, length_class: 1 }
+        TrackParams { seed: 1, biome: None, length_class: 1, difficulty: default_difficulty(), surface: SurfaceMode::BiomeDefault }
     }
 }
 
@@ -46,6 +78,13 @@ pub struct TrackSample {
     pub bank: f32,
     /// Signed curvature (1/m), positive = left turn
     pub curvature: f32,
+    /// Dominant road surface on the centre line here (sections, patches...)
+    pub surface: Surface,
+    /// The other surface blended in on the centre line (== `surface` when pure)
+    pub surface_next: Surface,
+    /// Weight of `surface_next` on the centre line (0 ..= 0.5); colour/grip = lerp(surface,
+    /// surface_next, surface_blend). Use `Track::surface_mix_at` for exact values off-centre.
+    pub surface_blend: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +100,55 @@ pub enum PropKind {
     HayBale,
     Tent,
     Cone,
+    // --- added scenery kinds (models in rally_game::models::props)
+    Birch,
+    Blossom,
+    Mushroom,
+    Grass,
+    Fence,
+    /// Corner warning board; variant 0 = arrows point right, 1 = left (from the approaching driver)
+    Chevron,
+    /// Wooden direction arrow; variant 0 = right, 1 = left
+    ArrowSign,
+    Cottage,
+    Barn,
+    Windmill,
+    Picnic,
+    Camper,
+    Sheep,
+    Cow,
+    Deer,
+    /// Pennant line between two poles along local X; length = 10 m * scale (poles unscaled)
+    Bunting,
+    FlagPole,
+    Lighthouse,
+    BeachUmbrella,
+    Boat,
+    Mesa,
+    Tumbleweed,
+    Adobe,
+    Snowman,
+    SkiCabin,
+    FrozenPond,
+    Pumpkin,
+    Scarecrow,
+    HayWagon,
+    Beehive,
+    FlowerField,
+}
+
+impl PropKind {
+    /// Height of the collision cylinder above the prop base (only used when radius > 0).
+    pub fn collision_height(self, scale: f32) -> f32 {
+        match self {
+            PropKind::Rock => 1.2 * scale,
+            PropKind::HayBale => 1.0,
+            PropKind::Sheep | PropKind::Pumpkin | PropKind::Beehive => 1.0 * scale,
+            PropKind::Cow | PropKind::Deer | PropKind::Snowman => 1.6 * scale,
+            PropKind::Camper | PropKind::HayWagon | PropKind::Boat => 2.4 * scale,
+            _ => 6.0 * scale.max(1.0),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -85,6 +173,20 @@ pub struct TrackQuery {
     pub lateral: f32,
     /// Distance in XZ to the centre line
     pub dist: f32,
+}
+
+/// Blended ground under a point (see `Track::ground_at`).
+#[derive(Clone, Copy, Debug)]
+pub struct GroundInfo {
+    /// Dominant surface
+    pub primary: Surface,
+    /// Second surface in the blend (== primary when pure)
+    pub secondary: Surface,
+    /// Weight of `secondary` (0 ..= 0.5)
+    pub blend: f32,
+    /// Blended tyre/handling properties (continuous across every surface change)
+    pub props: SurfaceProps,
+    pub query: TrackQuery,
 }
 
 struct SpatialGrid {
@@ -143,6 +245,10 @@ pub struct Track {
     pub water_level: Option<f32>,
     /// Sample indices where jumps take off (for UI/FX hints)
     pub jumps: Vec<usize>,
+    /// Designed layout pieces (corners/straights) in arc length, for stats and hints
+    pub features: Vec<crate::layout::Feature>,
+    /// Surface sections / transitions / patches
+    pub surface_map: SurfaceMap,
     grid: SpatialGrid,
     prop_grid: SpatialGrid,
 }
@@ -154,38 +260,6 @@ fn wrap(i: isize, n: usize) -> usize {
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
-}
-
-fn catmull_rom(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, t: f32) -> Vec2 {
-    let t2 = t * t;
-    let t3 = t2 * t;
-    0.5 * ((2.0 * p1) + (-p0 + p2) * t + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2 + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3)
-}
-
-/// Resample a closed polyline to (approximately) uniform spacing.
-fn resample_closed(pts: &[Vec2], spacing: f32) -> Vec<Vec2> {
-    let n = pts.len();
-    let mut total = 0.0;
-    for i in 0..n {
-        total += pts[i].distance(pts[(i + 1) % n]);
-    }
-    let count = (total / spacing).round().max(8.0) as usize;
-    let step = total / count as f32;
-    let mut out = Vec::with_capacity(count);
-    let mut seg = 0;
-    let mut seg_start = 0.0;
-    let mut seg_len = pts[0].distance(pts[1 % n]);
-    for k in 0..count {
-        let target = k as f32 * step;
-        while seg_start + seg_len < target && seg < n * 2 {
-            seg_start += seg_len;
-            seg += 1;
-            seg_len = pts[seg % n].distance(pts[(seg + 1) % n]);
-        }
-        let t = if seg_len > 1e-6 { (target - seg_start) / seg_len } else { 0.0 };
-        out.push(pts[seg % n].lerp(pts[(seg + 1) % n], t.clamp(0.0, 1.0)));
-    }
-    out
 }
 
 fn signed_curvature_2d(pts: &[Vec2]) -> Vec<f32> {
@@ -260,174 +334,75 @@ impl Track {
     fn try_generate(params: &TrackParams, attempt: u64) -> Option<Track> {
         let mut rng = Rng::new(params.seed.wrapping_mul(31).wrapping_add(attempt * 7919));
         let biome = params.biome.unwrap_or_else(|| Biome::from_index((Rng::new(params.seed).next_u64() % 5) as usize));
-        let style = biome.style();
+        let mut style = biome.style();
         let noise_seed = (params.seed as u32).wrapping_mul(2654435761);
 
-        // ---- 1. control loop
-        let base_r = match params.length_class {
-            0 => 150.0,
-            1 => 215.0,
-            _ => 290.0,
-        } * rng.range(0.9, 1.1);
-        let n_ctrl = rng.range_i(9, 15) as usize;
-        let mut ctrl: Vec<Vec2> = Vec::with_capacity(n_ctrl);
-        for i in 0..n_ctrl {
-            let ang = std::f32::consts::TAU * (i as f32 + rng.range(-0.3, 0.3)) / n_ctrl as f32;
-            let mut r = base_r * rng.range(0.6, 1.25);
-            if rng.chance(0.18) {
-                r *= 0.55; // pinch -> hairpin-ish
-            }
-            ctrl.push(Vec2::new(ang.cos(), ang.sin()) * r);
-        }
-        // ---- 2. spline
-        let mut dense = Vec::new();
-        for i in 0..n_ctrl {
-            let p0 = ctrl[wrap(i as isize - 1, n_ctrl)];
-            let p1 = ctrl[i];
-            let p2 = ctrl[(i + 1) % n_ctrl];
-            let p3 = ctrl[(i + 2) % n_ctrl];
-            for k in 0..24 {
-                dense.push(catmull_rom(p0, p1, p2, p3, k as f32 / 24.0));
-            }
-        }
-        let mut pts = resample_closed(&dense, SAMPLE_SPACING);
-        // ---- 3. smooth until min radius is ok
-        let min_radius = 16.0;
-        for _ in 0..60 {
-            let curv = signed_curvature_2d(&pts);
-            let worst = curv.iter().fold(0.0f32, |m, c| m.max(c.abs()));
-            if worst < 1.0 / min_radius {
+        // ---- 1-3. designed layout (corner complexes + straights, closed exactly)
+        let diff = params.difficulty.min(2);
+        let (hw_narrow, hw_wide) = [(3.75, 5.6), (3.5, 5.3), (3.3, 5.0)][diff as usize];
+        let half_w_base = hw_wide + 0.6;
+        let mut layout = None;
+        for _ in 0..120 {
+            if let Some(l) = crate::layout::design(&mut rng, diff, params.length_class, SAMPLE_SPACING, half_w_base, SHOULDER) {
+                layout = Some(l);
                 break;
             }
-            let n = pts.len();
-            let mut next = pts.clone();
-            for i in 0..n {
-                if curv[i].abs() > 0.7 / min_radius {
-                    for k in -3isize..=3 {
-                        let j = wrap(i as isize + k, n);
-                        let avg = (pts[wrap(j as isize - 1, n)] + pts[(j + 1) % n]) * 0.5;
-                        next[j] = pts[j].lerp(avg, 0.5);
-                    }
-                }
-            }
-            pts = resample_closed(&next, SAMPLE_SPACING);
         }
-        // general light smoothing for flow
-        for _ in 0..4 {
-            let n = pts.len();
-            let prev = pts.clone();
-            for i in 0..n {
-                let avg = (prev[wrap(i as isize - 1, n)] + prev[(i + 1) % n]) * 0.5;
-                pts[i] = prev[i].lerp(avg, 0.5);
-            }
-        }
-        pts = resample_closed(&pts, SAMPLE_SPACING);
+        let layout = layout?;
+        let pts = layout.pts;
         let n = pts.len();
-        let curv = signed_curvature_2d(&pts);
-        if curv.iter().any(|c| c.abs() > 1.0 / 13.0) {
+        let raw_curv = signed_curvature_2d(&pts);
+        if raw_curv.iter().any(|c| c.abs() > 1.0 / 10.5) {
             return None;
         }
         let length = n as f32 * SAMPLE_SPACING;
-        if length < 700.0 {
-            return None;
-        }
-
-        // ---- 4. clearance check (track must not come near itself)
-        let half_w_base = 5.6;
-        let clearance = 2.0 * (half_w_base + SHOULDER) + 12.0;
         let grid = SpatialGrid::new(&pts, 16.0, 60.0);
-        for i in (0..n).step_by(2) {
-            let mut bad = false;
-            grid.for_each_near(pts[i], clearance, |j| {
-                let j = j as usize;
-                let di = (i as isize - j as isize).unsigned_abs();
-                let di = di.min(n - di);
-                if di as f32 * SAMPLE_SPACING > clearance * 2.2 && pts[i].distance(pts[j]) < clearance {
-                    bad = true;
-                }
-            });
-            if bad {
-                return None;
-            }
-        }
+        let mut curv = raw_curv;
+        smooth_closed_f32(&mut curv, 2, 2);
 
-        // ---- 5. choose start: middle of the straightest stretch
-        let mut best = (f32::MAX, 0usize);
-        let win = 30isize;
-        for i in 0..n {
-            let mut sum = 0.0;
-            for k in -win..=win {
-                sum += curv[wrap(i as isize + k, n)].abs();
-            }
-            if sum < best.0 {
-                best = (sum, i);
-            }
-        }
-        pts.rotate_left(best.1);
-        let grid = SpatialGrid::new(&pts, 16.0, 60.0);
-        let mut curv = signed_curvature_2d(&pts);
-        smooth_closed_f32(&mut curv, 3, 2);
-
-        // ---- 6. elevation
+        // ---- 6. elevation: natural terrain, slope limited, then designed crests / dips / jumps
         let mut elev: Vec<f32> = pts.iter().map(|p| natural_height(&style, biome, noise_seed, p.x, p.y)).collect();
         smooth_closed_f32(&mut elev, 12, 3);
-        // slope limit
-        let max_slope = 0.11 * SAMPLE_SPACING;
-        for _ in 0..4 {
-            for i in 0..n {
-                let prev = elev[wrap(i as isize - 1, n)];
-                elev[i] = elev[i].clamp(prev - max_slope, prev + max_slope);
-            }
-            for i in (0..n).rev() {
-                let next = elev[(i + 1) % n];
-                elev[i] = elev[i].clamp(next - max_slope, next + max_slope);
-            }
-        }
+        slope_limit(&mut elev, 0.11 * SAMPLE_SPACING);
         smooth_closed_f32(&mut elev, 3, 2);
+        let jumps = crate::layout::shape_elevation(&mut elev, &layout.features, &curv, &mut rng, diff, SAMPLE_SPACING);
         // flatten the start area
-        let start_flat = 20;
+        let start_flat = 22;
         let e0 = elev[0];
         for k in -(start_flat as isize)..=(start_flat as isize) {
             let i = wrap(k, n);
             let t = smoothstep(start_flat as f32, start_flat as f32 * 0.5, k.unsigned_abs() as f32);
             elev[i] = elev[i] + (e0 - elev[i]) * t;
         }
-        // jumps on straight-ish sections away from start
-        let mut jumps = Vec::new();
-        let jump_count = rng.range_i(1, 3);
-        let mut tries = 0;
-        while (jumps.len() as i32) < jump_count && tries < 200 {
-            tries += 1;
-            let i = rng.range_i(60, n as i32 - 60) as usize;
-            let straight = (-25isize..=25).all(|k| curv[wrap(i as isize + k, n)].abs() < 1.0 / 90.0);
-            let far = jumps.iter().all(|&j: &usize| (j as isize - i as isize).unsigned_abs() > 80);
-            if straight && far {
-                jumps.push(i);
-            }
-        }
-        for &j in &jumps {
-            // ramp up over 16m then drop over ~5m
-            let up = 8isize;
-            let down = 3isize;
-            let h = rng.range(1.3, 1.9);
-            for k in -up..=down {
-                let i = wrap(j as isize + k, n);
-                let f = if k <= 0 {
-                    let t = (k + up) as f32 / up as f32;
-                    t * t * (3.0 - 2.0 * t)
-                } else {
-                    1.0 - (k as f32 / down as f32)
-                };
-                elev[i] += h * f;
-            }
-        }
 
-        // ---- 7. samples (tangent / banking)
-        let mut bank: Vec<f32> = curv.iter().map(|c| (c * 22.0).clamp(-0.13, 0.13)).collect();
-        smooth_closed_f32(&mut bank, 6, 2);
-        let mut samples = Vec::with_capacity(n);
-        let mut width_noise: Vec<f32> = (0..n).map(|i| noise::value2(i as f32 * 0.02, 3.3, noise_seed) * 0.6).collect();
+        // ---- 7. width, surface, banking, samples
+        let mut tech = layout.tech.clone();
+        smooth_closed_f32(&mut tech, 6, 2);
+        let mut width_noise: Vec<f32> = (0..n).map(|i| noise::value2(i as f32 * 0.03, 3.3, noise_seed) * 0.25).collect();
         smooth_closed_f32(&mut width_noise, 4, 1);
+        let hws: Vec<f32> = (0..n)
+            .map(|i| {
+                let start_wide = smoothstep(40.0, 10.0, (i.min(n - i)) as f32);
+                (hw_wide + (hw_narrow - hw_wide) * tech[i].clamp(0.0, 1.0) + width_noise[i]).max(3.25) + start_wide
+            })
+            .collect();
+        let splan = crate::surfacemap::plan(biome, params.surface, diff, &layout.features, &jumps, &hws, SAMPLE_SPACING, &mut rng);
+        if splan.main != style.road_surface {
+            // keep (road_surface, road, road_edge) a consistent palette for renderers
+            style.road = crate::surfacemap::road_color(biome, splan.main);
+            style.road_edge = [style.road[0] * 0.85, style.road[1] * 0.85, style.road[2] * 0.85];
+            style.road_surface = splan.main;
+        }
+        let surface_map = splan.map;
+        let mut bank: Vec<f32> = (0..n)
+            .map(|i| {
+                let b = (curv[i] * 24.0).clamp(-0.14, 0.14);
+                let cam = layout.camber[i];
+                if cam >= 0.0 { b * cam } else { -b * 0.45 }
+            })
+            .collect();
+        smooth_closed_f32(&mut bank, 5, 2);
+        let mut samples = Vec::with_capacity(n);
         for i in 0..n {
             let p = Vec3::new(pts[i].x, elev[i], pts[i].y);
             let pn = Vec3::new(pts[(i + 1) % n].x, elev[(i + 1) % n], pts[(i + 1) % n].y);
@@ -440,16 +415,19 @@ impl Track {
             // tilt the right vector: positive bank lifts the right side
             let right = (flat_right * bank[i].cos() + Vec3::Y * bank[i].sin()).normalize();
             let up = right.cross(tangent).normalize();
-            let start_wide = smoothstep(40.0, 10.0, (i.min(n - i)) as f32) * 1.2;
+            let (sf, sf_next, sf_blend) = surface_map.mix_at(i as f32 * SAMPLE_SPACING, 0.0).dominant();
             samples.push(TrackSample {
                 pos: p,
                 tangent,
                 right,
                 up,
                 s: i as f32 * SAMPLE_SPACING,
-                half_width: half_w_base + width_noise[i] + start_wide,
+                half_width: hws[i],
                 bank: bank[i],
                 curvature: curv[i],
+                surface: sf,
+                surface_next: sf_next,
+                surface_blend: sf_blend,
             });
         }
 
@@ -487,9 +465,12 @@ impl Track {
                     candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
                     let mut sections: Vec<usize> = Vec::new();
                     for &(j, _) in candidates.iter() {
+                        // same stretch of road only if close along the loop *relative* to the
+                        // spatial gap (hairpin legs are separate sections and blend smoothly)
                         let near_existing = sections.iter().any(|&k| {
                             let d = (k as isize - j as isize).unsigned_abs();
-                            d.min(n - d) < 40
+                            let ds = d.min(n - d) as f32 * SAMPLE_SPACING;
+                            ds < 1.4 * pts[k].distance(pts[j]) + 8.0
                         });
                         if !near_existing {
                             sections.push(j);
@@ -543,6 +524,8 @@ impl Track {
             checkpoints,
             water_level,
             jumps,
+            features: layout.features,
+            surface_map,
             grid,
             prop_grid: SpatialGrid::new(&[Vec2::ZERO], 32.0, 1.0),
         };
@@ -551,123 +534,7 @@ impl Track {
     }
 
     fn place_props(&mut self, rng: &mut Rng, noise_seed: u32) {
-        let style = &self.style;
-        let biome = self.biome;
-        let mut props = Vec::new();
-        let hf = &self.terrain;
-        let size = hf.size();
-        let spacing = 6.5;
-        let gx = (size.x / spacing) as i32;
-        let gz = (size.y / spacing) as i32;
-        for iz in 0..gz {
-            for ix in 0..gx {
-                let x = hf.origin.x + (ix as f32 + rng.range(0.1, 0.9)) * spacing;
-                let z = hf.origin.y + (iz as f32 + rng.range(0.1, 0.9)) * spacing;
-                let forest = noise::fbm(x * 0.012, z * 0.012, 3, noise_seed + 999) * 0.5 + 0.5;
-                let density = style.tree_density * smoothstep(0.35, 0.75, forest) + 0.04;
-                if !rng.chance(density) {
-                    continue;
-                }
-                let q = self.query(Vec3::new(x, 0.0, z), None);
-                let hw = self.samples[q.index].half_width;
-                if q.dist < hw + SHOULDER + 3.5 {
-                    continue;
-                }
-                let (y, nrm) = hf.sample(x, z);
-                if let Some(w) = self.water_level {
-                    if y < w + 0.4 {
-                        continue;
-                    }
-                }
-                let steep = nrm.y < 0.8;
-                let r = rng.f32();
-                let kind = match biome {
-                    Biome::Meadow => {
-                        if steep || r < 0.12 { PropKind::Rock } else if r < 0.55 { PropKind::Tree } else if r < 0.7 { PropKind::Pine } else if r < 0.85 { PropKind::Bush } else { PropKind::Flowers }
-                    }
-                    Biome::Autumn => {
-                        if steep || r < 0.08 { PropKind::Rock } else if r < 0.7 { PropKind::Tree } else if r < 0.85 { PropKind::Pine } else { PropKind::Bush }
-                    }
-                    Biome::Snow => {
-                        if steep || r < 0.18 { PropKind::Rock } else if r < 0.92 { PropKind::Pine } else { PropKind::Bush }
-                    }
-                    Biome::Desert => {
-                        if steep || r < 0.4 { PropKind::Rock } else if r < 0.8 { PropKind::Cactus } else if r < 0.9 { PropKind::Bush } else { PropKind::Palm }
-                    }
-                    Biome::Coast => {
-                        if steep || r < 0.15 { PropKind::Rock } else if r < 0.5 { PropKind::Palm } else if r < 0.7 { PropKind::Tree } else if r < 0.85 { PropKind::Bush } else { PropKind::Flowers }
-                    }
-                };
-                // keep tall things a bit further from the road
-                if matches!(kind, PropKind::Tree | PropKind::Pine | PropKind::Palm) && q.dist < hw + SHOULDER + 6.0 {
-                    continue;
-                }
-                let scale = match kind {
-                    PropKind::Rock => rng.range(0.6, 2.2),
-                    PropKind::Flowers | PropKind::Bush => rng.range(0.7, 1.3),
-                    _ => rng.range(0.8, 1.45),
-                };
-                let radius = match kind {
-                    PropKind::Tree | PropKind::Pine | PropKind::Palm => 0.45 * scale,
-                    PropKind::Cactus => 0.35 * scale,
-                    PropKind::Rock => 0.9 * scale,
-                    _ => 0.0,
-                };
-                props.push(Prop { kind, pos: Vec3::new(x, y, z), rot_y: rng.range(0.0, 6.283), scale, radius, variant: rng.range_i(0, 3) as u8 });
-            }
-        }
-        // spectators on the outside of the sharpest corners
-        let n = self.samples.len();
-        let mut corner_spots: Vec<usize> = Vec::new();
-        for i in (0..n).step_by(5) {
-            let c = self.samples[i].curvature.abs();
-            if c > 1.0 / 45.0 && corner_spots.iter().all(|&j| (j as isize - i as isize).unsigned_abs().min(n - (j as isize - i as isize).unsigned_abs()) > 50) {
-                corner_spots.push(i);
-            }
-        }
-        // and near the start line
-        corner_spots.push(8);
-        for &i in &corner_spots {
-            let smp = self.samples[i];
-            let outside = if smp.curvature > 0.0 { 1.0 } else { -1.0 }; // left turn -> outside is right
-            let count = rng.range_i(3, 8);
-            for k in 0..count {
-                let along = (k as f32 - count as f32 * 0.5) * 1.6 + rng.range(-0.4, 0.4);
-                let lat = outside * (smp.half_width + SHOULDER + rng.range(4.5, 7.5));
-                let flat_right = Vec3::new(smp.right.x, 0.0, smp.right.z).normalize();
-                let p = smp.pos + flat_right * lat + smp.tangent * along;
-                let y = self.terrain.height(p.x, p.z);
-                let to_track = (smp.pos - p).normalize();
-                let rot = to_track.x.atan2(to_track.z);
-                props.push(Prop { kind: PropKind::Spectator, pos: Vec3::new(p.x, y, p.z), rot_y: rot, scale: rng.range(0.9, 1.1), radius: 0.3, variant: rng.range_i(0, 6) as u8 });
-            }
-            // hay bale barrier in front of spectators
-            for k in 0..3 {
-                let along = (k as f32 - 1.0) * 2.4;
-                let lat = outside * (smp.half_width + SHOULDER + 2.0);
-                let flat_right = Vec3::new(smp.right.x, 0.0, smp.right.z).normalize();
-                let p = smp.pos + flat_right * lat + smp.tangent * along;
-                let y = self.terrain.height(p.x, p.z);
-                let rot = smp.tangent.x.atan2(smp.tangent.z);
-                props.push(Prop { kind: PropKind::HayBale, pos: Vec3::new(p.x, y, p.z), rot_y: rot, scale: 1.0, radius: 0.8, variant: 0 });
-            }
-            if rng.chance(0.5) {
-                let lat = outside * (smp.half_width + SHOULDER + 11.0);
-                let flat_right = Vec3::new(smp.right.x, 0.0, smp.right.z).normalize();
-                let p = smp.pos + flat_right * lat;
-                let y = self.terrain.height(p.x, p.z);
-                props.push(Prop { kind: PropKind::Tent, pos: Vec3::new(p.x, y, p.z), rot_y: rng.range(0.0, 6.28), scale: 1.0, radius: 1.6, variant: rng.range_i(0, 4) as u8 });
-            }
-        }
-        // cones marking the jump take-offs
-        for &j in &self.jumps.clone() {
-            let smp = self.samples[wrap(j as isize - 10, n)];
-            for side in [-1.0f32, 1.0] {
-                let p = smp.pos + smp.right * side * (smp.half_width + 0.6);
-                let y = self.terrain.height(p.x, p.z);
-                props.push(Prop { kind: PropKind::Cone, pos: Vec3::new(p.x, y, p.z), rot_y: 0.0, scale: 1.0, radius: 0.0, variant: 0 });
-            }
-        }
+        let props = PropPlacer::run(self, rng, noise_seed);
         let pts: Vec<Vec2> = props.iter().map(|p| Vec2::new(p.pos.x, p.pos.z)).collect();
         if !pts.is_empty() {
             self.prop_grid = SpatialGrid::new(&pts, 12.0, 10.0);
@@ -736,20 +603,59 @@ impl Track {
         res
     }
 
+    /// Dominant surface under a point (see `ground_at` for the smooth blend).
     pub fn surface_at(&self, p: Vec3, hint: Option<usize>) -> (Surface, TrackQuery) {
+        let g = self.ground_at(p, hint);
+        (g.primary, g.query)
+    }
+
+    /// Road surface blend at arc length `s` and lateral offset `lat` (+ = right), ignoring the
+    /// road edge. Renderers use this to colour the road continuously.
+    pub fn surface_mix_at(&self, s: f32, lat: f32) -> SurfaceMix {
+        self.surface_map.mix_at(s, lat)
+    }
+
+    /// Blended ground (surface pair + continuous tyre properties) under a point: section
+    /// transitions and patches are smooth along and across the road, and the road edge blends
+    /// into the shoulder and then the off-road surface over ~0.6-0.8 m.
+    pub fn ground_at(&self, p: Vec3, hint: Option<usize>) -> GroundInfo {
+        use crate::surfacemap::{shoulder_of, smoothstep as ss};
         let q = self.query(p, hint);
         let hw = self.samples[q.index].half_width;
-        let s = if q.dist <= hw + 0.4 {
-            self.style.road_surface
-        } else if q.dist <= hw + SHOULDER {
-            match self.style.road_surface {
-                Surface::Asphalt => Surface::Gravel,
-                other => other,
+        let off = self.style.offroad_surface;
+        let e2 = ss(hw + SHOULDER - 0.4, hw + SHOULDER + 0.4, q.dist);
+        if e2 >= 1.0 {
+            return GroundInfo { primary: off, secondary: off, blend: 0.0, props: off.props(), query: q };
+        }
+        let m = self.surface_map.mix_at(q.s, q.lateral.clamp(-(hw + SHOULDER), hw + SHOULDER));
+        let e1 = ss(hw + 0.1, hw + 0.7, q.dist);
+        let road = SurfaceProps::lerp(m.a.props(), m.b.props(), m.t);
+        let (sa, sb) = (shoulder_of(m.a), shoulder_of(m.b));
+        let shoulder = SurfaceProps::lerp(sa.props(), sb.props(), m.t);
+        let props = SurfaceProps::lerp(SurfaceProps::lerp(road, shoulder, e1), off.props(), e2);
+        // dominant two surfaces by weight
+        let parts = [
+            (m.a, (1.0 - m.t) * (1.0 - e1) * (1.0 - e2)),
+            (m.b, m.t * (1.0 - e1) * (1.0 - e2)),
+            (sa, (1.0 - m.t) * e1 * (1.0 - e2)),
+            (sb, m.t * e1 * (1.0 - e2)),
+            (off, e2),
+        ];
+        let mut acc: [(Surface, f32); 5] = [(off, 0.0); 5];
+        let mut k = 0;
+        for (sf, w) in parts {
+            if let Some(e) = acc[..k].iter_mut().find(|e| e.0 == sf) {
+                e.1 += w;
+            } else {
+                acc[k] = (sf, w);
+                k += 1;
             }
-        } else {
-            self.style.offroad_surface
-        };
-        (s, q)
+        }
+        let acc = &mut acc[..k];
+        acc.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        let (primary, w1) = acc[0];
+        let (secondary, w2) = if acc.len() > 1 { acc[1] } else { (primary, 0.0) };
+        GroundInfo { primary, secondary, blend: w2 / (w1 + w2).max(1e-6), props, query: q }
     }
 
     /// Interpolated centre-line frame at arc length s: (position, tangent, right, up)
@@ -808,6 +714,20 @@ impl Track {
     }
 }
 
+fn slope_limit(elev: &mut [f32], max_step: f32) {
+    let n = elev.len();
+    for _ in 0..4 {
+        for i in 0..n {
+            let prev = elev[wrap(i as isize - 1, n)];
+            elev[i] = elev[i].clamp(prev - max_step, prev + max_step);
+        }
+        for i in (0..n).rev() {
+            let next = elev[(i + 1) % n];
+            elev[i] = elev[i].clamp(next - max_step, next + max_step);
+        }
+    }
+}
+
 /// Road height at q using the cross-section at sample j; returns (lateral, height, half_width)
 fn road_profile_at(samples: &[TrackSample], j: usize, q: Vec2) -> (f32, f32, f32) {
     let n = samples.len();
@@ -842,12 +762,585 @@ impl Track {
     /// A generated track whose terrain is perfectly flat and whose every surface is `surface`.
     /// Used by physics tests.
     pub fn flat_for_tests(surface: Surface) -> Track {
-        let mut t = Track::generate(&TrackParams { seed: 7, biome: Some(Biome::Meadow), length_class: 2 });
+        let mut t = Track::generate(&TrackParams { seed: 7, biome: Some(Biome::Meadow), length_class: 2, ..Default::default() });
         t.terrain.heights.iter_mut().for_each(|h| *h = 0.0);
         t.style.road_surface = surface;
+        t.samples.iter_mut().for_each(|s| {
+            s.surface = surface;
+            s.surface_next = surface;
+            s.surface_blend = 0.0;
+        });
+        t.surface_map = SurfaceMap::uniform(surface, t.length);
         t.style.offroad_surface = surface;
         t.water_level = None;
         t.props.clear();
         t
+    }
+}
+
+// ======================================================================== prop placement
+
+/// Yaw that turns a prop's local +Z towards direction `d` (XZ)
+fn yaw_facing(d: Vec3) -> f32 {
+    d.x.atan2(d.z)
+}
+
+/// Yaw that lays a prop's local +X along direction `d` (XZ)
+fn yaw_along(d: Vec3) -> f32 {
+    (-d.z).atan2(d.x)
+}
+
+struct PropPlacer<'a> {
+    t: &'a Track,
+    props: Vec<Prop>,
+    /// circles (centre, radius) the vegetation scatter must avoid
+    keep_out: Vec<(Vec2, f32)>,
+}
+
+impl<'a> PropPlacer<'a> {
+    fn run(t: &'a Track, rng: &mut Rng, noise_seed: u32) -> Vec<Prop> {
+        let mut pp = PropPlacer { t, props: Vec::new(), keep_out: Vec::new() };
+        pp.start_area(rng);
+        pp.corners(rng);
+        pp.set_pieces(rng);
+        pp.fences(noise_seed);
+        pp.roadside(rng);
+        pp.scatter(rng, noise_seed);
+        pp.jump_cones();
+        pp.props
+    }
+
+    fn n(&self) -> usize {
+        self.t.samples.len()
+    }
+
+    fn smp(&self, i: isize) -> TrackSample {
+        self.t.samples[wrap(i, self.n())]
+    }
+
+    fn flat_right(s: &TrackSample) -> Vec3 {
+        Vec3::new(s.right.x, 0.0, s.right.z).normalize()
+    }
+
+    /// Distance from p to the road edge (shoulder included) of the nearest track section.
+    fn clearance(&self, p: Vec3) -> f32 {
+        let q = self.t.query(p, None);
+        q.dist - self.t.samples[q.index].half_width - SHOULDER
+    }
+
+    fn ground(&self, x: f32, z: f32) -> f32 {
+        self.t.terrain.height(x, z)
+    }
+
+    fn under_water(&self, y: f32, margin: f32) -> bool {
+        self.t.water_level.map_or(false, |w| y < w + margin)
+    }
+
+    fn blocked(&self, p: Vec3, r: f32) -> bool {
+        let q = Vec2::new(p.x, p.z);
+        self.keep_out.iter().any(|(c, cr)| c.distance(q) < cr + r)
+    }
+
+    fn push(&mut self, kind: PropKind, p: Vec3, rot_y: f32, scale: f32, radius: f32, variant: u8) {
+        self.props.push(Prop { kind, pos: p, rot_y, scale, radius, variant });
+    }
+
+    /// Ground point at lateral offset `lat` (signed, right positive) from sample i
+    fn beside(&self, i: isize, lat: f32, along: f32) -> Vec3 {
+        let s = self.smp(i);
+        let p = s.pos + Self::flat_right(&s) * lat + Vec3::new(s.tangent.x, 0.0, s.tangent.z).normalize() * along;
+        Vec3::new(p.x, self.ground(p.x, p.z), p.z)
+    }
+
+    /// Small crowd facing the road around sample i on `side` at lateral distance `lat`.
+    fn crowd(&mut self, rng: &mut Rng, i: isize, side: f32, lat: f32, count: i32, spread: f32) {
+        let s = self.smp(i);
+        for k in 0..count {
+            let along = (k as f32 - count as f32 * 0.5) * spread + rng.range(-0.4, 0.4);
+            let p = self.beside(i, side * (s.half_width + SHOULDER + lat + rng.range(0.0, 1.6)), along);
+            if self.clearance(p) < lat - 0.5 || self.under_water(p.y, 0.3) {
+                continue;
+            }
+            let to_track = (s.pos - p) * Vec3::new(1.0, 0.0, 1.0);
+            let rot = yaw_facing(-to_track.normalize_or_zero()) + rng.range(-0.3, 0.3);
+            self.push(PropKind::Spectator, p, rot, rng.range(0.92, 1.08), 0.3, rng.range_i(0, 6) as u8);
+        }
+    }
+
+    fn bunting_line(&mut self, rng: &mut Rng, i0: isize, i1: isize, lat: f32) {
+        // poles every ~5 samples (10 m) following the track
+        let mut i = i0;
+        while i + 5 <= i1 {
+            let a = self.beside(i, lat, 0.0);
+            let b = self.beside(i + 5, lat, 0.0);
+            let d = (b - a) * Vec3::new(1.0, 0.0, 1.0);
+            let len = d.length();
+            if self.clearance(a) > lat.abs() - self.smp(i).half_width - SHOULDER - 1.0 && self.clearance(b) > 1.0 && (a.y - b.y).abs() < 1.5 {
+                self.push(PropKind::Bunting, a, yaw_along(d / len), len / 10.0, 0.0, rng.range_i(0, 6) as u8);
+            }
+            i += 5;
+        }
+    }
+
+    fn start_area(&mut self, rng: &mut Rng) {
+        let s0 = self.smp(0);
+        self.keep_out.push((Vec2::new(s0.pos.x, s0.pos.z), 42.0));
+        for side in [-1.0f32, 1.0] {
+            let edge = s0.half_width + SHOULDER;
+            // hay bale barrier both sides of the grid
+            for k in 0..14 {
+                let i = -26 + k * 3;
+                let p = self.beside(i, side * (self.smp(i).half_width + SHOULDER + 2.2), 0.0);
+                let t = self.smp(i).tangent;
+                if self.clearance(p) > 1.2 {
+                    self.push(PropKind::HayBale, p, yaw_along(Vec3::new(t.x, 0.0, t.z).normalize()), 1.0, 0.8, (k % 2) as u8);
+                }
+            }
+            // crowds along the straight
+            for k in 0..6 {
+                let i = -22 + k * 7;
+                let c = rng.range_i(3, 6);
+                self.crowd(rng, i, side, 4.2, c, 1.3);
+            }
+            self.bunting_line(rng, -25, 20, side * (edge + 7.5));
+            // flag poles
+            for k in 0..4 {
+                let i = -20 + k * 12;
+                let p = self.beside(i, side * (edge + 9.5), 0.0);
+                if self.clearance(p) > 8.0 {
+                    self.push(PropKind::FlagPole, p, yaw_along(Self::flat_right(&self.smp(i)) * side), 1.0, 0.0, rng.range_i(0, 6) as u8);
+                }
+            }
+            // campers, tents and picnics behind the crowd
+            for k in 0..3 {
+                let i = -18 + k * 14;
+                let p = self.beside(i, side * (edge + rng.range(14.0, 18.0)), rng.range(-3.0, 3.0));
+                if self.clearance(p) < 12.0 || self.under_water(p.y, 0.5) {
+                    continue;
+                }
+                let kind = [PropKind::Camper, PropKind::Tent, PropKind::Picnic][(k + (side > 0.0) as isize) as usize % 3];
+                let face = yaw_facing((s0.pos - p).normalize_or_zero()) + rng.range(-0.4, 0.4);
+                let r = match kind {
+                    PropKind::Camper => 2.4,
+                    PropKind::Tent => 1.6,
+                    _ => 0.0,
+                };
+                self.push(kind, p, face, 1.0, r, rng.range_i(0, 6) as u8);
+            }
+        }
+    }
+
+    /// Corners: chevron boards on the outside of sharp bends, arrow signs before them,
+    /// and spectator clusters (with hay barriers, bunting and camps) at the tightest ones.
+    fn corners(&mut self, rng: &mut Rng) {
+        let n = self.n() as isize;
+        // corner apexes = local curvature maxima
+        let mut apexes: Vec<(isize, f32)> = Vec::new();
+        for i in 0..n {
+            let c = self.smp(i).curvature.abs();
+            if c < 1.0 / 60.0 {
+                continue;
+            }
+            let is_max = (-6..=6).all(|k| self.smp(i + k).curvature.abs() <= c);
+            if is_max && apexes.iter().all(|&(j, _)| (i - j).abs().min(n - (i - j).abs()) > 20) {
+                apexes.push((i, c));
+            }
+        }
+        let mut spectator_spots = 0;
+        for &(i, c) in &apexes {
+            if i < 30 || i > n - 30 {
+                continue;
+            }
+            let s = self.smp(i);
+            let outside = if s.curvature > 0.0 { 1.0 } else { -1.0 };
+            let variant = if s.curvature > 0.0 { 1 } else { 0 };
+            if c > 1.0 / 52.0 {
+                // chevrons around the apex, facing the approaching driver
+                let span = if c > 1.0 / 25.0 { 3 } else if c > 1.0 / 38.0 { 2 } else { 1 };
+                for k in -span..=span {
+                    let j = i + k * 3;
+                    let sj = self.smp(j);
+                    let p = self.beside(j, outside * (sj.half_width + SHOULDER + 1.3), 0.0);
+                    if self.clearance(p) < 0.9 || self.under_water(p.y, 0.2) {
+                        continue;
+                    }
+                    let t = Vec3::new(sj.tangent.x, 0.0, sj.tangent.z).normalize();
+                    let face = (-t - Self::flat_right(&sj) * outside * 0.35).normalize();
+                    // board front is local -Z
+                    self.push(PropKind::Chevron, p, yaw_facing(-face), 1.3, 0.0, variant);
+                }
+                // wooden arrow before the bend
+                let j = i - 20;
+                let sj = self.smp(j);
+                let p = self.beside(j, outside * (sj.half_width + SHOULDER + 1.6), 0.0);
+                if self.clearance(p) > 1.0 && !self.under_water(p.y, 0.2) {
+                    let t = Vec3::new(sj.tangent.x, 0.0, sj.tangent.z).normalize();
+                    self.push(PropKind::ArrowSign, p, yaw_facing(t), 1.0, 0.0, variant);
+                }
+            }
+            if c > 1.0 / 48.0 && spectator_spots < 7 {
+                spectator_spots += 1;
+                let j = i + 6;
+                let sj = self.smp(j);
+                let edge = sj.half_width + SHOULDER;
+                let cnt = rng.range_i(4, 9);
+                self.crowd(rng, j, outside, 5.0, cnt, 1.4);
+                for k in 0..3 {
+                    let p = self.beside(j, outside * (edge + 2.2), (k as f32 - 1.0) * 2.4);
+                    if self.clearance(p) > 1.4 {
+                        let t = Vec3::new(sj.tangent.x, 0.0, sj.tangent.z).normalize();
+                        self.push(PropKind::HayBale, p, yaw_along(t), 1.0, 0.8, (k % 2) as u8);
+                    }
+                }
+                let a = self.beside(j - 4, outside * (edge + 9.0), 0.0);
+                self.keep_out.push((Vec2::new(a.x, a.z), 10.0));
+                self.bunting_line(rng, j - 5, j + 5, outside * (edge + 9.0));
+                if rng.chance(0.7) {
+                    let p = self.beside(j, outside * (edge + rng.range(13.0, 16.0)), rng.range(-4.0, 4.0));
+                    if self.clearance(p) > 11.0 && !self.under_water(p.y, 0.5) {
+                        let kind = if rng.chance(0.5) { PropKind::Tent } else { PropKind::Camper };
+                        let face = yaw_facing((sj.pos - p).normalize_or_zero());
+                        self.push(kind, p, face + rng.range(-0.5, 0.5), 1.0, if kind == PropKind::Camper { 2.4 } else { 1.6 }, rng.range_i(0, 6) as u8);
+                        let q = p + Vec3::new(rng.range(-4.0, 4.0), 0.0, rng.range(-4.0, 4.0));
+                        let q = Vec3::new(q.x, self.ground(q.x, q.z), q.z);
+                        if self.clearance(q) > 9.0 {
+                            self.push(PropKind::Picnic, q, rng.range(0.0, 6.28), 1.0, 0.0, rng.range_i(0, 6) as u8);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Is the ground around p flat enough for a building of half-size r? Returns base height.
+    fn footprint(&self, p: Vec3, r: f32, max_drop: f32) -> Option<f32> {
+        let mut lo = f32::MAX;
+        let mut hi = f32::MIN;
+        for (dx, dz) in [(0.0, 0.0), (-r, -r), (r, -r), (r, r), (-r, r), (0.0, r), (0.0, -r), (r, 0.0), (-r, 0.0)] {
+            let h = self.ground(p.x + dx, p.z + dz);
+            lo = lo.min(h);
+            hi = hi.max(h);
+        }
+        if hi - lo > max_drop {
+            None
+        } else {
+            Some(lo + (hi - lo) * 0.25)
+        }
+    }
+
+    /// Scatter a few things around a centre (offsets random within ring r0..r1)
+    fn around(&mut self, rng: &mut Rng, c: Vec3, kind: PropKind, count: i32, r0: f32, r1: f32, radius: f32, scale: (f32, f32), min_clear: f32) {
+        for _ in 0..count {
+            let a = rng.range(0.0, std::f32::consts::TAU);
+            let d = rng.range(r0, r1);
+            let x = c.x + a.cos() * d;
+            let z = c.z + a.sin() * d;
+            let p = Vec3::new(x, self.ground(x, z), z);
+            if self.clearance(p) < min_clear || self.under_water(p.y, 0.4) {
+                continue;
+            }
+            self.push(kind, p, rng.range(0.0, 6.28), rng.range(scale.0, scale.1), radius, rng.range_i(0, 6) as u8);
+        }
+    }
+
+    fn set_pieces(&mut self, rng: &mut Rng) {
+        let n = self.n() as i32;
+        let biome = self.t.biome;
+        let target = (self.t.length / 260.0).round() as usize + 2;
+        let mut placed: Vec<Vec3> = Vec::new();
+        let start = self.t.samples[0].pos;
+        let mut kit = rng.range_i(0, 4) as usize;
+        for _attempt in 0..400 {
+            if placed.len() >= target {
+                break;
+            }
+            let i = rng.range_i(0, n) as isize;
+            let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
+            let s = self.smp(i);
+            let mesa = biome == Biome::Desert && kit % 3 == 1;
+            let lat = s.half_width + SHOULDER + if mesa { rng.range(60.0, 110.0) } else { rng.range(24.0, 45.0) };
+            let p = self.beside(i, side * lat, 0.0);
+            let min_clear = if mesa { 45.0 } else { 20.0 };
+            if self.clearance(p) < min_clear || placed.iter().any(|q| q.distance(p) < 45.0) || p.distance(start) < 70.0 || self.blocked(p, 6.0) {
+                continue;
+            }
+            let hf = &self.t.terrain;
+            let o = hf.origin;
+            let size = hf.size();
+            if p.x < o.x + 20.0 || p.z < o.y + 20.0 || p.x > o.x + size.x - 20.0 || p.z > o.y + size.y - 20.0 {
+                continue;
+            }
+            let Some(base_y) = self.footprint(p, if mesa { 4.0 } else { 4.5 }, if mesa { 6.0 } else { 2.2 }) else { continue };
+            if self.under_water(base_y, 1.2) {
+                continue;
+            }
+            let c = Vec3::new(p.x, base_y, p.z);
+            // the building's front (local -Z) looks at the road
+            let face = yaw_facing(-((s.pos - c) * Vec3::new(1.0, 0.0, 1.0)).normalize_or_zero());
+            let face = face + rng.range(-0.25, 0.25);
+            let v = rng.range_i(0, 3) as u8;
+            use PropKind::*;
+            match (biome, kit % 3) {
+                (Biome::Meadow, 0) => {
+                    self.push(Cottage, c, face, 1.0, 3.6, v);
+                    self.around(rng, c, Beehive, 2, 7.0, 9.0, 0.5, (1.0, 1.0), 12.0);
+                    self.around(rng, c, Sheep, 5, 9.0, 16.0, 0.0, (0.9, 1.1), 12.0);
+                    self.around(rng, c, Flowers, 4, 4.5, 7.0, 0.0, (0.8, 1.2), 10.0);
+                }
+                (Biome::Meadow, 1) => {
+                    self.push(Barn, c, face, 1.0, 4.6, v);
+                    self.around(rng, c, Cow, 4, 9.0, 16.0, 0.0, (0.9, 1.1), 12.0);
+                    self.around(rng, c, HayBale, 3, 6.0, 8.0, 0.8, (1.0, 1.0), 12.0);
+                }
+                (Biome::Meadow, _) => {
+                    self.push(Windmill, c, face, 1.0, 2.4, v);
+                    self.around(rng, c, FlowerField, 2, 9.0, 13.0, 0.0, (1.0, 1.0), 12.0);
+                    self.around(rng, c, Beehive, 1, 6.0, 8.0, 0.5, (1.0, 1.0), 12.0);
+                }
+                (Biome::Autumn, 0) => {
+                    self.push(Barn, c, face, 1.0, 4.6, v);
+                    self.around(rng, c, Pumpkin, 5, 6.0, 12.0, 0.0, (0.9, 1.3), 10.0);
+                    self.around(rng, c, Scarecrow, 1, 8.0, 11.0, 0.0, (1.0, 1.0), 12.0);
+                    self.around(rng, c, HayWagon, 1, 7.0, 9.0, 1.6, (1.0, 1.0), 14.0);
+                }
+                (Biome::Autumn, 1) => {
+                    self.push(Cottage, c, face, 1.0, 3.6, v);
+                    self.around(rng, c, Pumpkin, 4, 5.0, 9.0, 0.0, (0.8, 1.2), 10.0);
+                    self.around(rng, c, Deer, 2, 12.0, 18.0, 0.0, (0.9, 1.1), 12.0);
+                    self.around(rng, c, HayBale, 2, 6.0, 8.0, 0.8, (1.0, 1.0), 12.0);
+                }
+                (Biome::Autumn, _) => {
+                    self.push(Windmill, c, face, 1.0, 2.4, v);
+                    self.around(rng, c, FlowerField, 2, 9.0, 13.0, 0.0, (1.0, 1.0), 12.0);
+                    self.around(rng, c, Scarecrow, 1, 8.0, 11.0, 0.0, (1.0, 1.0), 12.0);
+                }
+                (Biome::Snow, 0) | (Biome::Snow, 2) => {
+                    self.push(SkiCabin, c, face, 1.0, 3.8, v);
+                    self.around(rng, c, Snowman, 2, 5.0, 8.0, 0.5, (0.9, 1.1), 10.0);
+                    self.around(rng, c, Deer, 2, 10.0, 16.0, 0.0, (0.9, 1.1), 12.0);
+                }
+                (Biome::Snow, _) => {
+                    if let Some(y) = self.footprint(c, 5.0, 1.1) {
+                        self.push(FrozenPond, Vec3::new(c.x, y, c.z), rng.range(0.0, 6.28), 1.0, 0.0, v);
+                        self.around(rng, c, Snowman, 1, 7.0, 9.0, 0.5, (0.9, 1.1), 10.0);
+                    } else {
+                        self.around(rng, c, Snowman, 2, 0.0, 4.0, 0.5, (0.9, 1.1), 10.0);
+                    }
+                    self.around(rng, c, Deer, 3, 8.0, 14.0, 0.0, (0.9, 1.1), 12.0);
+                }
+                (Biome::Desert, 1) => {
+                    let sc = rng.range(1.6, 2.6);
+                    self.push(Mesa, Vec3::new(c.x, c.y - 0.5, c.z), rng.range(0.0, 6.28), sc, 4.0 * sc, v);
+                }
+                (Biome::Desert, _) => {
+                    self.push(Adobe, c, face, 1.0, 3.4, v);
+                    self.around(rng, c, Cactus, 3, 6.0, 10.0, 0.35, (0.8, 1.2), 12.0);
+                    self.around(rng, c, Tumbleweed, 2, 5.0, 10.0, 0.0, (0.8, 1.2), 8.0);
+                    self.around(rng, c, Cow, 2, 9.0, 14.0, 0.0, (0.9, 1.1), 12.0);
+                }
+                (Biome::Coast, 0) => {
+                    self.push(Lighthouse, c, face, 1.0, 2.4, 0);
+                    self.around(rng, c, Flowers, 3, 4.0, 7.0, 0.0, (0.8, 1.2), 10.0);
+                }
+                (Biome::Coast, _) => {
+                    self.push(Cottage, c, face, 1.0, 3.6, 2);
+                    self.around(rng, c, Sheep, 3, 9.0, 14.0, 0.0, (0.9, 1.1), 12.0);
+                    self.around(rng, c, Palm, 2, 6.0, 9.0, 0.45, (0.9, 1.2), 12.0);
+                }
+            }
+            self.keep_out.push((Vec2::new(c.x, c.z), if mesa { 14.0 } else { 9.0 }));
+            placed.push(c);
+            kit += 1;
+        }
+        // coast: boats bobbing on the water + umbrellas on the beach
+        if let Some(w) = self.t.water_level {
+            let mut boats = 0;
+            let mut umbrellas = 0;
+            let hf = &self.t.terrain;
+            for _ in 0..1500 {
+                if boats >= 6 && umbrellas >= 10 {
+                    break;
+                }
+                let x = hf.origin.x + rng.range(0.1, 0.9) * hf.size().x;
+                let z = hf.origin.y + rng.range(0.1, 0.9) * hf.size().y;
+                let y = self.ground(x, z);
+                let p = Vec3::new(x, y, z);
+                if y < w - 1.5 && y > w - 6.0 && boats < 6 && self.clearance(p) > 15.0 {
+                    self.push(PropKind::Boat, Vec3::new(x, w, z), rng.range(0.0, 6.28), rng.range(0.9, 1.2), 0.0, rng.range_i(0, 6) as u8);
+                    boats += 1;
+                } else if biome == Biome::Coast && y > w + 0.3 && y < w + 1.4 && umbrellas < 10 && self.clearance(p) > 8.0 {
+                    self.push(PropKind::BeachUmbrella, p, rng.range(0.0, 6.28), 1.0, 0.0, rng.range_i(0, 6) as u8);
+                    umbrellas += 1;
+                }
+            }
+        }
+    }
+
+    /// Fences along calm stretches, a few metres beyond the shoulder.
+    fn fences(&mut self, noise_seed: u32) {
+        let biome = self.t.biome;
+        if biome == Biome::Desert {
+            return;
+        }
+        let n = self.n() as isize;
+        let mut i = 30;
+        while i < n - 30 {
+            let v = noise::value2(i as f32 * 0.012, 7.7, noise_seed ^ 0x5eed);
+            let s = self.smp(i);
+            if v > 0.25 && s.curvature.abs() < 1.0 / 70.0 {
+                let side = if noise::value2(i as f32 * 0.004, 1.3, noise_seed) > 0.0 { 1.0 } else { -1.0 };
+                let a = self.beside(i, side * (s.half_width + SHOULDER + 4.0), 0.0);
+                let b = self.beside(i + 2, side * (self.smp(i + 2).half_width + SHOULDER + 4.0), 0.0);
+                let mid = (a + b) * 0.5;
+                let d = (b - a) * Vec3::new(1.0, 0.0, 1.0);
+                if self.clearance(mid) > 3.0 && !self.blocked(mid, 1.0) && !self.under_water(mid.y, 0.3) {
+                    let y = self.ground(mid.x, mid.z);
+                    self.push(PropKind::Fence, Vec3::new(mid.x, y, mid.z), yaw_along(d.normalize_or_zero()), d.length() / 4.0, 0.0, (i / 40) as u8);
+                }
+            }
+            i += 2;
+        }
+    }
+
+    /// Little life right beside the road: grass tufts, flowers, mushrooms, tumbleweeds.
+    fn roadside(&mut self, rng: &mut Rng) {
+        let biome = self.t.biome;
+        let n = self.n() as isize;
+        let mut i = 0;
+        while i < n {
+            for side in [-1.0f32, 1.0] {
+                if !rng.chance(0.45) {
+                    continue;
+                }
+                let s = self.smp(i);
+                let p = self.beside(i, side * (s.half_width + SHOULDER + rng.range(1.2, 7.0)), rng.range(-1.0, 1.0));
+                if self.clearance(p) < 1.0 || self.under_water(p.y, 0.3) || self.blocked(p, 0.5) {
+                    continue;
+                }
+                let r = rng.f32();
+                let kind = match biome {
+                    Biome::Meadow => {
+                        if r < 0.5 { PropKind::Grass } else if r < 0.85 { PropKind::Flowers } else { PropKind::Mushroom }
+                    }
+                    Biome::Autumn => {
+                        if r < 0.55 { PropKind::Grass } else if r < 0.75 { PropKind::Mushroom } else if r < 0.88 { PropKind::Pumpkin } else { PropKind::Flowers }
+                    }
+                    Biome::Snow => {
+                        if r < 0.7 { PropKind::Grass } else if r < 0.97 { PropKind::Bush } else { PropKind::Snowman }
+                    }
+                    Biome::Desert => {
+                        if r < 0.6 { PropKind::Grass } else if r < 0.85 { PropKind::Tumbleweed } else { PropKind::Rock }
+                    }
+                    Biome::Coast => {
+                        if r < 0.55 { PropKind::Grass } else { PropKind::Flowers }
+                    }
+                };
+                let (scale, radius) = match kind {
+                    PropKind::Rock => (rng.range(0.4, 0.7), 0.0),
+                    PropKind::Snowman => (1.0, 0.0),
+                    PropKind::Bush => (rng.range(0.5, 0.8), 0.0),
+                    _ => (rng.range(0.8, 1.3), 0.0),
+                };
+                self.push(kind, p, rng.range(0.0, 6.28), scale, radius, rng.range_i(0, 3) as u8);
+            }
+            i += 3;
+        }
+    }
+
+    fn scatter(&mut self, rng: &mut Rng, noise_seed: u32) {
+        let t = self.t;
+        let style = &t.style;
+        let biome = t.biome;
+        let hf = &t.terrain;
+        let size = hf.size();
+        let spacing = 6.5;
+        let gx = (size.x / spacing) as i32;
+        let gz = (size.y / spacing) as i32;
+        for iz in 0..gz {
+            for ix in 0..gx {
+                let x = hf.origin.x + (ix as f32 + rng.range(0.1, 0.9)) * spacing;
+                let z = hf.origin.y + (iz as f32 + rng.range(0.1, 0.9)) * spacing;
+                let forest = noise::fbm(x * 0.012, z * 0.012, 3, noise_seed + 999) * 0.5 + 0.5;
+                let mut density = style.tree_density * smoothstep(0.35, 0.75, forest) + 0.04;
+                let q = t.query(Vec3::new(x, 0.0, z), None);
+                let hw = t.samples[q.index].half_width;
+                // thinner far from the road, where only fog sees it
+                density *= 1.0 - 0.55 * smoothstep(70.0, 160.0, q.dist);
+                if !rng.chance(density) {
+                    continue;
+                }
+                if q.dist < hw + SHOULDER + 3.5 {
+                    continue;
+                }
+                let p = Vec3::new(x, 0.0, z);
+                if self.blocked(p, 1.0) {
+                    continue;
+                }
+                let (y, nrm) = hf.sample(x, z);
+                if self.under_water(y, 0.4) {
+                    continue;
+                }
+                let steep = nrm.y < 0.8;
+                let r = rng.f32();
+                use PropKind::*;
+                let kind = if steep {
+                    Rock
+                } else {
+                    match biome {
+                        Biome::Meadow => {
+                            if r < 0.08 { Rock } else if r < 0.42 { Tree } else if r < 0.52 { Birch } else if r < 0.58 { Blossom } else if r < 0.66 { Pine } else if r < 0.78 { Bush } else if r < 0.9 { Flowers } else { Grass }
+                        }
+                        Biome::Autumn => {
+                            if r < 0.06 { Rock } else if r < 0.5 { Tree } else if r < 0.62 { Birch } else if r < 0.72 { Pine } else if r < 0.84 { Bush } else if r < 0.9 { Mushroom } else { Grass }
+                        }
+                        Biome::Snow => {
+                            if r < 0.15 { Rock } else if r < 0.82 { Pine } else if r < 0.9 { Birch } else if r < 0.995 { Bush } else { Snowman }
+                        }
+                        Biome::Desert => {
+                            if r < 0.33 { Rock } else if r < 0.63 { Cactus } else if r < 0.73 { Bush } else if r < 0.8 { Palm } else if r < 0.9 { Tumbleweed } else { Grass }
+                        }
+                        Biome::Coast => {
+                            if r < 0.12 { Rock } else if r < 0.42 { Palm } else if r < 0.58 { Tree } else if r < 0.7 { Bush } else if r < 0.82 { Flowers } else { Grass }
+                        }
+                    }
+                };
+                let tall = matches!(kind, Tree | Pine | Palm | Birch | Blossom);
+                if tall && q.dist < hw + SHOULDER + 6.0 {
+                    continue;
+                }
+                let scale = match kind {
+                    Rock => rng.range(0.6, 2.2),
+                    Flowers | Bush | Grass | Mushroom | Tumbleweed => rng.range(0.7, 1.3),
+                    Snowman => 1.0,
+                    _ => rng.range(0.8, 1.45),
+                };
+                let radius = match kind {
+                    Tree | Pine | Palm | Blossom => 0.45 * scale,
+                    Birch => 0.3 * scale,
+                    Cactus => 0.35 * scale,
+                    Rock => 0.9 * scale,
+                    Snowman => 0.5,
+                    _ => 0.0,
+                };
+                // never anything solid within reach of the road edge
+                if radius > 0.0 && q.dist < hw + SHOULDER + radius + 1.5 {
+                    continue;
+                }
+                self.push(kind, Vec3::new(x, y, z), rng.range(0.0, 6.283), scale, radius, rng.range_i(0, 3) as u8);
+            }
+        }
+    }
+
+    fn jump_cones(&mut self) {
+        let n = self.n() as isize;
+        for &j in &self.t.jumps {
+            let smp = self.smp(j as isize - 10);
+            for side in [-1.0f32, 1.0] {
+                let p = smp.pos + smp.right * side * (smp.half_width + 0.6);
+                let y = self.ground(p.x, p.z);
+                self.props.push(Prop { kind: PropKind::Cone, pos: Vec3::new(p.x, y, p.z), rot_y: 0.0, scale: 1.0, radius: 0.0, variant: 0 });
+            }
+        }
+        let _ = n;
     }
 }

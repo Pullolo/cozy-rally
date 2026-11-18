@@ -10,7 +10,7 @@ use std::sync::Arc;
 fn main() {
     let seed: u64 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(5);
     let laps: u32 = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(4);
-    let track = Arc::new(Track::generate(&TrackParams { seed, biome: None, length_class: 1 }));
+    let track = Arc::new(Track::generate(&TrackParams { seed, biome: None, length_class: 1, ..Default::default() }.with_env_overrides()));
     let mut world = World::new(track.clone(), &[RacerSetup { car_spec: std::env::args().nth(4).and_then(|s| s.parse().ok()).unwrap_or(2), controller: Controller::Local(0) }], laps);
     let mut tt = TimeTrial::new(&[0], None);
     // vary the driver a little per lap so laps differ

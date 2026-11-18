@@ -107,7 +107,7 @@ fn run(track: &Track, jump: usize, spec: usize, assist: f32, scenario: &str) -> 
 fn main() {
     let assist: f32 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(1.0);
     if let Ok(sc) = std::env::var("JT_TRACE") {
-        let track = Track::generate(&TrackParams { seed: 1, biome: None, length_class: 1 });
+        let track = Track::generate(&TrackParams { seed: 1, biome: None, length_class: 1, ..Default::default() }.with_env_overrides());
         run(&track, track.jumps[0], 2, assist, &sc);
         return;
     }
@@ -115,7 +115,7 @@ fn main() {
     for scenario in ["straight", "air-steer", "crossed", "cross+st"] {
         let (mut n, mut spins, mut yaw, mut beta, mut yaw_max) = (0, 0, 0.0, 0.0, 0.0f32);
         for seed in 1..=10u64 {
-            let track = Track::generate(&TrackParams { seed, biome: None, length_class: 1 });
+            let track = Track::generate(&TrackParams { seed, biome: None, length_class: 1, ..Default::default() }.with_env_overrides());
             for &j in &track.jumps {
                 for spec in 0..4 {
                     if let Some(r) = run(&track, j, spec, assist, scenario) {
