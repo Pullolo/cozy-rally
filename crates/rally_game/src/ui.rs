@@ -390,6 +390,7 @@ impl Focus {
         if mouse_delta_position().length() > 0.0 {
             self.pointer_active = true;
         }
+        crate::input::apply_menu_nav(self); // gamepad navigation (input.rs)
     }
 
     fn next_id(&mut self) -> usize {

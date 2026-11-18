@@ -2,11 +2,13 @@
 //! network protocol). No rendering or platform dependencies.
 pub mod ai;
 pub mod biome;
+pub mod ghost;
 pub mod input;
 pub mod layout;
 pub mod noise;
 pub mod pacenotes;
 pub mod race;
+pub mod racing_line;
 pub mod rng;
 pub mod surface;
 pub mod surfacemap;

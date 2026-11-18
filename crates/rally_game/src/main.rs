@@ -5,6 +5,7 @@ mod camera;
 mod cinematic;
 mod fx;
 mod game;
+mod gameplay;
 mod hud;
 mod input;
 mod models;
@@ -73,6 +74,8 @@ struct Setup {
     surface_mode: usize,
     /// Track difficulty (index into TRACK_DIFFICULTY)
     track_difficulty: usize,
+    /// [gameplay] index into gameplay::GameMode::ALL
+    mode: usize,
 }
 
 const DIFFICULTY: [(&str, f32); 3] = [("Chill", 0.35), ("Normal", 0.7), ("Spicy", 1.0)];
@@ -81,16 +84,22 @@ const LENGTHS: [&str; 3] = ["Short", "Medium", "Long"];
 const SURFACES: [&str; 5] = ["Biome default", "Gravel", "Tarmac", "Snow", "Mixed"];
 const TRACK_DIFFICULTY: [&str; 3] = ["Relaxed", "Rally", "Expert"];
 const PAINT_NAMES: [&str; 8] = ["Strawberry", "Blueberry", "Honey", "Pistachio", "Lilac", "Tangerine", "Coconut", "Lagoon"];
-const TIPS: [&str; 6] = [
+const TIPS: [&str; 7] = [
     "Lift off and flick the handbrake into hairpins!",
     "Gravel and snow are slippery - be gentle.",
     "Stuck? Press R to hop back onto the road.",
     "Press C to try the other cameras.",
     "Big jumps: ease off the throttle before landing.",
     "The grip widget turns peach when a tyre slides.",
+    "Gamepad: RT/LT drive, A handbrake, Y respawn, X camera, Start pause.",
 ];
 
 impl Setup {
+    /// [gameplay] selected game mode
+    fn mode(&self) -> gameplay::GameMode {
+        gameplay::GameMode::ALL[self.mode % gameplay::GameMode::ALL.len()]
+    }
+
     fn config(&self) -> SessionConfig {
         let mut players = vec![PlayerSlot { car: self.cars[0], paint: self.paints[0], scheme: if self.split { Scheme::Wasd } else { Scheme::Both }, name: "Player 1".into() }];
         if self.split {
@@ -100,9 +109,10 @@ impl Setup {
             track: TrackParams { seed: self.seed, biome: if self.biome == 0 { None } else { Some(ALL_BIOMES[self.biome - 1]) }, length_class: self.length, difficulty: self.track_difficulty.min(2) as u8, surface: rally_core::surfacemap::SURFACE_MODES[self.surface_mode.min(4)] }.with_env_overrides(),
             laps: self.laps,
             players,
-            ai_count: self.opponents,
+            ai_count: if self.mode() == gameplay::GameMode::TimeTrial { 0 } else { self.opponents },
             ai_skill: DIFFICULTY[self.difficulty].1,
             assist_level: ASSISTS[self.assists].1,
+            mode: self.mode(),
         }
     }
 }
@@ -363,6 +373,7 @@ impl App {
                     ai_count: 6,
                     ai_skill: 0.65,
                     assist_level: 1.0,
+                    mode: gameplay::GameMode::Race,
                 };
                 let mut s = RaceSession::new(cfg, &mut self.gpu);
                 if let rally_core::race::RacePhase::Countdown(_) = s.world.race.phase {
@@ -641,8 +652,9 @@ impl App {
         let y = margin;
         let h = sh - 2.0 * margin;
         panel(x, y, w, h);
-        text(if self.setup.split { "Split-screen race" } else { "Solo race" }, x + 26.0 * s, y + 50.0 * s, 38.0 * s, INK);
-        let rows = players * 2 + 4 + 5 + 2;
+        text(if self.setup.mode() == gameplay::GameMode::TimeTrial { if self.setup.split { "Split-screen time trial" } else { "Time trial" } } else if self.setup.split { "Split-screen race" } else { "Solo race" }, x + 26.0 * s, y + 50.0 * s, 38.0 * s, INK);
+        let tt = self.setup.mode() == gameplay::GameMode::TimeTrial; // [gameplay] no opponents in time trial
+        let rows = players * 2 + 4 + 5 + 2 + 1 - if tt { 2 } else { 0 };
         self.focus.begin(rows);
         let gap = 22.0 * s;
         let cw = (w - 2.0 * 26.0 * s - gap) * 0.5;
@@ -652,7 +664,7 @@ impl App {
         let top = y + 72.0 * s;
         let button_h = 54.0 * s;
         // tallest column: car rows + race rows, plus two section headers
-        let col_rows = (players * 2 + 4) as f32;
+        let col_rows = (players * 2 + 5) as f32;
         let avail = h - (top - y) - 2.0 * head_h - button_h - 34.0 * s;
         let rh = (avail / col_rows - 8.0 * s).clamp(30.0 * s, 48.0 * s);
         let step = rh + 8.0 * s;
@@ -682,15 +694,20 @@ impl App {
         ay += 6.0 * s;
         section("Race", ax, ay);
         ay += head_h;
+        let d = selector(&mut self.focus, "Mode", self.setup.mode().name(), ax, ay, cw, rh, LAVENDER); // [gameplay]
+        self.setup.mode = wrap(self.setup.mode, d, gameplay::GameMode::ALL.len());
+        ay += step;
         let d = selector(&mut self.focus, "Laps", &format!("{}", self.setup.laps), ax, ay, cw, rh, BUTTER);
         self.setup.laps = ((self.setup.laps as i32 + d - 1).rem_euclid(6) + 1) as u32;
         ay += step;
-        let d = selector(&mut self.focus, "Opponents", &format!("{}", self.setup.opponents), ax, ay, cw, rh, BUTTER);
-        self.setup.opponents = wrap(self.setup.opponents, d, 8 - players + 1);
-        ay += step;
-        let d = selector(&mut self.focus, "AI mood", DIFFICULTY[self.setup.difficulty].0, ax, ay, cw, rh, BUTTER);
-        self.setup.difficulty = wrap(self.setup.difficulty, d, DIFFICULTY.len());
-        ay += step;
+        if !tt {
+            let d = selector(&mut self.focus, "Opponents", &format!("{}", self.setup.opponents), ax, ay, cw, rh, BUTTER);
+            self.setup.opponents = wrap(self.setup.opponents, d, 8 - players + 1);
+            ay += step;
+            let d = selector(&mut self.focus, "AI mood", DIFFICULTY[self.setup.difficulty].0, ax, ay, cw, rh, BUTTER);
+            self.setup.difficulty = wrap(self.setup.difficulty, d, DIFFICULTY.len());
+            ay += step;
+        }
         let d = selector(&mut self.focus, "Assists", ASSISTS[self.setup.assists].0, ax, ay, cw, rh, LAVENDER);
         self.setup.assists = wrap(self.setup.assists, d, ASSISTS.len());
         // --- column B: track options
@@ -773,7 +790,8 @@ impl App {
             pill(drive, px + 22.0 * s + dw * 0.5 + 8.0 * s, dy, 15.0 * s, with_alpha([PEACH, SKY][p], 0.55), INK);
             // stat bars (2x2 grid so they stay compact)
             let stats = [
-                ("Power", spec.peak_torque / 470.0, PEACH),
+                // [gameplay] real peak power (torque x rpm), ~170 kW = full bar
+                ("Power", spec.peak_torque * spec.peak_rpm * std::f32::consts::TAU / 60.0 / 1000.0 / 170.0, PEACH),
                 ("Grip", (spec.tire_grip - 0.9) / 0.3, MINT),
                 ("Weight", spec.mass / 1700.0, SKY),
                 ("Drift", 1.0 - spec.rear_grip_bias.clamp(0.0, 1.0) * 0.5 + if spec.drivetrain == rally_core::vehicle::Drivetrain::Rwd { 0.3 } else { 0.0 }, LAVENDER),
@@ -919,6 +937,7 @@ impl App {
             let vps = sess.viewports(screen_width(), screen_height());
             for (i, vp) in vps.iter().enumerate() {
                 hud::draw_hud(sess, h, i, vp);
+                gameplay::draw_hud(sess, i, vp); // [gameplay] time-trial delta
             }
         }
     }
@@ -929,7 +948,7 @@ impl App {
             self.switch_now(Screen::Title);
             return;
         };
-        if !input_blocked() && (is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::P)) {
+        if !input_blocked() && (is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::P) || input::pause_pressed()) {
             sess.paused = !sess.paused;
             self.pause_focus = Focus::default();
             audio::ui_sound(if sess.paused { audio::UiSound::Select } else { audio::UiSound::Back });
@@ -972,6 +991,7 @@ impl App {
         if let Some(h) = &self.hud {
             for (i, vp) in vps.iter().enumerate() {
                 hud::draw_hud(sess, h, i, vp);
+                gameplay::draw_hud(sess, i, vp); // [gameplay] time-trial delta
             }
         }
         if vps.len() == 2 {
@@ -1352,7 +1372,7 @@ async fn main() {
     let mut app = App {
         gpu: Gpu::new(),
         screen: Screen::Title,
-        setup: Setup { split: hooks.split, cars: [2, 1], paints: [0, 1], biome: 0, length: 1, seed: random_seed(), laps: 3, opponents: 3, difficulty: 1, assists: st.assists.min(ASSISTS.len() - 1), surface_mode: 0, track_difficulty: 1 },
+        setup: Setup { split: hooks.split, cars: [2, 1], paints: [0, 1], biome: 0, length: 1, seed: random_seed(), laps: 3, opponents: 3, difficulty: 1, assists: st.assists.min(ASSISTS.len() - 1), surface_mode: 0, track_difficulty: 1, mode: 0 },
         session: None,
         hud: None,
         focus: Focus::default(),
@@ -1381,6 +1401,9 @@ async fn main() {
     if let Ok(seed) = std::env::var("COZY_SEED") {
         app.setup.seed = seed.parse().unwrap_or(1);
     }
+    if std::env::var("COZY_MODE").is_ok_and(|m| m == "tt" || m == "timetrial") {
+        app.setup.mode = 1; // [gameplay] time trial test hook
+    }
     if let Ok(b) = std::env::var("COZY_BIOME") {
         app.setup.biome = b.parse().unwrap_or(0);
     }
@@ -1402,6 +1425,7 @@ async fn main() {
     let start = get_time();
     let mut shot_idx = 0;
     loop {
+        input::poll(); // [gameplay] gamepads
         app.screen_t += get_frame_time().min(0.05);
         match app.screen {
             Screen::Title => app.title(),

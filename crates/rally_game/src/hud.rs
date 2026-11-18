@@ -25,17 +25,20 @@ pub fn ordinal(n: usize) -> String {
     format!("{n}{}", ordinal_suffix(n))
 }
 
-/// Per-tyre loss of grip, 0 (gripping) .. 1 (sliding).
-/// Single point of truth for the traction widget: switch to `w.traction_loss` once the
-/// sim exposes it.
+/// Per-tyre loss of grip, 0 (gripping) .. 1 (sliding), from the sim's tyre model.
 pub fn tyre_slip(w: &WheelState) -> f32 {
-    w.skid.clamp(0.0, 1.0)
+    if w.contact { w.traction_loss.clamp(0.0, 1.0) } else { 0.0 }
 }
 
 /// Driver-assist intervention this frame as (traction control, ABS), when the sim exposes it.
 /// Returns None while that data isn't available (the pips are hidden then).
-pub fn assist_activity(_car: &Car) -> Option<(bool, bool)> {
-    None
+pub fn assist_activity(car: &Car) -> Option<(bool, bool)> {
+    if car.assist_level <= 0.2 {
+        return None; // Sim: no TC / ABS fitted
+    }
+    let tc = car.wheels.iter().any(|w| w.tc_cut > 0.12);
+    let abs = car.wheels.iter().any(|w| w.abs_cut > 0.12);
+    Some((tc, abs))
 }
 
 /// Paint colour of a car for UI colour coding

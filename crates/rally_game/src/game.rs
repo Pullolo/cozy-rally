@@ -33,6 +33,8 @@ pub struct SessionConfig {
     pub ai_skill: f32,
     /// assist multiplier (0 sim .. 1.3 cozy)
     pub assist_level: f32,
+    /// [gameplay] Race or Time Trial (see gameplay.rs)
+    pub mode: crate::gameplay::GameMode,
 }
 
 pub struct LocalPlayer {
@@ -65,6 +67,8 @@ pub struct RaceSession {
     pub frame_events: Vec<WorldEvent>,
     pub paused: bool,
     pub fx: Fx,
+    /// [gameplay] time-trial state (ghost, deltas); None in races
+    pub tt: Option<crate::gameplay::TimeTrialState>,
     /// Paint index per car (for UI colour coding: minimap dots, standings, results)
     pub paints: Vec<usize>,
     /// Cinematic camera override (title attract mode, results): (eye, target, fov radians).
@@ -129,10 +133,8 @@ impl RaceSession {
             .iter()
             .enumerate()
             .map(|(i, c)| match c {
-                Controller::Ai => {
-                    let skill = (config.ai_skill + (i as f32 * 0.37).sin() * 0.06).clamp(0.0, 1.0);
-                    Some(AiDriver::new(skill, ((i % 3) as f32 - 1.0) * 1.4))
-                }
+                // [gameplay] personalities rolled around the difficulty
+                Controller::Ai => Some(AiDriver::racer(i, config.ai_skill, config.track.seed)),
                 _ => None,
             })
             .collect();
@@ -143,10 +145,14 @@ impl RaceSession {
             .map(|(i, p)| LocalPlayer { car: n_ai + i, input: PlayerInput::new(p.scheme), cam: ChaseCam::new(), name: p.name.clone() })
             .collect();
         let fx = Fx::new(&world);
-        RaceSession { config, world, scene, cars, names, ais, players, alpha: 0.0, time: 0.0, frame_events: Vec::new(), paused: false, fx, paints, cam_override: None }
+        let tt = crate::gameplay::session_start(&config, &(n_ai..n_ai + config.players.len()).collect::<Vec<_>>(), gpu); // [gameplay]
+        RaceSession { config, world, scene, cars, names, ais, players, alpha: 0.0, time: 0.0, frame_events: Vec::new(), paused: false, fx, tt, paints, cam_override: None }
     }
 
     pub fn free(self, gpu: &mut Gpu) {
+        if let Some(t) = self.tt {
+            t.free(gpu); // [gameplay]
+        }
         self.scene.free(gpu);
         for c in self.cars {
             gpu.free(c.body);
@@ -182,12 +188,7 @@ impl RaceSession {
         }
         // AI at frame rate is fine (inputs are held across ticks)
         let track = self.world.track.clone();
-        for i in 0..self.world.cars.len() {
-            if let Some(ai) = self.ais[i].as_mut() {
-                let inp = ai.drive(&self.world.cars[i], &track, dt);
-                self.world.set_input(i, inp);
-            }
-        }
+        rally_core::ai::drive_all(&mut self.ais, &mut self.world, dt); // [gameplay] traffic-aware AI
         // finished players coast: autopilot takes over
         for p in &self.players {
             let r = &self.world.race.racers[p.car];
@@ -228,6 +229,7 @@ impl RaceSession {
             p.cam.update(pos, &self.world.cars[p.car], &track, dt);
         }
         self.fx.update(&self.world, &self.frame_events, self.alpha, dt);
+        crate::gameplay::frame(self, dt); // [gameplay] time trial + rumble
         if !self.players.is_empty() {
             crate::audio::race_frame(self, dt);
         }
@@ -309,6 +311,7 @@ impl RaceSession {
             self.draw_shadows(gpu, &view);
             gpu.set_shadow_receive(false);
             self.fx.draw(gpu, &view, &self.scene.env);
+            crate::gameplay::draw_ghost(self, gpu, &view, i); // [gameplay]
             gpu.set_shadow_receive(true);
             extra(gpu, &view, i);
             self.scene.draw_transparent(gpu, &view);

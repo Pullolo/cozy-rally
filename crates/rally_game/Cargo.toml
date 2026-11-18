@@ -7,3 +7,13 @@ edition = "2024"
 cpal = "0.15"
 macroquad = "0.4"
 rally_core = { version = "0.1.0", path = "../rally_core" }
+# Gamepads: always on Windows/macOS. On Linux gilrs needs libudev headers (libudev-dev), so it
+# is opt-in there: `cargo build -p rally_game --features gamepad-linux`.
+gilrs = { version = "0.11", optional = true }
+
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+gilrs = "0.11"
+
+[features]
+default = []
+gamepad-linux = ["dep:gilrs"]
