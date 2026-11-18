@@ -2,6 +2,7 @@
 //! network protocol). No rendering or platform dependencies.
 pub mod ai;
 pub mod biome;
+pub mod campaign;
 pub mod ghost;
 pub mod input;
 pub mod layout;
@@ -15,6 +16,7 @@ pub mod surfacemap;
 pub mod terrain;
 pub mod track;
 pub mod vehicle;
+pub mod weather;
 pub mod world;
 
 pub use glam;
