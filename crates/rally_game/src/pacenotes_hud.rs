@@ -258,11 +258,12 @@ fn draw_card(n: &PaceNote, x: f32, y: f32, size: f32, alpha: f32, inside: bool, 
         NoteKind::Corner | NoteKind::Hairpin | NoteKind::Square | NoteKind::Kink => {
             // glyph on the side of the turn, number on the other
             let left = n.direction == Direction::Left;
-            let glyph_x = if left { gx } else { x + size - size * 0.08 - gs };
-            draw_turn_glyph(n, glyph_x, gy, gs, gs * 1.05, size * 0.075, with_alpha(col_dark(col), alpha));
+            let gw = size * 0.46;
+            let glyph_x = if left { x + size * 0.07 } else { x + size * 0.93 - gw };
+            draw_turn_glyph(n, glyph_x, gy, gw, gs * 1.05, size * 0.075, with_alpha(col_dark(col), alpha));
             if let Some(num) = number {
-                let nx = if left { x + size * 0.76 } else { x + size * 0.26 };
-                text_centered(&num, nx, gy + gs * 0.72, size * 0.46, ink);
+                let nx = if left { x + size * 0.78 } else { x + size * 0.22 };
+                text_centered(&num, nx, gy + gs * 0.72, size * 0.42, ink);
                 // exit grade of tightening / opening corners
                 if let Some(e) = n.exit_severity.filter(|e| *e != n.severity) {
                     text_centered(&format!("> {e}"), nx, gy + gs * 1.05, size * 0.2, with_alpha(INK_SOFT, alpha));
