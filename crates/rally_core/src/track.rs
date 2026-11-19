@@ -63,6 +63,21 @@ impl TrackParams {
         if let Some(st) = std::env::var("COZY_STAGE").ok().and_then(|id| crate::campaign::find_stage(&id)) {
             return st.params;
         }
+        // COZY_WEATHER=<preset>|dynamic|stormy: fixed weather for loop races (visual testing)
+        if let Ok(v) = std::env::var("COZY_WEATHER") {
+            use crate::weather::{ConditionsSpec as C, WeatherPreset as P};
+            self.conditions = match v.to_lowercase().as_str() {
+                "overcast" => C::Fixed(P::Overcast),
+                "drizzle" => C::Fixed(P::Drizzle),
+                "rain" => C::Fixed(P::Rain),
+                "storm" => C::Fixed(P::Storm),
+                "fog" => C::Fixed(P::Fog),
+                "snow" | "snowfall" => C::Fixed(P::Snowfall),
+                "dynamic" => C::Dynamic,
+                "stormy" => C::Storm,
+                _ => self.conditions,
+            };
+        }
         if let Some(d) = std::env::var("COZY_TRACK_STYLE").ok().and_then(|v| v.parse::<u8>().ok()) {
             self.difficulty = d.min(2);
         }

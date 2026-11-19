@@ -58,6 +58,11 @@ impl Batches {
         &mut self.list[self.used]
     }
 
+    /// Number of draw calls `draw` will issue
+    pub fn calls(&self) -> usize {
+        self.list.iter().take(self.used + 1).filter(|b| !b.i.is_empty()).count()
+    }
+
     pub fn vertex_count(&self) -> usize {
         self.list.iter().map(|b| b.v.len()).sum()
     }
@@ -130,6 +135,25 @@ fn near_fade(dist: f32, size: f32) -> f32 {
     ((dist - 1.0 - size * 0.5) / (1.0 + size * 0.8)).clamp(0.0, 1.0)
 }
 
+/// Fill-rate guard for clouds: anything within ~3-4 m of the camera, or whose billboard would
+/// cover a large part of the screen, fades out (and its drawn radius is clamped), so big dust
+/// or spray puffs never become full-screen overdraw. The chase-cam look is unaffected: clouds
+/// around and behind the car are 6+ m away.
+/// `COZY_FX_NOGUARD=1` disables the guard (for before/after fill-rate measurements)
+pub static NO_GUARD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[inline]
+pub fn cloud_guard(dist: f32, r: f32) -> (f32, f32) {
+    if NO_GUARD.load(std::sync::atomic::Ordering::Relaxed) {
+        return (1.0, r);
+    }
+    let near = ((dist - 3.0) / 2.5).clamp(0.0, 1.0);
+    // r/dist = angular radius; 0.3 ~ a puff spanning a third of the screen height
+    let cover = r / dist.max(0.1);
+    let big = ((0.55 - cover) / 0.25).clamp(0.0, 1.0);
+    (near * big, r.min(dist * 0.6))
+}
+
 /// Squash the lower half of a cloud billboard: dust sits on the ground with a soft flat
 /// base instead of slicing into it (no hard depth-clipped edges).
 #[inline]
@@ -167,14 +191,14 @@ fn car_clearance(bs: &Basis, focus: Vec3, pos: Vec3, r: f32) -> f32 {
 /// Soft lit cloud: a dense rounded core that rolls off to a transparent, slightly lumpy rim.
 /// Vertex colours are brighter on top and a touch shaded underneath so every puff reads as
 /// a soft round volume rather than a flat smear.
-pub fn puff(b: &mut Batches, bs: &Basis, circ: &Circle, p: &Particle, dist: f32, focus: Option<Vec3>) {
-    let r = p.size();
-    let mut a = p.opacity() * near_fade(dist, r);
+pub fn puff(b: &mut Batches, bs: &Basis, circ: &Circle, p: &Particle, dist: f32, focus: Option<Vec3>) -> f32 {
+    let (guard, r) = cloud_guard(dist, p.size());
+    let mut a = p.opacity() * near_fade(dist, r) * guard;
     if let Some(f) = focus {
         a *= car_clearance(bs, f, p.pos, r);
     }
     if a < 0.01 {
-        return;
+        return 0.0;
     }
     // pull towards the camera so clouds don't slice into the ground behind them
     let c = p.pos + bs.toward * (r * 0.25).min(dist * 0.15);
@@ -228,6 +252,9 @@ pub fn puff(b: &mut Batches, bs: &Basis, circ: &Circle, p: &Particle, dist: f32,
             batch.tri(base, base + 1 + k, base + 1 + (k + 1) % 8);
         }
     }
+    // screen-coverage estimate (angular area x alpha) for the fill-rate stat
+    let c = r / dist.max(0.1);
+    c * c * a
 }
 
 /// Tumbling axes for flat bits: `a` spins around Y with yaw, `b` tumbles around `a`.

@@ -107,6 +107,16 @@ impl Fx {
             let fwd = irot * Vec3::NEG_Z;
             let right = irot * Vec3::X;
             let he = car.spec.half_extents;
+            // ---- wet roads: spray mist instead of dust (a big visibility factor, like real rally)
+            let wthr = self.weather_for_car(world, ci);
+            let wet = ((wthr.wetness - 0.15) / 0.6).clamp(0.0, 1.0);
+            let puddle = if wet > 0.0 {
+                world.race.racers.get(ci).map_or(0.0, |r| track.puddle_at(r.s, r.lateral))
+            } else {
+                0.0
+            };
+            let spray_k = wet * ((speed - 4.0) / 18.0).clamp(0.0, 1.0) * (1.0 + 1.5 * puddle);
+            let snow_wx = wthr.snow;
 
             let mut trail_surf: Option<Surface> = None;
             // ---------------- wheels
@@ -173,6 +183,37 @@ impl Fx {
                         self.spawn_drop(pos, v);
                     }
                     continue;
+                }
+                // ---- wet spray off each tyre: fine mist + droplets thrown back and out
+                if spray_k > 0.02 && !snow_wx {
+                    let wk = if rear { 1.0 } else { 0.6 };
+                    let acc = &mut self.cars[ci].acc[wi][8];
+                    *acc += 9.0 * spray_k * wk * dt * lod;
+                    let n = acc.floor() as usize;
+                    *acc -= n as f32;
+                    for _ in 0..n.min(6) {
+                        let u = self.rng.f();
+                        let side = right * if w.local_mount.x < 0.0 { -1.0 } else { 1.0 };
+                        let v = car.vel * 0.55 - fwd * self.rng.r(1.0, 2.5) + side * self.rng.r(0.6, 1.8) + Vec3::Y * self.rng.r(0.6, 1.4);
+                        let pos = prev.lerp(cp, 1.0 - u) + Vec3::Y * 0.3 + v * (u * dt);
+                        let g = self.rng.r(0.88, 0.95);
+                        self.puff(pos, v, [g, g + 0.01, g + 0.04], 0.4, (1.8, 2.8), 0.2 + 0.12 * spray_k.min(1.5), (0.9, 1.5), 2.2, -0.03, u * dt, Prio::Spray);
+                    }
+                    let acc = &mut self.cars[ci].acc[wi][9];
+                    *acc += 12.0 * spray_k * wk * dt * lod;
+                    let n = acc.floor() as usize;
+                    *acc -= n as f32;
+                    for _ in 0..n.min(6) {
+                        let v = car.vel * 0.6 - fwd * self.rng.r(1.0, 3.0) + Vec3::Y * self.rng.r(1.0, 3.0) + self.rng.ball() * 1.2;
+                        self.spawn_fine_drop(cp + Vec3::Y * 0.2, v);
+                    }
+                    // wet leaves stuck to the tyres flick off in the autumn woods
+                    if self.biome == rally_core::biome::Biome::Autumn && rear && self.rng.f() < 4.0 * dt * spray_k.min(1.0) {
+                        let c = self.rng.pick(&track.style.leaves);
+                        let v = car.vel * 0.5 - fwd * self.rng.r(1.5, 3.5) + Vec3::Y * self.rng.r(1.5, 3.0) + self.rng.ball();
+                        let sz = self.rng.r(0.12, 0.18);
+                        self.leaf(cp + Vec3::Y * 0.3, v, shade(c, 0.72), sz, Prio::Spray);
+                    }
                 }
                 let hard = !props.loose;
                 // grass throws clippings and a little soil, not big clouds
@@ -302,6 +343,8 @@ impl Fx {
                     let n = acc.floor() as usize;
                     *acc -= n as f32;
                     let dcol = dust_color(surf);
+                    // damp ground hardly dusts (the spray mist below takes over)
+                    let damp = 1.0 - 0.85 * wet;
                     let (alpha_k, size_k) = match surf {
                         Surface::Snow => (1.1, 0.95),
                         Surface::Sand => (1.0, 1.15),
@@ -325,7 +368,7 @@ impl Fx {
                             size0: self.rng.r(0.7, 1.0),
                             size1: self.rng.r(4.0, 6.0) * (0.65 + 0.35 * k) * size_k,
                             color: [dcol[0] * sk, dcol[1] * sk, dcol[2] * sk],
-                            alpha: (0.3 + 0.2 * k) * alpha_k,
+                            alpha: (0.3 + 0.2 * k) * alpha_k * damp,
                             shape: Shape::Puff,
                             ground: Ground::Hover,
                             rot: self.rng.r(0.0, 6.28),
@@ -340,6 +383,24 @@ impl Fx {
                         };
                         self.spawn(p, Prio::Spray);
                     }
+                }
+            }
+
+            // ---------------- wet-road spray trail: a dense, short-lived mist curtain behind the car
+            if spray_k > 0.02 && !snow_wx && !car.telemetry.in_water {
+                let acc = &mut self.cars[ci].mist_acc;
+                *acc += (8.0 + 14.0 * spray_k.min(1.5)) * dt * lod;
+                let n = acc.floor() as usize;
+                *acc -= n as f32;
+                for _ in 0..n.min(6) {
+                    let u = self.rng.f();
+                    let side = self.rng.r(-1.0, 1.0);
+                    let base = ipos - fwd * (he.z + 0.8) + right * (side * he.x * 1.2) - car.vel * (u * dt);
+                    let gh = track.visual_height(base.x, base.z);
+                    let v = car.vel * 0.35 + right * (side * self.rng.r(0.5, 1.8)) + Vec3::Y * self.rng.r(0.3, 0.9);
+                    let g = self.rng.r(0.8, 0.88);
+                    let sz = (3.0 + 2.0 * spray_k.min(1.5), 4.5 + 2.5 * spray_k.min(1.5));
+                    self.puff(Vec3::new(base.x, gh + 0.7, base.z) + v * (u * dt), v, [g, g + 0.015, g + 0.04], 0.8, sz, 0.14 + 0.1 * spray_k.min(1.5), (1.6, 2.6), 1.6, -0.02, u * dt, Prio::Spray);
                 }
             }
 
@@ -485,6 +546,25 @@ impl Fx {
         } else {
             self.tracks.push(seg);
         }
+    }
+
+    /// Tiny spray droplet (wet roads)
+    fn spawn_fine_drop(&mut self, pos: Vec3, vel: Vec3) {
+        let p = Particle {
+            pos,
+            vel,
+            life: self.rng.r(0.4, 0.8),
+            size0: self.rng.r(0.022, 0.035),
+            size1: 0.02,
+            color: [0.86, 0.92, 1.0],
+            alpha: 0.6,
+            shape: Shape::Drop,
+            ground: Ground::Die,
+            drag: 0.8,
+            grav: 1.0,
+            ..Default::default()
+        };
+        self.spawn(p, Prio::Spray);
     }
 
     fn spawn_drop(&mut self, pos: Vec3, vel: Vec3) {
@@ -846,7 +926,7 @@ impl Fx {
             yaw: self.rng.r(0.0, 6.28),
             drag: 1.7,
             grav: 0.22,
-            wind_k: 0.8,
+            wind_k: 0.25, // confetti mostly falls near the arch; strong storm wind must not sweep it across the sky
             flutter: 0.9,
             aspect: 0.6,
             seed: self.rng.f(),

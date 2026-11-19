@@ -13,6 +13,7 @@ mod emit;
 mod marks;
 mod particle;
 mod render;
+mod weather;
 
 use crate::render::gpu::{DrawParams, Environment, Gpu, View};
 use macroquad::math::{Quat, Vec3};
@@ -45,8 +46,9 @@ pub enum Prio {
 struct CarFx {
     /// fractional emission accumulators per wheel (spin jet, spin debris, slide fan, slide
     /// debris, lock puffs, lock debris, rolling debris, water)
-    acc: [[f32; 8]; 4],
+    acc: [[f32; 10]; 4],
     trail_acc: f32,
+    mist_acc: f32,
     exhaust_acc: f32,
     wake_acc: f32,
     prev_wheel: [Vec3; 4],
@@ -116,6 +118,11 @@ struct Arch {
 
 pub struct Fx {
     parts: Vec<Particle>,
+    /// Weather particles (rain / snow / sand / ripples) + smoothed per-player conditions
+    wx: weather::WeatherFx,
+    track: Option<std::sync::Arc<rally_core::track::Track>>,
+    /// Biome default wind (used when the track has no conditions timeline)
+    base_wind: Vec3,
     cars: Vec<CarFx>,
     skids: MarkRing,
     tracks: MarkRing,
@@ -135,7 +142,8 @@ pub struct Fx {
     debug_confetti: Option<f32>,
     stats: bool,
     stat_update: f64,
-    stat_draw: RefCell<(f64, usize)>,
+    /// draw time, vertices, draw calls, puff screen coverage
+    stat_draw: RefCell<(f64, usize, usize, f32)>,
     stat_frames: u32,
     stat_timer: f32,
     /// peak wheelspin / slide / lock seen since the last stats line
@@ -162,6 +170,9 @@ enum TestMode {
 
 impl Fx {
     pub fn new(world: &World) -> Fx {
+        // 3D rain / snow below replace the 2D stand-in streaks
+        crate::weather_view::set_overlay_2d(false);
+        render::NO_GUARD.store(std::env::var("COZY_FX_NOGUARD").is_ok(), std::sync::atomic::Ordering::Relaxed);
         let track = &world.track;
         let s0 = &track.samples[0];
         let fr = Vec3::new(s0.right.x, 0.0, s0.right.z).normalize_or(Vec3::X);
@@ -181,6 +192,9 @@ impl Fx {
         };
         let locals = (0..world.cars.len()).filter(|&i| matches!(world.controllers[i], Controller::Local(_))).collect();
         Fx {
+            wx: weather::WeatherFx::new(track),
+            track: Some(world.track.clone()),
+            base_wind: wind,
             parts: Vec::with_capacity(MAX_PARTICLES),
             cars: vec![CarFx::default(); world.cars.len()],
             skids: MarkRing::new(2400, 28.0),
@@ -198,7 +212,7 @@ impl Fx {
             debug_confetti: std::env::var("COZY_FX_CONFETTI").ok().and_then(|v| v.parse().ok()),
             stats: std::env::var("COZY_FX_STATS").is_ok(),
             stat_update: 0.0,
-            stat_draw: RefCell::new((0.0, 0)),
+            stat_draw: RefCell::new((0.0, 0, 0, 0.0)),
             stat_frames: 0,
             stat_timer: 0.0,
             stat_trac: [0.0; 3],
@@ -247,6 +261,14 @@ impl Fx {
         }
     }
 
+    /// Conditions at a car's position on the stage (default when the track has none)
+    fn weather_for_car(&self, world: &World, ci: usize) -> rally_core::weather::Weather {
+        if !self.wx.active {
+            return rally_core::weather::Weather { wind: [0.0, 0.0], ..Default::default() };
+        }
+        world.race.racers.get(ci).map_or_else(Default::default, |r| world.track.conditions.at(r.s))
+    }
+
     /// Called once per frame after the world advanced. `alpha` = render interpolation.
     pub fn update(&mut self, world: &World, events: &[WorldEvent], alpha: f32, dt: f32) {
         let t0 = if self.stats { Some(std::time::Instant::now()) } else { None };
@@ -260,6 +282,14 @@ impl Fx {
         self.poses.clear();
         for c in &world.cars {
             self.poses.push(crate::game::interp(c, alpha));
+        }
+        // weather at each local player's position (smoothed), drives precipitation + wind
+        if self.wx.active {
+            let targets: Vec<rally_core::weather::Weather> = self.locals.iter().map(|&ci| self.weather_for_car(world, ci)).collect();
+            self.wx.update(&targets, dt);
+            if let Some(w) = self.wx.smooth.first() {
+                self.wind = Vec3::new(w.wind[0], 0.0, w.wind[1]) * 0.8 + self.base_wind * 0.2;
+            }
         }
 
         // simulate
@@ -295,22 +325,24 @@ impl Fx {
             self.stat_frames += 1;
             self.stat_timer += dt;
             if self.stat_timer > 2.0 {
-                let (dsum, dverts) = *self.stat_draw.borrow();
+                let (dsum, dverts, dcalls, dcover) = *self.stat_draw.borrow();
                 println!(
-                    "[fx] {} particles, {} skid + {} track segs | update {:.3} ms/frame, draw {:.3} ms/frame, {} verts/frame | peak spin {:.2} slide {:.2} lock {:.2}",
+                    "[fx] {} particles, {} skid + {} track segs | update {:.3} ms/frame, draw {:.3} ms/frame, {} verts/frame, {:.1} draw calls/frame, puff coverage {:.2} | peak spin {:.2} slide {:.2} lock {:.2}",
                     self.parts.len(),
                     self.skids.segs.len(),
                     self.tracks.segs.len(),
                     self.stat_update * 1000.0 / self.stat_frames as f64,
                     dsum * 1000.0 / self.stat_frames as f64,
                     dverts / self.stat_frames as usize,
+                    dcalls as f32 / self.stat_frames as f32,
+                    dcover / self.stat_frames as f32,
                     self.stat_trac[0],
                     self.stat_trac[1],
                     self.stat_trac[2],
                 );
                 self.stat_trac = [0.0; 3];
                 self.stat_update = 0.0;
-                *self.stat_draw.borrow_mut() = (0.0, 0);
+                *self.stat_draw.borrow_mut() = (0.0, 0, 0, 0.0);
                 self.stat_frames = 0;
                 self.stat_timer = 0.0;
             }
@@ -326,6 +358,10 @@ impl Fx {
         let mut guard = self.scratch.borrow_mut();
         let sc = &mut *guard;
         let bs = Basis::from_view(view);
+        // the local player this view follows (nearest local car to the eye)
+        let view_player = (0..self.locals.len()).min_by(|&a, &b| self.poses[self.locals[a]].0.distance(bs.eye).total_cmp(&self.poses[self.locals[b]].0.distance(bs.eye)));
+        let weather = if self.wx.active { view_player.and_then(|k| self.wx.smooth.get(k).copied()) } else { None };
+        let mut cover = 0.0f32;
 
         // tyre marks first (they hug the ground)
         sc.marks.clear();
@@ -335,6 +371,9 @@ impl Fx {
             for ch in &c.chains {
                 ch.build_head(&mut sc.marks);
             }
+        }
+        if let (Some(w), Some(track)) = (weather.as_ref(), self.track.as_ref()) {
+            self.wx.build_ground(&mut sc.marks, &bs, w, track, self.time);
         }
         sc.marks.draw(gpu, view, env, &DrawParams { unlit: 0.15, ..Default::default() });
 
@@ -374,7 +413,7 @@ impl Fx {
             let p = &self.parts[i as usize];
             let d = f32::from_bits(dbits);
             match p.shape {
-                Shape::Puff => render::puff(&mut sc.lit, &bs, &self.circle, p, d, focus),
+                Shape::Puff => cover += render::puff(&mut sc.lit, &bs, &self.circle, p, d, focus),
                 Shape::Butterfly | Shape::Gull => render::critter(&mut sc.lit, p, d),
                 Shape::Tumbleweed => render::tumbleweed(&mut sc.lit, &bs, p, d),
                 _ => render::bit(&mut sc.lit, &bs, p, d),
@@ -386,6 +425,9 @@ impl Fx {
             let p = &self.parts[i as usize];
             render::glow(&mut sc.glow, &bs, &self.circle, p, p.pos.distance(bs.eye), self.time);
         }
+        if let Some(w) = weather.as_ref() {
+            self.wx.build_air(&mut sc.glow, &bs, w, self.biome, self.time);
+        }
         sc.glow.draw(gpu, view, env, &DrawParams { unlit: 1.0, ..Default::default() });
 
         if let Some(t0) = t0 {
@@ -393,6 +435,8 @@ impl Fx {
             let mut s = self.stat_draw.borrow_mut();
             s.0 += t0.elapsed().as_secs_f64();
             s.1 += verts;
+            s.2 += sc.marks.calls() + sc.lit.calls() + sc.glow.calls();
+            s.3 += cover;
         }
     }
 }

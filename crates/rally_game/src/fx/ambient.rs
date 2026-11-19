@@ -39,9 +39,13 @@ enum Group {
     Sparkle,
     Gull,
     Diamond,
+    /// low fog banks drifting over the ground
+    FogWisp,
+    /// big rolling dust clouds in desert storms
+    DustCloud,
 }
 
-const GROUPS: usize = 11;
+const GROUPS: usize = 13;
 
 fn population(b: Biome) -> &'static [(Group, u16)] {
     match b {
@@ -103,7 +107,35 @@ impl Fx {
             let f = Vec3::new(f.x, 0.0, f.z).normalize_or(Vec3::X);
             let ahead = Vec3::new(car.vel.x, 0.0, car.vel.z) * 1.0;
             let centre = pos + f * 12.0 + ahead.clamp_length_max(18.0);
-            for &(g, target) in pop {
+            // weather reshapes the population: critters hide from rain and fog, storms bring
+            // fog wisps, rolling dust clouds and extra tumbleweeds
+            let w = if self.wx.active { self.wx.smooth.get(k).copied() } else { None };
+            let mut list: Vec<(Group, u16)> = pop.to_vec();
+            if let Some(w) = w {
+                let rain = if w.snow { 0.0 } else { w.precipitation };
+                let gloom = rain.max(w.fog * 0.6).max(w.overcast * 0.45).max(if w.snow { w.precipitation * 0.8 } else { 0.0 });
+                let sand = super::weather::sand_amount(self.biome, &w);
+                for (g, t) in list.iter_mut() {
+                    let keep = match g {
+                        Group::Petal | Group::Butterfly | Group::Mote | Group::Sparkle | Group::Diamond => 1.0 - 0.95 * gloom,
+                        Group::Firefly => 1.0 - 0.8 * rain,
+                        // the biome's own light snowfall gives way to real snowfall
+                        Group::Snow => 1.0 - if w.snow { w.precipitation } else { 0.0 },
+                        Group::Leaf => 1.0 - 0.4 * rain,
+                        _ => 1.0,
+                    };
+                    *t = (*t as f32 * keep.clamp(0.0, 1.0)) as u16;
+                }
+                let fog = if sand > 0.0 { 0.0 } else { ((w.fog - 0.25) / 0.55).clamp(0.0, 1.0) };
+                if fog > 0.0 {
+                    list.push((Group::FogWisp, (fog * 34.0) as u16));
+                }
+                if sand > 0.0 {
+                    list.push((Group::DustCloud, (sand * 38.0) as u16));
+                    list.push((Group::Tumbleweed, (sand * 6.0) as u16));
+                }
+            }
+            for &(g, target) in &list {
                 let have = self.ambient_counts[k][g as usize];
                 if have >= target {
                     continue;
@@ -292,6 +324,27 @@ impl Fx {
                 p.shape = Shape::Twinkle;
                 p.rot = self.rng.r(0.0, 1.0);
                 p.fade_in = 0.2;
+            }
+            Group::FogWisp | Group::DustCloud => {
+                let dust = g == Group::DustCloud;
+                let wdir = self.wind.normalize_or(Vec3::X);
+                // spawn ahead and upwind so banks drift through the view
+                let at = self.disc(centre + f * 6.0 - wdir * 6.0, 4.0, 28.0);
+                let gh = track.visual_height(at.x, at.z);
+                p.size1 = if dust { self.rng.r(6.0, 10.0) } else { self.rng.r(7.0, 12.0) };
+                p.size0 = p.size1 * 0.85;
+                p.pos = Vec3::new(at.x, gh + p.size1 * 0.12 + self.rng.r(0.0, 1.2), at.z);
+                p.vel = self.wind * if dust { 1.0 } else { 0.3 };
+                p.life = self.rng.r(9.0, 14.0);
+                p.color = if dust { [0.98, 0.86, 0.68] } else { [0.97, 0.98, 1.0] };
+                p.alpha = if dust { 0.26 } else { 0.22 };
+                p.shape = Shape::Puff;
+                p.ground = Ground::Ignore;
+                p.rot = self.rng.r(0.0, 6.28);
+                p.spin = self.rng.r(-0.08, 0.08);
+                p.drag = 0.5;
+                p.wind_k = if dust { 1.2 } else { 0.35 };
+                p.fade_in = 3.0;
             }
             Group::Gull => {
                 let at = self.disc(centre + f * 10.0, 4.0, SPAWN_RADIUS);
