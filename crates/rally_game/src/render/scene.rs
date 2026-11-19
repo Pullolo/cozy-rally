@@ -16,7 +16,7 @@ use std::collections::HashMap;
 
 pub struct Scene {
     /// terrain tiles with distance LOD
-    pub terrain: Vec<TerrainTile>,
+    pub terrain: TerrainSet,
     /// road surface decals (drawn with a depth bias, no shadow casting)
     pub road: GpuMesh,
     /// start arch, balloons, checkpoint flags
@@ -282,12 +282,32 @@ const TERRAIN_TILE: usize = 24;
 /// Camera distance (to the tile box) up to which each LOD is used
 pub const TERRAIN_LOD_DIST: [f32; 2] = [170.0, 420.0];
 /// Tiles farther than this from the road never get the finest LOD (corridor)
-const CORRIDOR: f32 = 260.0;
+const CORRIDOR: f32 = 90.0;
+/// ... and never the medium LOD beyond this (long stages: the far hinterland is 10 m cells)
+const CORRIDOR_MID: f32 = 450.0;
+/// Super-tiles (4 x 4 tiles) get one merged 20 m-cell mesh, drawn when the whole block is
+/// farther than `SUPER_DIST` (one draw call instead of 16 for distant terrain)
+const SUPER: usize = 4;
+pub const SUPER_DIST: f32 = 650.0;
 
-fn terrain_tile_mesh(track: &Track, painter: &GroundPainter, sink: &[f32], tx: usize, tz: usize, step: usize) -> MeshBuilder {
+/// All terrain: LOD tiles plus merged far super-tiles
+pub struct TerrainSet {
+    pub tiles: Vec<TerrainTile>,
+    pub supers: Vec<SuperTile>,
+}
+
+pub struct SuperTile {
+    /// indices into `TerrainSet::tiles`
+    pub tiles: Vec<usize>,
+    pub far: GpuMesh,
+    pub min: Vec3,
+    pub max: Vec3,
+}
+
+fn terrain_tile_mesh(track: &Track, painter: &GroundPainter, sink: &[f32], tx: usize, tz: usize, step: usize, size: usize) -> MeshBuilder {
     let hf = &track.terrain;
-    let ix1 = (tx + TERRAIN_TILE).min(hf.nx - 1);
-    let iz1 = (tz + TERRAIN_TILE).min(hf.nz - 1);
+    let ix1 = (tx + size).min(hf.nx - 1);
+    let iz1 = (tz + size).min(hf.nz - 1);
     // coarse vertices near the road take the lowest fine height around them, so coarse
     // triangles stay under the road ribbon
     let h_at = |ix: usize, iz: usize| -> f32 {
@@ -345,25 +365,27 @@ fn terrain_tile_mesh(track: &Track, painter: &GroundPainter, sink: &[f32], tx: u
     m
 }
 
-pub fn terrain_tiles(track: &Track, painter: &GroundPainter, gpu: &mut Gpu) -> Vec<TerrainTile> {
+pub fn terrain_tiles(track: &Track, painter: &GroundPainter, gpu: &mut Gpu) -> TerrainSet {
     let hf = &track.terrain;
     let sink = road_sink(track);
-    // distance from each tile centre to the road (coarse; for the corridor)
-    let pts: Vec<macroquad::math::Vec2> = track.samples.iter().step_by(4).map(|s| macroquad::math::Vec2::new(s.pos.x, s.pos.z)).collect();
     let mut out = Vec::new();
     let mut verts = [0usize; 3];
+    let mut keys: Vec<(usize, usize)> = Vec::new();
     for tz in (0..hf.nz - 1).step_by(TERRAIN_TILE) {
         for tx in (0..hf.nx - 1).step_by(TERRAIN_TILE) {
+            keys.push((tx / (TERRAIN_TILE * SUPER), tz / (TERRAIN_TILE * SUPER)));
             let c = macroquad::math::Vec2::new(hf.origin.x + (tx as f32 + TERRAIN_TILE as f32 * 0.5) * hf.cell, hf.origin.y + (tz as f32 + TERRAIN_TILE as f32 * 0.5) * hf.cell);
-            let road_d = pts.iter().map(|p| p.distance(c)).fold(f32::MAX, f32::min) - TERRAIN_TILE as f32 * hf.cell * 0.71;
+            // corridor: distance from the tile to the road (coarse field shared with the tracks)
+            let road_d = track.road_distance(c.x, c.y) - TERRAIN_TILE as f32 * hf.cell * 0.71;
             let mut lods: [Option<GpuMesh>; 3] = [None, None, None];
             let mut min = Vec3::splat(f32::MAX);
             let mut max = Vec3::splat(f32::MIN);
             for (li, step) in [1usize, 2, 4].into_iter().enumerate() {
-                if li == 0 && road_d > CORRIDOR && !super::perf_legacy() {
+                // fine LODs only where they can ever be seen up close: the road corridor
+                if (li == 0 && road_d > CORRIDOR || li == 1 && road_d > CORRIDOR_MID) && !super::perf_legacy() {
                     continue;
                 }
-                let m = terrain_tile_mesh(track, painter, &sink, tx, tz, step);
+                let m = terrain_tile_mesh(track, painter, &sink, tx, tz, step, TERRAIN_TILE);
                 verts[li] += m.vertex_count();
                 for ch in &m.chunks {
                     min = min.min(ch.min);
@@ -374,10 +396,30 @@ pub fn terrain_tiles(track: &Track, painter: &GroundPainter, gpu: &mut Gpu) -> V
             out.push(TerrainTile { lods, min, max });
         }
     }
-    if super::bench::enabled() {
-        println!("terrain: {} tiles, verts per LOD {}k / {}k / {}k", out.len(), verts[0] / 1000, verts[1] / 1000, verts[2] / 1000);
+    // merged far super-tiles
+    let mut groups: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+    for (i, k) in keys.iter().enumerate() {
+        groups.entry(*k).or_default().push(i);
     }
-    out
+    let mut gk: Vec<_> = groups.keys().cloned().collect();
+    gk.sort();
+    let mut supers = Vec::new();
+    let mut sv = 0usize;
+    for k in gk {
+        let tiles = groups.remove(&k).unwrap();
+        let m = terrain_tile_mesh(track, painter, &sink, k.0 * TERRAIN_TILE * SUPER, k.1 * TERRAIN_TILE * SUPER, 8, TERRAIN_TILE * SUPER);
+        sv += m.vertex_count();
+        let (mut min, mut max) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        for &t in &tiles {
+            min = min.min(out[t].min);
+            max = max.max(out[t].max);
+        }
+        supers.push(SuperTile { tiles, far: gpu.upload(&m), min, max });
+    }
+    if super::bench::enabled() {
+        println!("terrain: {} tiles, verts per LOD {}k / {}k / {}k, {} super-tiles {}k", out.len(), verts[0] / 1000, verts[1] / 1000, verts[2] / 1000, supers.len(), sv / 1000);
+    }
+    TerrainSet { tiles: out, supers }
 }
 
 // ---------------------------------------------------------------------------------- road
@@ -542,6 +584,28 @@ fn road_vertex_color(look: &RoadLook, kind: StripKind, s: f32, lat: f32, hw: f32
     (c, gloss)
 }
 
+/// Rain on the road (baked: stage weather depends only on arc length): darker albedo, a wet
+/// sheen, and glossy puddles in the ruts where `Track::puddle_at` says water collects.
+fn wet_road(track: &Track, s: f32, lat: f32, (c, g): ([f32; 3], f32)) -> ([f32; 3], f32) {
+    if track.conditions.keys.is_empty() {
+        return (c, g);
+    }
+    let w = track.weather_at(s);
+    if w.snow || w.wetness <= 0.02 {
+        return (c, g);
+    }
+    let wet = w.wetness.clamp(0.0, 1.0);
+    let mut c = shade(c, 1.0 - 0.32 * wet);
+    let mut g = g.max(wet * 0.45);
+    let pd = track.puddle_at(s, lat);
+    if pd > 0.0 {
+        // standing water: dark, slightly blue-grey, mirror-glossy
+        c = mix(c, [0.24, 0.27, 0.32], pd * 0.7);
+        g = g.max(pd);
+    }
+    (c, g)
+}
+
 pub fn road_mesh(track: &Track, painter: &GroundPainter) -> MeshBuilder {
     let mut m = MeshBuilder::new();
     let st = &track.style;
@@ -582,7 +646,7 @@ pub fn road_mesh(track: &Track, painter: &GroundPainter) -> MeshBuilder {
                 let b1 = ground(b.pos + fb * l1 * sb_scale, lift);
                 let col = |idx: usize, s: f32, l: f32, hw: f32| {
                     let look = road_look_vertex(track, idx, l, seed);
-                    enc(road_vertex_color(&look, kind, s, l, hw, seed))
+                    enc(wet_road(track, s, l, road_vertex_color(&look, kind, s, l, hw, seed)))
                 };
                 let (ca0, ca1) = (col(i, sa, l0, a.half_width), col(i, sa, l1, a.half_width));
                 let (cb0, cb1) = (col(ib, sb, l0, b.half_width), col(ib, sb, l1, b.half_width));
@@ -1446,7 +1510,13 @@ impl Scene {
         let far = DrawParams { fog: false, cast_shadow: false, receive_shadow: false, ..Default::default() };
         let drift = Mat4::from_translation(Vec3::new(view.eye.x, 0.0, view.eye.z)) * Mat4::from_rotation_y(env.time * 0.004);
         if !skip("clouds") {
-            gpu.draw(&self.clouds, view, &env, drift, &DrawParams { unlit: 0.55, ..far }, false);
+            // fair-weather puffs melt into the overcast deck (pale, flat) and vanish under it
+            let oc = gpu.weather().overcast;
+            if oc < 0.55 {
+                let t = oc / 0.55;
+                let g = 1.0 - 0.12 * t;
+                gpu.draw(&self.clouds, view, &env, drift, &DrawParams { unlit: 0.55 + 0.45 * t, tint: [g, g, g * 1.01, 1.0], ..far }, false);
+            }
         }
         if !skip("hills") {
             gpu.draw(&self.hills, view, &env, Mat4::IDENTITY, &DrawParams { unlit: 0.6, fog: true, fog_max: 0.62, ..far }, false);
@@ -1456,15 +1526,35 @@ impl Scene {
             gpu.draw(a, view, &env, Mat4::IDENTITY, &DrawParams { receive_shadow: false, ..ground }, false);
         }
         if !skip("terrain") {
+            // nothing beyond the (weather-adjusted) fog wall
+            let fog = gpu.weather().apply(&env).fog_density;
+            let fog_out = if fog > 0.0 { 2.7 / fog } else { 1.0e5 };
             let mut vis: Vec<(f32, usize)> = Vec::with_capacity(96);
-            for (i, t) in self.terrain.iter().enumerate() {
-                if view.aabb_visible(t.min, t.max) {
-                    vis.push((view.eye.clamp(t.min, t.max).distance(view.eye), i));
+            for st in &self.terrain.supers {
+                if !view.aabb_visible(st.min, st.max) {
+                    continue;
+                }
+                let d = view.eye.clamp(st.min, st.max).distance(view.eye);
+                if d > fog_out && !super::perf_legacy() {
+                    continue;
+                }
+                if d > SUPER_DIST && !super::perf_legacy() {
+                    gpu.draw(&st.far, view, &env, Mat4::IDENTITY, &ground, false);
+                    continue;
+                }
+                for &i in &st.tiles {
+                    let t = &self.terrain.tiles[i];
+                    if view.aabb_visible(t.min, t.max) {
+                        vis.push((view.eye.clamp(t.min, t.max).distance(view.eye), i));
+                    }
                 }
             }
             vis.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
             for (d, i) in vis {
-                let t = &self.terrain[i];
+                if d > fog_out && !super::perf_legacy() {
+                    continue;
+                }
+                let t = &self.terrain.tiles[i];
                 let want = if super::perf_legacy() { 0 } else if d < TERRAIN_LOD_DIST[0] { 0 } else if d < TERRAIN_LOD_DIST[1] { 1 } else { 2 };
                 // finest available LOD at or above the wanted one
                 if let Some(m) = (want..3).chain((0..want).rev()).find_map(|l| t.lods[l].as_ref()) {
@@ -1495,7 +1585,8 @@ impl Scene {
     /// nothing past the distance where fog has swallowed them.
     pub fn draw_props(&self, gpu: &mut Gpu, view: &View, lod_eye: Vec3, p: &DrawParams) {
         let env = self.env;
-        let fog_out = if env.fog_density > 0.0 { 2.7 / env.fog_density } else { 5000.0 };
+        let fog = gpu.weather().apply(&env).fog_density;
+        let fog_out = if fog > 0.0 { 2.7 / fog } else { 5000.0 };
         // front-to-back so early depth testing rejects hidden canopy fragments (dense forests
         // seen across a valley otherwise shade many layers of trees)
         let mut vis: Vec<(f32, usize)> = Vec::with_capacity(64);
@@ -1521,10 +1612,13 @@ impl Scene {
     pub fn draw_transparent(&self, _gpu: &mut Gpu, _view: &View) {}
 
     pub fn free(self, gpu: &mut Gpu) {
-        for t in self.terrain {
+        for t in self.terrain.tiles {
             for m in t.lods.into_iter().flatten() {
                 gpu.free(m);
             }
+        }
+        for st in self.terrain.supers {
+            gpu.free(st.far);
         }
         gpu.free(self.road);
         gpu.free(self.structures);

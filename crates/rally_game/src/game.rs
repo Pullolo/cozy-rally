@@ -190,10 +190,6 @@ impl RaceSession {
         }
         self.time += dt;
         self.scene.env.time = self.time;
-        // stage weather (fog / overcast) follows the first local player
-        if let Some(p) = self.players.first() {
-            crate::weather_view::apply(&mut self.scene.env, &self.world.track, self.world.race.racers[p.car].s);
-        }
         for (pi, p) in self.players.iter_mut().enumerate() {
             let inp = p.input.sample(dt, if pi == 0 { touch } else { None });
             if p.input.camera_pressed() {
@@ -284,6 +280,12 @@ impl RaceSession {
             return View::new(view, proj, eye);
         }
         let cam = &self.players[player].cam;
+        if let Some(cs) = debug_cam_s(self.track()) {
+            let (eye, target) = crate::render::bench::chase_pose(self.track(), cs);
+            let v = Mat4::look_at_rh(eye, target, Vec3::Y);
+            let p = Mat4::perspective_rh_gl(64f32.to_radians(), vp.w / vp.h.max(1.0), 0.25, 2200.0);
+            return View::new(v, p, eye);
+        }
         if let Some((eye, target)) = crate::render::bench::pose() {
             let v = Mat4::look_at_rh(eye, target, Vec3::Y);
             let p = Mat4::perspective_rh_gl(64f32.to_radians(), vp.w / vp.h.max(1.0), 0.25, 2200.0);
@@ -319,6 +321,9 @@ impl RaceSession {
         let shadows = gpu.begin_frame(crate::render::quality());
         for (i, vp) in vps.iter().enumerate() {
             let view = self.view_for(i, vp);
+            // each player's weather comes from their own position on the stage
+            let s = debug_cam_s(self.track()).unwrap_or_else(|| self.players.get(i).map_or(0.0, |p| self.world.race.racers[p.car].s));
+            gpu.set_weather(crate::render::weather::look_at(&self.world.track, s, self.time));
             if shadows {
                 if let Some(light) = gpu.begin_shadow(&view, &self.scene.env) {
                     self.scene.draw_shadow_casters(gpu, &light, view.eye);
@@ -441,6 +446,12 @@ impl RaceSession {
         }
         gpu.draw_dynamic(&verts, &idx, view, &self.scene.env, Mat4::IDENTITY, &DrawParams { unlit: 1.0, receive_shadow: false, depth_bias: 4e-6, ..Default::default() }, 1);
     }
+}
+
+/// Debug/screenshot camera: `COZY_CAM_S=<metres from the start line>` puts a chase camera at that
+/// point of the stage (weather sampled there too). Returns the absolute arc length.
+fn debug_cam_s(track: &Track) -> Option<f32> {
+    std::env::var("COZY_CAM_S").ok().and_then(|v| v.parse::<f32>().ok()).map(|v| track.start_s + v)
 }
 
 pub fn interp(car: &rally_core::vehicle::Car, alpha: f32) -> (Vec3, Quat) {

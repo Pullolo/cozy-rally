@@ -36,6 +36,8 @@ pub struct Uniforms {
     pub params2: [f32; 4],
     pub params3: [f32; 4],
     pub params4: [f32; 4],
+    /// x snow cover, y wetness, z lightning flash, w overcast
+    pub params5: [f32; 4],
 }
 
 fn meta() -> ShaderMeta {
@@ -58,6 +60,7 @@ fn meta() -> ShaderMeta {
                 UniformDesc::new("params2", UniformType::Float4),
                 UniformDesc::new("params3", UniformType::Float4),
                 UniformDesc::new("params4", UniformType::Float4),
+                UniformDesc::new("params5", UniformType::Float4),
             ],
         },
     }
@@ -89,6 +92,8 @@ struct SkyUniforms {
     sun_dir: [f32; 3],
     sun_color: [f32; 3],
     params: [f32; 4],
+    /// x overcast, y lightning flash, z precipitation
+    params2: [f32; 4],
 }
 
 fn sky_meta() -> ShaderMeta {
@@ -104,6 +109,7 @@ fn sky_meta() -> ShaderMeta {
                 UniformDesc::new("sun_dir", UniformType::Float3),
                 UniformDesc::new("sun_color", UniformType::Float3),
                 UniformDesc::new("params", UniformType::Float4),
+                UniformDesc::new("params2", UniformType::Float4),
             ],
         },
     }
@@ -177,6 +183,75 @@ impl Environment {
         let f = self.fog_color;
         let s = self.sun_color;
         [(f[0] * 0.75 + s[0] * 0.3).min(1.0), (f[1] * 0.75 + s[1] * 0.24).min(1.0), (f[2] * 0.8 + s[2] * 0.1).min(1.0)]
+    }
+}
+
+/// Weather as the renderer sees it for one viewport (all 0 = clear). Set per viewport with
+/// `Gpu::set_weather`; every draw (world, fx, cars, sky, water) then uses the adjusted
+/// lighting/fog, so weather blends smoothly with each player's own position.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WeatherLook {
+    /// 0..1 cloud cover: dimmer & cooler sun, softer shadows, grey sky
+    pub overcast: f32,
+    /// 0..1 extra fog
+    pub fog: f32,
+    /// 0..1 rain / snowfall intensity (darker clouds)
+    pub precip: f32,
+    /// 0..1 wet surfaces (terrain/props; roads are baked)
+    pub wetness: f32,
+    /// 0..1 fresh snow cover on upward faces (snowfall)
+    pub snow: f32,
+    /// 0..1 lightning flash brightness this frame
+    pub flash: f32,
+    /// fog tints towards dusty sand instead of grey (desert haze)
+    pub dusty: bool,
+}
+
+impl WeatherLook {
+    pub fn is_clear(&self) -> bool {
+        *self == WeatherLook::default()
+    }
+
+    /// Lighting/fog environment under this weather
+    pub fn apply(&self, env: &Environment) -> Environment {
+        if self.is_clear() {
+            return *env;
+        }
+        let mix3 = |a: [f32; 3], b: [f32; 3], t: f32| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+        let mut e = *env;
+        let oc = self.overcast.clamp(0.0, 1.0);
+        let dim = 1.0 - 0.68 * oc;
+        let cool = mix3([1.0, 1.0, 1.0], [0.9, 0.95, 1.05], oc);
+        e.sun_color = [env.sun_color[0] * dim * cool[0], env.sun_color[1] * dim * cool[1], env.sun_color[2] * dim * cool[2]];
+        // diffuse skylight: flatter, slightly brighter ambient so overcast stays cosy, not gloomy
+        let sky_light = mix3([0.66, 0.68, 0.74], [0.50, 0.52, 0.58], self.precip);
+        e.ambient = mix3(env.ambient, sky_light, oc * 0.75);
+        let grey = if self.dusty {
+            [0.86, 0.74, 0.58]
+        } else if self.snow > 0.0 {
+            mix3([0.74, 0.77, 0.82], [0.86, 0.88, 0.92], self.snow)
+        } else {
+            mix3([0.72, 0.75, 0.80], [0.56, 0.59, 0.64], self.precip)
+        };
+        let murk = (self.fog * 0.95 + oc * 0.5 + self.precip * 0.3).min(1.0);
+        e.fog_color = mix3(env.fog_color, grey, murk);
+        e.fog_density = env.fog_density * (1.0 + 7.5 * self.fog + 1.8 * self.precip);
+        if self.flash > 0.0 {
+            let f = self.flash;
+            e.ambient = [e.ambient[0] + 0.55 * f, e.ambient[1] + 0.57 * f, e.ambient[2] + 0.65 * f];
+            e.fog_color = mix3(e.fog_color, [0.85, 0.87, 0.95], f * 0.35);
+        }
+        e
+    }
+
+    /// Sky gradient under this weather
+    pub fn sky(&self, env_w: &Environment, top: [f32; 3], horizon: [f32; 3]) -> ([f32; 3], [f32; 3]) {
+        let mix3 = |a: [f32; 3], b: [f32; 3], t: f32| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+        let oc = self.overcast.clamp(0.0, 1.0);
+        let top_oc = mix3([0.55, 0.59, 0.66], [0.36, 0.39, 0.45], self.precip);
+        let t = mix3(top, top_oc, oc);
+        let h = mix3(horizon, env_w.fog_color, (oc * 0.85 + self.fog * 0.6).min(1.0));
+        (t, h)
     }
 }
 
@@ -297,6 +372,8 @@ pub struct Gpu {
     frame_quality: Quality,
     /// when false, no draw samples the shadow map (e.g. volumetric fx particles)
     shadow_receive: bool,
+    /// weather for the viewport being drawn
+    weather: WeatherLook,
 }
 
 pub const STREAM_VERTS: usize = 60_000;
@@ -424,6 +501,7 @@ impl Gpu {
             frame_viewports: Vec::new(),
             frame_quality: Quality::High,
             shadow_receive: true,
+            weather: WeatherLook::default(),
         }
     }
 
@@ -460,6 +538,7 @@ impl Gpu {
         }
         self.target = Target::Screen;
         self.shadow = None;
+        self.weather = WeatherLook::default();
         let ctx = ctx();
         let (_, sh) = macroquad::miniquad::window::screen_size();
         ctx.begin_default_pass(PassAction::Nothing);
@@ -594,6 +673,7 @@ impl Gpu {
     /// Bloom, grade and composite all viewports drawn this frame onto the screen.
     pub fn finish_frame(&mut self, grade: &Grade, time: f32) {
         self.shadow = None;
+        self.weather = WeatherLook::default();
         self.target = Target::Screen;
         let (Some(pipes), Some(t)) = (&self.post_pipes, &self.post) else {
             return;
@@ -611,6 +691,15 @@ impl Gpu {
         self.shadow_receive = on;
     }
 
+    /// Weather for the following draws (per viewport; reset by `finish_frame` / `begin_3d`)
+    pub fn set_weather(&mut self, w: WeatherLook) {
+        self.weather = w;
+    }
+
+    pub fn weather(&self) -> WeatherLook {
+        self.weather
+    }
+
     /// True when the current pass renders the shadow map
     pub fn in_shadow_pass(&self) -> bool {
         self.target == Target::Shadow
@@ -619,6 +708,8 @@ impl Gpu {
     // ------------------------------------------------------------------ drawing
 
     fn uniforms(&self, view: &View, env: &Environment, model: Mat4, p: &DrawParams, blended: bool) -> Uniforms {
+        let wl = self.weather;
+        let env = &wl.apply(env);
         let (shadow_mat, shadow_on, texel_uv, texel_world, sbias) = match (&self.shadow, p.receive_shadow && self.shadow_receive) {
             (Some(s), true) if !super::debug::debug_skip("pcf") => (s.mat, 1.0, s.texel_uv, s.texel_world, s.depth_bias),
             _ => (Mat4::IDENTITY, 0.0, 0.0, 0.0, 0.0),
@@ -644,9 +735,11 @@ impl Gpu {
             cam_pos: view.eye.to_array(),
             tint: p.tint,
             params: [if p.fog { env.fog_density } else { 0.0 }, p.unlit, env.time, p.rim],
-            params2: [p.gloss, if blended || p.vertex_gloss { 0.0 } else { 1.0 }, shadow_on, if ao { p.ao_y[1] } else { 0.0 }],
+            // overcast softens (fades) sun shadows
+            params2: [p.gloss, if blended || p.vertex_gloss { 0.0 } else { 1.0 }, shadow_on * (1.0 - 0.72 * wl.overcast.clamp(0.0, 1.0)), if ao { p.ao_y[1] } else { 0.0 }],
             params3: [p.depth_bias, out_mode, texel_uv, p.ao_y[0]],
             params4: [texel_world, sbias, if p.vertex_gloss && !blended { 1.0 } else { 0.0 }, p.fog_max],
+            params5: [wl.snow, wl.wetness, wl.flash, wl.overcast],
         }
     }
 
@@ -774,6 +867,9 @@ impl Gpu {
         let ctx = ctx();
         ctx.apply_pipeline(&self.sky_pipe);
         depth_mask_on();
+        let wl = self.weather;
+        let env = &wl.apply(env);
+        let (sky_top, sky_horizon) = wl.sky(env, sky_top, sky_horizon);
         let u = SkyUniforms {
             view_proj: view.view_proj,
             model: Mat4::from_translation(view.eye),
@@ -782,7 +878,8 @@ impl Gpu {
             fog_color: env.fog_color,
             sun_dir: env.sun_dir.to_array(),
             sun_color: env.sun_color,
-            params: [if self.target == Target::Scene { 1.0 } else { 0.0 }, 0.0011, 1.0, env.time],
+            params: [if self.target == Target::Scene { 1.0 } else { 0.0 }, 0.0011, (1.0 - 0.95 * wl.overcast).max(0.0), env.time],
+            params2: [wl.overcast, wl.flash, wl.precip, 0.0],
         };
         ctx.apply_uniforms(UniformsSource::table(&u));
         for c in &mesh.chunks {
@@ -799,6 +896,8 @@ impl Gpu {
         let ctx = ctx();
         ctx.apply_pipeline(&self.water_pipe);
         depth_mask_on();
+        let env = &self.weather.apply(env);
+        let sky_color = if self.weather.is_clear() { sky_color } else { let (t, h) = self.weather.sky(env, sky_color, env.fog_color); [(t[0] + h[0]) * 0.5, (t[1] + h[1]) * 0.5, (t[2] + h[2]) * 0.5] };
         let u = WaterUniforms {
             view_proj: view.view_proj,
             sun_dir: env.sun_dir.to_array(),

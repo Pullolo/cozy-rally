@@ -106,6 +106,18 @@ pub fn set_position(sample: usize, race_time: f32) {
     })
 }
 
+/// Chase-style camera pose at arc length `s` (used by benchmarks and debug cameras)
+pub fn chase_pose(track: &Track, s: f32) -> (Vec3, Vec3) {
+    let n = track.samples.len();
+    let i = ((s / rally_core::track::SAMPLE_SPACING) as usize).min(n - 1);
+    let smp = &track.samples[i];
+    let fwd = Vec3::new(smp.tangent.x, 0.0, smp.tangent.z).normalize_or_zero();
+    let mut eye = smp.pos + Vec3::Y * 0.6 - fwd * 6.8 + Vec3::Y * 2.4;
+    eye.y = eye.y.max(track.visual_height(eye.x, eye.z) + 1.0);
+    let ahead = &track.samples[(i + 5).min(n - 1)];
+    (eye, ahead.pos + Vec3::Y * 1.0)
+}
+
 /// Camera pose to render this frame, if benchmarking
 pub fn pose() -> Option<(Vec3, Vec3)> {
     BENCH.with(|b| b.borrow().as_ref().and_then(|b| b.poses.get(b.pose).map(|p| (p.1, p.2))))

@@ -9,6 +9,7 @@ pub mod post;
 pub mod scene;
 pub mod shaders;
 pub mod shadow;
+pub mod weather;
 
 pub use quality::Quality;
 use std::sync::OnceLock;

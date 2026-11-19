@@ -1,49 +1,21 @@
-//! Minimal visual hookup of the stage conditions timeline (`Track::conditions`):
-//! fog density / colour, overcast dimming, and a light 2D rain / snow overlay.
-//!
-//! This is a placeholder so dynamic stages read correctly today; the rendering / FX agents
-//! can replace it with real 3D precipitation, wet-road gloss (`Track::puddle_at`) etc.
-use crate::render::gpu::Environment;
+//! 2D rain / snow overlay (stand-in until FX draws 3D precipitation; switch it off with
+//! `set_overlay_2d(false)`). Weather lighting, fog, sky, wet roads, snow cover and lightning
+//! are rendered by `render::weather` + the shaders, per viewport.
 use macroquad::prelude::*;
-use rally_core::track::Track;
 use rally_core::weather::Weather;
-use std::cell::RefCell;
 
-thread_local! {
-    /// (track pointer, environment as built by the scene)
-    static BASE: RefCell<Option<(usize, Environment)>> = const { RefCell::new(None) };
-}
+static OVERLAY_2D: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
-fn mix3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
-    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
-}
-
-/// Blend the scene environment towards the weather at arc length `s` (call once per frame).
-pub fn apply(env: &mut Environment, track: &std::sync::Arc<Track>, s: f32) {
-    if track.conditions.keys.is_empty() {
-        return;
-    }
-    let key = std::sync::Arc::as_ptr(track) as usize;
-    let base = BASE.with(|b| {
-        let mut b = b.borrow_mut();
-        if b.as_ref().is_none_or(|x| x.0 != key) {
-            *b = Some((key, *env));
-        }
-        b.as_ref().unwrap().1
-    });
-    let w = track.conditions.at(s);
-    let grey = if track.biome == rally_core::biome::Biome::Desert && w.fog > 0.2 && w.precipitation < 0.1 { [0.86, 0.72, 0.55] } else { [0.70, 0.73, 0.78] };
-    let murk = (w.fog * 0.9 + w.overcast * 0.35 + w.precipitation * 0.3).min(1.0);
-    env.fog_color = mix3(base.fog_color, grey, murk);
-    env.fog_density = base.fog_density * (1.0 + 7.0 * w.fog + 1.5 * w.precipitation);
-    let dim = 1.0 - 0.55 * w.overcast;
-    env.sun_color = [base.sun_color[0] * dim, base.sun_color[1] * dim, base.sun_color[2] * dim];
-    env.ambient = mix3(base.ambient, [0.5, 0.53, 0.6], w.overcast * 0.5);
+/// Turn the 2D rain/snow overlay off once real 3D precipitation particles exist (FX):
+/// `crate::weather_view::set_overlay_2d(false)`.
+#[allow(dead_code)]
+pub fn set_overlay_2d(on: bool) {
+    OVERLAY_2D.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Light rain streaks / snowflakes over a viewport.
 pub fn draw_overlay(w: &Weather, x: f32, y: f32, wd: f32, ht: f32, k: f32) {
-    if w.precipitation < 0.03 {
+    if w.precipitation < 0.03 || !OVERLAY_2D.load(std::sync::atomic::Ordering::Relaxed) {
         return;
     }
     let t = get_time() as f32;
