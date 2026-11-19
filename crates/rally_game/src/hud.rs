@@ -89,11 +89,23 @@ pub struct HudState {
     time: f32,
     /// COZY_HUD_DEMO=1..4 forces HUD messages on screen for visual testing
     demo: u32,
+    /// Campaign stage: best time to show / compare against (from the campaign store)
+    pub ref_best: Option<f32>,
+    /// Campaign stage medal targets (for the "next medal" pill)
+    pub medals: Option<rally_core::campaign::MedalTimes>,
 }
 
 impl HudState {
     pub fn new(s: &RaceSession) -> HudState {
-        HudState { history: vec![Vec::new(); s.world.cars.len()], last_sample: -1.0, players: (0..s.players.len()).map(|_| PlayerHud::default()).collect(), time: 0.0, demo: std::env::var("COZY_HUD_DEMO").ok().and_then(|v| v.parse().ok()).unwrap_or(0) }
+        HudState { history: vec![Vec::new(); s.world.cars.len()], last_sample: -1.0, players: (0..s.players.len()).map(|_| PlayerHud::default()).collect(), time: 0.0, demo: std::env::var("COZY_HUD_DEMO").ok().and_then(|v| v.parse().ok()).unwrap_or(0), ref_best: None, medals: None }
+    }
+
+    /// Campaign stages: compare splits against the stored best run
+    pub fn set_reference(&mut self, best: Option<f32>, best_splits: Vec<f32>) {
+        self.ref_best = best;
+        for p in self.players.iter_mut() {
+            p.best_splits = best_splits.clone();
+        }
     }
 
     pub fn update(&mut self, s: &RaceSession, dt: f32) {
@@ -282,6 +294,10 @@ pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
     let cw = 214.0 * k;
     let ch = 84.0 * k;
     panel_hud(bx, by, cw, ch, k);
+    let stage = !s.track().is_loop();
+    if stage {
+        draw_stage_card(s, r, bx, by, cw, ch, k);
+    } else {
     let bounce = if h.place_age < 0.8 && h.place_change != 0 { 1.0 + 0.35 * (1.0 - pop(h.place_age * 1.4)).abs().min(1.0) * (1.0 - h.place_age / 0.8) } else { 1.0 };
     let place = h.shown_place.max(1);
     let num = format!("{place}");
@@ -298,6 +314,7 @@ pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
     let lap = r.lap.min(race.laps);
     text_right(&format!("{}/{}", lap, race.laps), lx, by + 64.0 * k, 34.0 * k, INK);
     rounded_rect(bx + cw * 0.56, by + 16.0 * k, 2.0 * k, ch - 32.0 * k, 1.0 * k, with_alpha(INK, 0.1));
+    }
     // position change chip
     if h.place_change != 0 && h.place_age < 2.6 {
         let a = (1.0 - (h.place_age - 2.0) / 0.6).clamp(0.0, 1.0);
@@ -315,7 +332,12 @@ pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
     }
 
     // ---------------------------------------------------------------- standings (left, under the card)
-    draw_standings(s, hud, player, bx, by + ch + 12.0 * k, 196.0 * k, k, vp);
+    if stage {
+        draw_weather_chip(s, car, r, bx, by + ch + 12.0 * k, k);
+        draw_stage_progress(s, player, vp, k, t);
+    } else {
+        draw_standings(s, hud, player, bx, by + ch + 12.0 * k, 196.0 * k, k, vp);
+    }
 
     // ---------------------------------------------------------------- timer card (top right)
     let tw = 230.0 * k;
@@ -325,11 +347,18 @@ pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
     let total = r.finish_time.unwrap_or(race.clock);
     text("TIME", tx + 18.0 * k, by + 26.0 * k, 15.0 * k, INK_SOFT);
     text(&format_time(total), tx + 18.0 * k, by + 58.0 * k, 34.0 * k, INK);
-    let cur_lap = if r.finished { r.lap_times.last().copied().unwrap_or(0.0) } else { race.clock - r.lap_start };
-    text("Lap", tx + 18.0 * k, by + 82.0 * k, 17.0 * k, INK_SOFT);
+    let cur_lap = if stage {
+        r.finish_time.unwrap_or(race.clock) - r.split_times.last().copied().unwrap_or(0.0)
+    } else if r.finished {
+        r.lap_times.last().copied().unwrap_or(0.0)
+    } else {
+        race.clock - r.lap_start
+    };
+    text(if stage { "Split" } else { "Lap" }, tx + 18.0 * k, by + 82.0 * k, 17.0 * k, INK_SOFT);
     text(&format_time(cur_lap), tx + 62.0 * k, by + 82.0 * k, 17.0 * k, INK);
     text("Best", tx + 18.0 * k, by + 98.0 * k, 15.0 * k, INK_SOFT);
-    text(&r.best_lap.map(format_time).unwrap_or_else(|| "--:--.---".into()), tx + 62.0 * k, by + 98.0 * k, 15.0 * k, INK_SOFT);
+    let best = if stage { hud.ref_best } else { r.best_lap };
+    text(&best.map(format_time).unwrap_or_else(|| "--:--.---".into()), tx + 62.0 * k, by + 98.0 * k, 15.0 * k, INK_SOFT);
     // live delta chip
     let mut chip_y = by + th + 10.0 * k;
     if let Some(d) = h.delta {
@@ -343,6 +372,21 @@ pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
         rounded_rect(tx + tw - w - 4.0 * k, chip_y + 4.0 * k, w, hh - 8.0 * k, (hh - 8.0 * k) * 0.5, col);
         text_mid(&label, tx + tw - w * 0.5 - 4.0 * k, chip_y + hh * 0.5, 18.0 * k, INK);
         chip_y += hh + 8.0 * k;
+    }
+    // campaign: next medal still reachable (one column with the split popup below it)
+    if let (true, Some(m)) = (stage, hud.medals) {
+        use rally_core::campaign::Medal;
+        let clock = r.finish_time.unwrap_or(race.clock);
+        let target = [(Medal::Platinum, m.platinum), (Medal::Gold, m.gold), (Medal::Silver, m.silver), (Medal::Bronze, m.bronze)].into_iter().find(|(_, tm)| *tm >= clock);
+        if let Some((md, tm)) = target {
+            let hh = 32.0 * k;
+            rounded_rect(tx, chip_y + 2.0 * k, tw, hh, hh * 0.5, Color::new(0.2, 0.12, 0.25, 0.14));
+            rounded_rect(tx, chip_y, tw, hh, hh * 0.5, with_alpha(mix(CREAM, crate::campaign_screens::medal_color(md), 0.35), 0.95));
+            crate::campaign_screens::draw_medal(tx + 20.0 * k, chip_y + hh * 0.5 + 2.0 * k, 8.0 * k, md, 1.0);
+            text(crate::campaign_screens::medal_name(md), tx + 36.0 * k, mid_baseline(chip_y + hh * 0.5, 16.0 * k), 16.0 * k, INK);
+            text_right(&format_time(tm), tx + tw - 14.0 * k, mid_baseline(chip_y + hh * 0.5, 16.0 * k), 16.0 * k, INK);
+            chip_y += hh + 8.0 * k;
+        }
     }
     // checkpoint split flash (under the timer, keeping top-centre free for pace notes)
     if let Some((split, delta)) = h.split_flash {
@@ -384,13 +428,13 @@ pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
     let mx = vp.x + vp.w * 0.5;
     let my = vp.y + vp.h * 0.40;
     match race.phase {
-        RacePhase::Countdown(ct) => draw_countdown(s, ct, mx, my, k),
+        RacePhase::Countdown(ct) => draw_countdown(s, ct, mx, my, k, stage),
         RacePhase::Racing | RacePhase::Finished => {
             if race.clock < 1.3 && race.is_racing() {
                 let age = race.clock;
                 let a = (1.0 - (age - 0.8) / 0.5).clamp(0.0, 1.0);
                 let sc = pop(age * 1.2) * (1.0 + age * 0.15);
-                draw_lights(mx, my - 112.0 * k, k, 3, true, a);
+                draw_lights(mx, my + if stage { 104.0 } else { -112.0 } * k, k, 3, true, a);
                 text_sticker_centered("GO!", mx, my + 50.0 * k * sc, 150.0 * k * sc.max(0.01), MINT, a);
             }
             if let Some(fa) = h.finish_age {
@@ -628,7 +672,8 @@ fn draw_lights(cx: f32, cy: f32, k: f32, lit: usize, go: bool, alpha: f32) {
     }
 }
 
-fn draw_countdown(s: &RaceSession, ct: f32, mx: f32, my: f32, k: f32) {
+/// On stages the start lights sit *below* the countdown so the pace-notes strip stays clear
+fn draw_countdown(s: &RaceSession, ct: f32, mx: f32, my: f32, k: f32, stage: bool) {
     if ct > 3.0 {
         let age = 4.0 - ct;
         let sc = ease_back((age / 0.5).min(1.0));
@@ -643,13 +688,13 @@ fn draw_countdown(s: &RaceSession, ct: f32, mx: f32, my: f32, k: f32) {
                 text_mid("Get ready!", mx, my + 8.0 * k, 24.0 * k, shade(PEACH, 0.85));
             }
         }
-        draw_lights(mx, my - 112.0 * k - 20.0 * k, k, 0, false, sc.min(1.0));
+        draw_lights(mx, my + if stage { 70.0 } else { -132.0 } * k, k, 0, false, sc.min(1.0));
         return;
     }
     let n = ct.ceil().max(1.0) as i32;
     let age = (n as f32 - ct).clamp(0.0, 1.0);
     let lit = (4 - n).clamp(0, 3) as usize;
-    draw_lights(mx, my - 112.0 * k, k, lit, false, 1.0);
+    draw_lights(mx, my + if stage { 104.0 } else { -112.0 } * k, k, lit, false, 1.0);
     let sc = pop(age * 1.15).max(0.0);
     let col = [MINT, BUTTER, PEACH][((n - 1).clamp(0, 2)) as usize];
     // soft burst ring behind the number
@@ -742,4 +787,194 @@ fn draw_minimap(s: &RaceSession, player: usize, x: f32, y: f32, size: f32) {
     circle(p.x, p.y, 7.0 * k, car_color(s, me));
     let tip = p + d * 17.0 * k;
     draw_triangle(tip, p + d * 8.0 * k + n2 * 6.0 * k, p + d * 8.0 * k - n2 * 6.0 * k, INK);
+}
+
+// ---------------------------------------------------------------- campaign stages
+
+fn distance_label(m: f32) -> String {
+    if m >= 1000.0 {
+        format!("{:.1} km", m / 1000.0)
+    } else {
+        format!("{:.0} m", (m / 10.0).round() * 10.0)
+    }
+}
+
+/// Stage card (replaces position/lap): distance to the finish + split counter
+fn draw_stage_card(s: &RaceSession, r: &rally_core::race::RacerProgress, bx: f32, by: f32, cw: f32, _ch: f32, k: f32) {
+    let track = s.track();
+    let len = track.stage_length();
+    let to_go = (len * (1.0 - r.progress)).max(0.0);
+    text("TO FINISH", bx + 18.0 * k, by + 30.0 * k, 15.0 * k, INK_SOFT);
+    text(&distance_label(to_go), bx + 18.0 * k, by + 66.0 * k, 34.0 * k, INK);
+    let lx = bx + cw - 18.0 * k;
+    text_right("SPLIT", lx, by + 30.0 * k, 15.0 * k, INK_SOFT);
+    let n = track.splits.len();
+    text_right(&format!("{}/{}", r.next_split.min(n), n), lx, by + 66.0 * k, 30.0 * k, INK);
+    rounded_rect(bx + cw * 0.64, by + 16.0 * k, 2.0 * k, 52.0 * k, 1.0 * k, with_alpha(INK, 0.1));
+}
+
+/// Weather colour for timelines / chips
+pub fn weather_color(kind: crate::campaign_data::WxKind) -> Color {
+    use crate::campaign_data::WxKind::*;
+    match kind {
+        Clear => BUTTER,
+        Cloudy => Color::new(0.82, 0.84, 0.9, 1.0),
+        Wet => lighten(SKY, 0.3),
+        Showers => SKY,
+        Rain => shade(SKY, 0.85),
+        Storm => Color::new(0.52, 0.55, 0.72, 1.0),
+        Fog => LAVENDER,
+        Snow => Color::new(0.95, 0.97, 1.0, 1.0),
+        Sand => PEACH,
+    }
+}
+
+/// Small drawn weather icon (no font glyphs needed)
+pub fn weather_icon(kind: crate::campaign_data::WxKind, cx: f32, cy: f32, r: f32) {
+    use crate::campaign_data::WxKind::*;
+    let cloud = |x: f32, y: f32, col: Color| {
+        circle(x - r * 0.42, y + r * 0.12, r * 0.42, col);
+        circle(x + r * 0.05, y - r * 0.12, r * 0.55, col);
+        circle(x + r * 0.5, y + r * 0.15, r * 0.38, col);
+        rounded_rect(x - r * 0.82, y + r * 0.1, r * 1.7, r * 0.45, r * 0.22, col);
+    };
+    let drops = |n: usize, col: Color| {
+        for i in 0..n {
+            let x = cx - r * 0.45 + i as f32 * r * 0.45;
+            let y = cy + r * 0.78;
+            draw_triangle(vec2(x, y - r * 0.2), vec2(x - r * 0.1, y + r * 0.02), vec2(x + r * 0.1, y + r * 0.02), col);
+            circle(x, y + r * 0.04, r * 0.1, col);
+        }
+    };
+    match kind {
+        Clear => {
+            for i in 0..8 {
+                let a = i as f32 / 8.0 * std::f32::consts::TAU;
+                draw_line(cx + a.cos() * r * 0.62, cy + a.sin() * r * 0.62, cx + a.cos() * r * 0.92, cy + a.sin() * r * 0.92, r * 0.14, shade(BUTTER, 0.9));
+            }
+            circle(cx, cy, r * 0.48, BUTTER);
+        }
+        Cloudy => cloud(cx, cy - r * 0.1, Color::new(0.78, 0.8, 0.88, 1.0)),
+        Wet => {
+            draw_triangle(vec2(cx, cy - r * 0.8), vec2(cx - r * 0.45, cy + r * 0.1), vec2(cx + r * 0.45, cy + r * 0.1), SKY);
+            circle(cx, cy + r * 0.2, r * 0.47, SKY);
+        }
+        Showers => {
+            circle(cx + r * 0.35, cy - r * 0.35, r * 0.4, BUTTER);
+            cloud(cx - r * 0.05, cy - r * 0.15, Color::new(0.85, 0.87, 0.93, 1.0));
+            drops(2, SKY);
+        }
+        Rain => {
+            cloud(cx, cy - r * 0.25, Color::new(0.74, 0.77, 0.86, 1.0));
+            drops(3, shade(SKY, 0.85));
+        }
+        Storm => {
+            cloud(cx, cy - r * 0.25, Color::new(0.55, 0.57, 0.7, 1.0));
+            let x = cx + r * 0.05;
+            let y = cy + r * 0.25;
+            draw_triangle(vec2(x + r * 0.15, y - r * 0.1), vec2(x - r * 0.25, y + r * 0.35), vec2(x + r * 0.02, y + r * 0.35), BUTTER);
+            draw_triangle(vec2(x - r * 0.05, y + r * 0.3), vec2(x + r * 0.2, y + r * 0.3), vec2(x - r * 0.18, y + r * 0.85), BUTTER);
+        }
+        Fog => {
+            for i in 0..3 {
+                let y = cy - r * 0.45 + i as f32 * r * 0.45;
+                let off = if i == 1 { r * 0.15 } else { 0.0 };
+                rounded_rect(cx - r * 0.85 + off, y - r * 0.1, r * 1.6, r * 0.2, r * 0.1, shade(LAVENDER, 0.85));
+            }
+        }
+        Snow => {
+            cloud(cx, cy - r * 0.25, Color::new(0.8, 0.83, 0.92, 1.0));
+            for i in 0..3 {
+                let x = cx - r * 0.45 + i as f32 * r * 0.45;
+                circle(x, cy + r * 0.72, r * 0.13, Color::new(1.0, 1.0, 1.0, 1.0));
+                circle(x, cy + r * 0.72, r * 0.07, shade(SKY, 0.8));
+            }
+        }
+        Sand => {
+            for i in 0..3 {
+                let y = cy - r * 0.4 + i as f32 * r * 0.4;
+                arc(cx - r * 0.3 + i as f32 * r * 0.15, y, r * 0.3, r * 0.42, std::f32::consts::PI, std::f32::consts::TAU, shade(PEACH, 0.9));
+            }
+        }
+    }
+}
+
+/// Weather chip: icon, condition name, grip hint
+fn draw_weather_chip(s: &RaceSession, car: &rally_core::vehicle::Car, r: &rally_core::race::RacerProgress, x: f32, y: f32, k: f32) {
+    let track = s.track();
+    let w = track.weather_at(r.s);
+    let kind = crate::campaign_data::classify(&w);
+    let (surface, _) = track.surface_at(car.pos, Some(r.track_index));
+    let grip = (w.grip_factor(surface) * 100.0).round();
+    let hh = 40.0 * k;
+    let ww = 196.0 * k;
+    rounded_rect(x, y + 3.0 * k, ww, hh, hh * 0.5, Color::new(0.2, 0.12, 0.25, 0.14));
+    rounded_rect(x, y, ww, hh, hh * 0.5, with_alpha(CREAM, 0.94));
+    circle(x + hh * 0.5, y + hh * 0.5, hh * 0.42, with_alpha(weather_color(kind), 0.35));
+    weather_icon(kind, x + hh * 0.5, y + hh * 0.5, hh * 0.34);
+    text(kind.label(), x + hh + 4.0 * k, mid_baseline(y + hh * 0.5, 17.0 * k), 17.0 * k, INK);
+    let gcol = if grip >= 95.0 { shade(MINT, 0.7) } else if grip >= 85.0 { shade(BUTTER, 0.75) } else { BERRY };
+    text_right(&format!("grip {grip:.0}%"), x + ww - 12.0 * k, mid_baseline(y + hh * 0.5, 14.0 * k), 14.0 * k, gcol);
+}
+
+/// Start -> finish progress bar: weather-tinted track, split markers, ghost and you
+fn draw_stage_progress(s: &RaceSession, player: usize, vp: &Viewport, k: f32, t: f32) {
+    let track = s.track();
+    let me = s.players[player].car;
+    let r = &s.world.race.racers[me];
+    let len = track.stage_length().max(1.0);
+    let w = (vp.w * 0.40).min(620.0 * k);
+    let x = vp.x + (vp.w - w) * 0.5;
+    let y = vp.y + vp.h - 44.0 * k;
+    let bh = 12.0 * k;
+    rounded_rect(x - 6.0 * k, y - bh * 0.5 - 6.0 * k + 3.0 * k, w + 12.0 * k, bh + 12.0 * k, (bh + 12.0 * k) * 0.5, Color::new(0.2, 0.12, 0.25, 0.16));
+    rounded_rect(x - 6.0 * k, y - bh * 0.5 - 6.0 * k, w + 12.0 * k, bh + 12.0 * k, (bh + 12.0 * k) * 0.5, with_alpha(CREAM, 0.92));
+    // weather timeline under the bar
+    let n = 48;
+    for i in 0..n {
+        let f0 = i as f32 / n as f32;
+        let wx = track.weather_at(track.start_s + (f0 + 0.5 / n as f32) * len);
+        let kind = crate::campaign_data::classify(&wx);
+        let c = if kind == crate::campaign_data::WxKind::Clear { with_alpha(INK, 0.08) } else { with_alpha(weather_color(kind), 0.75) };
+        let (sx, sw) = (x + f0 * w, w / n as f32 + 0.5);
+        draw_rectangle(sx.max(x + bh * 0.3), y - bh * 0.5, sw.min(x + w - bh * 0.3 - sx).max(0.0), bh, c);
+    }
+    // driven part
+    let p = r.progress.clamp(0.0, 1.0);
+    rounded_rect(x, y - bh * 0.25, (w * p).max(bh * 0.5), bh * 0.5, bh * 0.25, shade(MINT, 0.85));
+    // split markers
+    for (i, sp) in track.splits.iter().enumerate() {
+        let f = ((sp - track.start_s) / len).clamp(0.0, 1.0);
+        let passed = i < r.next_split;
+        let mx = x + f * w;
+        draw_triangle(vec2(mx, y - bh * 0.9), vec2(mx - 5.0 * k, y - bh * 1.5), vec2(mx + 5.0 * k, y - bh * 1.5), if passed { BUTTER } else { with_alpha(INK, 0.45) });
+        rounded_rect(mx - 1.5 * k, y - bh * 0.6, 3.0 * k, bh * 1.2, 1.5 * k, if passed { shade(BUTTER, 0.8) } else { with_alpha(INK, 0.35) });
+    }
+    // start dot + finish chequer
+    circle(x, y, bh * 0.55, INK);
+    circle(x, y, bh * 0.32, MINT);
+    let fx = x + w;
+    for i in 0..2 {
+        for j in 0..2 {
+            let c = if (i + j) % 2 == 0 { INK } else { Color::new(1.0, 1.0, 1.0, 1.0) };
+            draw_rectangle(fx - bh * 0.5 + i as f32 * bh * 0.5, y - bh * 0.5 + j as f32 * bh * 0.5, bh * 0.5, bh * 0.5, c);
+        }
+    }
+    // you
+    let mx = x + p * w;
+    let bob = (t * 4.0).sin() * 1.5 * k;
+    draw_triangle(vec2(mx, y - 11.0 * k + bob), vec2(mx - 6.0 * k, y - 19.0 * k + bob), vec2(mx + 6.0 * k, y - 19.0 * k + bob), INK);
+    circle(mx, y, 9.5 * k, INK);
+    circle(mx, y, 7.0 * k, car_color(s, me));
+    // ghost (your best run): lavender pin under the bar, so it stays visible when close
+    if let Some(tt) = s.tt.as_ref() {
+        if let Some((gpos, _)) = tt.tt.ghost_pose(&s.world, player) {
+            let q = track.query(gpos, Some(r.track_index));
+            let gx = x + track.stage_progress(q.s) * w;
+            draw_triangle(vec2(gx, y + 8.0 * k), vec2(gx - 6.0 * k, y + 16.0 * k), vec2(gx + 6.0 * k, y + 16.0 * k), shade(LAVENDER, 0.8));
+            circle(gx, y + 19.0 * k, 6.5 * k, shade(LAVENDER, 0.8));
+            circle(gx, y + 19.0 * k, 4.0 * k, Color::new(1.0, 1.0, 1.0, 0.9));
+            circle(gx, y, 5.0 * k, with_alpha(LAVENDER, 0.9));
+        }
+    }
 }

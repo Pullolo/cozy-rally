@@ -211,6 +211,17 @@ pub fn medal_times(id: &str) -> Option<MedalTimes> {
     Some(medals_from_reference(r.time))
 }
 
+/// [ui] Store a reference time computed off-thread (the stage intro runs
+/// `campaign_run::reference_run` in a worker so the UI never blocks)
+pub fn cache_reference(id: &str, reference: f32) {
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        ensure_loaded(&mut s);
+        s.medals.insert(id.to_string(), reference);
+        save(&s);
+    });
+}
+
 fn golds(st: &State, ids: &[String]) -> u32 {
     ids.iter().filter(|id| st.progress.get(*id).is_some_and(|p| p.medal >= Medal::Gold)).count() as u32
 }

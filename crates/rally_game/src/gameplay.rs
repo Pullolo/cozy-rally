@@ -212,11 +212,19 @@ pub fn draw_ghost(sess: &RaceSession, gpu: &mut Gpu, view: &View, player: usize)
 
 /// Small time-trial HUD line under the timer panel: live delta to the ghost, last lap result
 pub fn draw_hud(sess: &RaceSession, player: usize, vp: &Viewport) {
-    crate::campaign_mode::draw_hud(sess, player, vp);
+    // [ui] Campaign stages: hud.rs draws the medal-target pill and split popups in one
+    // column under the timer card, so the TT pill / campaign_mode HUD are skipped there.
+    let campaign = sess.config.mode == GameMode::Campaign;
+    if !campaign {
+        crate::campaign_mode::draw_hud(sess, player, vp);
+    }
     let (until, mode) = LINE_TOAST.with(|t| t.get());
     if get_time() < until && player == 0 {
         let k = scale() * (vp.h / screen_height()).max(0.6);
         text_outlined_centered(mode.name(), vp.x + vp.w * 0.5, vp.y + vp.h * 0.68, 30.0 * k, CREAM);
+    }
+    if campaign {
+        return;
     }
     let Some(t) = sess.tt.as_ref() else { return };
     let k = scale() * (vp.h / screen_height()).max(0.6);

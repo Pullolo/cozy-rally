@@ -487,6 +487,28 @@ fn button_with_sound(focus: &mut Focus, label: &str, x: f32, y: f32, w: f32, h: 
     activated
 }
 
+/// Generic focusable area for custom-drawn cards: handles focus, hover, click and Enter.
+/// Returns (smoothed highlight 0..1, activated).
+pub fn focus_item(focus: &mut Focus, x: f32, y: f32, w: f32, h: f32) -> (f32, bool) {
+    let id = focus.next_id();
+    let (hover, clicked) = pointer_pressed_in(Rect::new(x, y, w, h));
+    focus.hover(id, hover);
+    let focused = focus.index == id;
+    let hl = focus.highlight(id, focused);
+    let activated = clicked || (focused && focus.activated);
+    if activated {
+        crate::audio::ui_sound(crate::audio::UiSound::Select);
+    }
+    (hl, activated)
+}
+
+impl Focus {
+    /// Index the next widget will get (lets screens react to which item is focused)
+    pub fn peek_next(&self) -> usize {
+        self.counter
+    }
+}
+
 /// "< value >" selector. Returns -1/0/+1 change.
 pub fn selector(focus: &mut Focus, label: &str, value: &str, x: f32, y: f32, w: f32, h: f32, color: Color) -> i32 {
     selector_swatch(focus, label, value, None, x, y, w, h, color)

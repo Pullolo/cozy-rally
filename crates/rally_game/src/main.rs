@@ -8,6 +8,8 @@ mod game;
 mod campaign_mode;
 mod gameplay;
 mod line_assist;
+mod campaign_data;
+mod campaign_screens;
 mod hud;
 mod input;
 mod models;
@@ -54,11 +56,15 @@ enum Screen {
     Results,
     Help,
     Settings,
+    Campaign,
+    StageIntro,
+    StageResults,
+    Leaderboard,
 }
 
 impl Screen {
     fn is_menu(self) -> bool {
-        matches!(self, Screen::Title | Screen::Setup | Screen::Help | Screen::Settings)
+        matches!(self, Screen::Title | Screen::Setup | Screen::Help | Screen::Settings | Screen::Campaign | Screen::StageIntro | Screen::Leaderboard)
     }
 }
 
@@ -221,6 +227,8 @@ struct App {
     tip: usize,
     fps: f32,
     pointer_seen: f32,
+    /// Campaign screens state (chapter/stage selection, local progress, active stage)
+    camp: campaign_screens::CampState,
 }
 
 impl App {
@@ -253,8 +261,11 @@ impl App {
             settings::save();
         }
         // Settings/Help can be opened over a paused race: only the title/setup end a race
-        if matches!(s, Screen::Title | Screen::Setup) {
+        if matches!(s, Screen::Title | Screen::Setup | Screen::Campaign | Screen::StageIntro | Screen::Leaderboard) {
             self.end_session();
+        }
+        if matches!(s, Screen::Title | Screen::Setup) {
+            self.camp.active = None;
         }
         if s.is_menu() && self.session.is_none() {
             self.set_music(audio::Music::Menu);
@@ -327,7 +338,15 @@ impl App {
             p.cam.mode = cam;
         }
         self.autopilots = (0..s.players.len()).map(|i| rally_core::ai::AiDriver::new(0.85, i as f32 * 1.5 - 0.7)).collect();
-        self.hud = Some(HudState::new(&s));
+        let mut hud = HudState::new(&s);
+        if s.config.mode == gameplay::GameMode::Campaign {
+            let (best, splits, medals) = self.camp.hud_reference();
+            hud.set_reference(best, splits);
+            hud.medals = medals;
+        } else {
+            self.camp.active = None;
+        }
+        self.hud = Some(hud);
         self.session = Some(s);
         self.screen = Screen::Race;
         self.screen_t = 0.0;
@@ -344,7 +363,8 @@ impl App {
         let Some(s) = self.session.as_mut() else { return };
         for i in 0..s.players.len() {
             let car = s.players[i].car;
-            s.ais[car] = Some(rally_core::ai::AiDriver::new(0.95, 0.0));
+            let skill = std::env::var("COZY_FF_SKILL").ok().and_then(|v| v.parse().ok()).unwrap_or(0.95);
+            s.ais[car] = Some(rally_core::ai::AiDriver::new(skill, 0.0));
         }
         s.world.race.finish_grace = 20.0;
         let mut guard = 0;
@@ -354,6 +374,10 @@ impl App {
                 h.update(s, 0.1);
             }
             guard += 1;
+        }
+        if self.camp.active.is_some() {
+            self.stage_over();
+            return;
         }
         self.screen = Screen::Results;
         self.results_cine = Cinematic::orbit(s.players[0].car);
@@ -528,10 +552,10 @@ impl App {
         draw_logo(x, logo_y, 100.0 * s, t, self.screen_t);
         
         let bw = 330.0 * s;
-        let bh = 56.0 * s;
-        let gap = 14.0 * s;
-        let mut y = (sh * 0.42).max(logo_y + 90.0 * s);
-        let items: [(&str, Color); 5] = [("Solo race", PEACH), ("Split-screen", SKY), ("Settings", BUTTER), ("How to play", MINT), ("Quit", LAVENDER)];
+        let bh = 50.0 * s;
+        let gap = 11.0 * s;
+        let mut y = (sh * 0.38).max(logo_y + 84.0 * s);
+        let items: [(&str, Color); 6] = [("Campaign", BUTTER), ("Quick race", PEACH), ("Split-screen", SKY), ("Settings", LAVENDER), ("How to play", MINT), ("Quit", CREAM)];
         self.focus.begin(items.len());
         let mut chosen = None;
         for (i, (label, col)) in items.iter().enumerate() {
@@ -544,23 +568,24 @@ impl App {
             y += bh + gap;
         }
         match chosen {
-            Some(0) => {
+            Some(0) => self.goto(Screen::Campaign),
+            Some(1) => {
                 self.setup.split = false;
                 self.goto(Screen::Setup);
             }
-            Some(1) => {
+            Some(2) => {
                 self.setup.split = true;
                 self.goto(Screen::Setup);
             }
-            Some(2) => {
+            Some(3) => {
                 self.settings_from = Screen::Title;
                 self.goto(Screen::Settings);
             }
-            Some(3) => {
+            Some(4) => {
                 self.help_from = Screen::Title;
                 self.goto(Screen::Help);
             }
-            Some(4) => std::process::exit(0),
+            Some(5) => std::process::exit(0),
             _ => {}
         }
         // footer: now showing + hint
@@ -1059,6 +1084,8 @@ impl App {
         let paused = sess.paused;
         if paused {
             self.pause_menu();
+        } else if sess.is_over() && self.camp.active.is_some() {
+            self.stage_over();
         } else if sess.is_over() {
             let car = sess.players.first().map(|p| p.car).unwrap_or(0);
             self.results_cine = Cinematic::orbit(car);
@@ -1111,7 +1138,7 @@ impl App {
             self.switch_now(Screen::Settings);
         }
         if quit {
-            self.goto(Screen::Title);
+            self.goto(if self.camp.active.is_some() { Screen::Campaign } else { Screen::Title });
         }
     }
 
@@ -1432,6 +1459,7 @@ async fn main() {
         tip: (random_seed() % TIPS.len() as u64) as usize,
         fps: 60.0,
         pointer_seen: 0.0,
+        camp: campaign_screens::CampState::new(),
         hooks,
     };
     app.set_music(audio::Music::Menu);
@@ -1451,12 +1479,31 @@ async fn main() {
     if let Ok(b) = std::env::var("COZY_BIOME") {
         app.setup.biome = b.parse().unwrap_or(0);
     }
+    // COZY_CAMPAIGN_STAGE=<stage id> preselects a campaign stage (for stage_intro / stage / stage_results)
+    if let Ok(id) = std::env::var("COZY_CAMPAIGN_STAGE") {
+        for (ci, c) in campaign_data::chapters().iter().enumerate() {
+            if let Some(si) = c.stages.iter().position(|st| st.id == id) {
+                app.camp.chapter = ci;
+                app.camp.stage = si;
+            }
+        }
+    }
     if let Ok(scr) = std::env::var("COZY_SCREEN") {
         app.screen = match scr.as_str() {
             "setup" => Screen::Setup,
             "help" => Screen::Help,
             "settings" => Screen::Settings,
             "race" | "loading" => Screen::Loading,
+            "campaign" => Screen::Campaign,
+            "stage_intro" => Screen::StageIntro,
+            "leaderboard" => Screen::Leaderboard,
+            "stage" | "stage_results" => {
+                app.camp.begin();
+                if scr == "stage_results" {
+                    app.hooks.after_load = Some("results".into());
+                }
+                Screen::Loading
+            }
             "pause" | "pause_settings" | "results" => {
                 app.hooks.after_load = Some(scr.clone());
                 Screen::Loading
@@ -1479,6 +1526,10 @@ async fn main() {
             Screen::Loading => app.loading(),
             Screen::Race => app.race(),
             Screen::Results => app.results(),
+            Screen::Campaign => app.campaign_screen(),
+            Screen::StageIntro => app.stage_intro(),
+            Screen::StageResults => app.stage_results(),
+            Screen::Leaderboard => app.leaderboard_screen(),
         }
         app.draw_overlays();
         app.update_transition();
