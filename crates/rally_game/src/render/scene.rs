@@ -1216,16 +1216,24 @@ fn hills_mesh(track: &Track, st: &BiomeStyle) -> MeshBuilder {
     let hf = &track.terrain;
     let size = hf.size();
     let center = Vec3::new(hf.origin.x + size.x * 0.5, 0.0, hf.origin.y + size.y * 0.5);
-    let r0 = size.x.max(size.y) * 0.5 * 1.02;
+    // The hills follow the terrain's rectangular outline (distance to the rectangle edge in
+    // each direction + a layer offset). A circle sized from the longer side left the corners
+    // of long point-to-point stages OUTSIDE the ring: a stage starting near a corner then
+    // looked straight at the inner wall of the hills, which fog turned into a flat plane.
+    let (hx, hz) = (size.x * 0.5 * 1.02, size.y * 0.5 * 1.02);
+    let rect_dist = |a: f32| -> f32 {
+        let (c, s) = (a.cos().abs().max(1e-4), a.sin().abs().max(1e-4));
+        (hx / c).min(hz / s)
+    };
     let segs = 120;
     let mut m = MeshBuilder::new();
     let seed = track.params.seed as u32 + 11;
     let haze = mix(st.fog, st.sky_horizon, 0.5);
     let layers: [(f32, f32, f32, f32); 3] = [
         // (distance, height scale, haze amount, noise freq)
-        (r0 + 420.0, 5.5, 0.42, 2.5),
-        (r0 + 230.0, 3.4, 0.22, 3.4),
-        (r0 + 70.0, 1.6, 0.06, 5.0),
+        (420.0, 5.5, 0.42, 2.5),
+        (230.0, 3.4, 0.22, 3.4),
+        (70.0, 1.6, 0.06, 5.0),
     ];
     let far_c = match track.biome {
         Biome::Snow => [0.80, 0.84, 0.95],
@@ -1260,12 +1268,14 @@ fn hills_mesh(track: &Track, st: &BiomeStyle) -> MeshBuilder {
             let d0 = Vec3::new(a0.cos(), 0.0, a0.sin());
             let d1 = Vec3::new(a1.cos(), 0.0, a1.sin());
             let (h0, h1) = (h_at(a0), h_at(a1));
-            let top0 = center + d0 * dist + Vec3::Y * h0;
-            let top1 = center + d1 * dist + Vec3::Y * h1;
-            let mid0 = center + d0 * (dist - 25.0) + Vec3::Y * (h0 * 0.45);
-            let mid1 = center + d1 * (dist - 25.0) + Vec3::Y * (h1 * 0.45);
-            let bot0 = center + d0 * (dist - 50.0) + Vec3::Y * -30.0;
-            let bot1 = center + d1 * (dist - 50.0) + Vec3::Y * -30.0;
+            // `dist` is the layer's offset beyond the terrain edge in this direction
+            let (r0a, r1a) = (rect_dist(a0) + dist, rect_dist(a1) + dist);
+            let top0 = center + d0 * r0a + Vec3::Y * h0;
+            let top1 = center + d1 * r1a + Vec3::Y * h1;
+            let mid0 = center + d0 * (r0a - 25.0) + Vec3::Y * (h0 * 0.45);
+            let mid1 = center + d1 * (r1a - 25.0) + Vec3::Y * (h1 * 0.45);
+            let bot0 = center + d0 * (r0a - 50.0) + Vec3::Y * -30.0;
+            let bot1 = center + d1 * (r1a - 50.0) + Vec3::Y * -30.0;
             let peak = |h: f32| -> [f32; 3] {
                 let t = smoothstep(st.hill_amp * hs * 0.55, st.hill_amp * hs * 0.85, h);
                 if snow && li == 0 { mix(col_high, mix([0.97, 0.97, 1.0], haze, hz * 0.6), t) } else { col_high }
