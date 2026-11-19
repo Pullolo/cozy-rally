@@ -370,6 +370,9 @@ pub struct Gpu {
     msaa_broken: bool,
     frame_viewports: Vec<PxRect>,
     frame_quality: Quality,
+    /// dynamic resolution controller + scale used for this frame's scene viewports
+    pub dynres: super::dynres::DynRes,
+    frame_scale: f32,
     /// when false, no draw samples the shadow map (e.g. volumetric fx particles)
     shadow_receive: bool,
     /// weather for the viewport being drawn
@@ -500,6 +503,8 @@ impl Gpu {
             msaa_broken: false,
             frame_viewports: Vec::new(),
             frame_quality: Quality::High,
+            dynres: super::dynres::DynRes::new(),
+            frame_scale: 1.0,
             shadow_receive: true,
             weather: WeatherLook::default(),
         }
@@ -570,6 +575,8 @@ impl Gpu {
         }
         self.frame_quality = q;
         self.frame_viewports.clear();
+        // dynamic resolution only applies to the offscreen (post-processed) path
+        self.frame_scale = if q.post() { self.dynres.update(macroquad::time::get_frame_time()) } else { 1.0 };
         self.shadow = None;
         let ctx = ctx();
         // shadow map
@@ -647,16 +654,27 @@ impl Gpu {
         let ctx = ctx();
         let (_, sh) = macroquad::miniquad::window::screen_size();
         let gl_y = sh as i32 - (y + h);
-        if let Some(p) = &self.post {
+        let (vx, vy, vw, vh) = if let Some(p) = &self.post {
             ctx.begin_pass(Some(p.scene_pass), PassAction::Nothing);
             self.target = Target::Scene;
+            let first = self.frame_viewports.is_empty();
             self.frame_viewports.push(PxRect { x, y, w, h });
+            if first && self.frame_scale < 0.999 {
+                // the unused part of the target must not hold stale pixels (bloom reads it)
+                ctx.apply_viewport(0, 0, p.w as i32, p.h as i32);
+                ctx.apply_scissor_rect(0, 0, p.w as i32, p.h as i32);
+                ctx.apply_pipeline(&self.opaque);
+                depth_mask_on();
+                ctx.clear(Some((0.0, 0.0, 0.0, 0.0)), Some(1.0), None);
+            }
+            super::dynres::scale_rect(x, gl_y, w, h, self.frame_scale)
         } else {
             ctx.begin_default_pass(PassAction::Nothing);
             self.target = Target::Screen;
-        }
-        ctx.apply_viewport(x, gl_y, w, h);
-        ctx.apply_scissor_rect(x, gl_y, w, h);
+            (x, gl_y, w, h)
+        };
+        ctx.apply_viewport(vx, vy, vw, vh);
+        ctx.apply_scissor_rect(vx, vy, vw, vh);
         ctx.apply_pipeline(&self.opaque);
         depth_mask_on();
         ctx.clear(Some((0.0, 0.0, 0.0, 0.0)), Some(1.0), None);
@@ -680,7 +698,7 @@ impl Gpu {
         };
         perf::begin(Sec::Post);
         perf::gpu_begin(2);
-        pipes.finish(ctx(), t, &self.frame_viewports, grade, time);
+        pipes.finish(ctx(), t, &self.frame_viewports, grade, time, self.frame_scale);
         perf::gpu_end(2);
         perf::end(Sec::Post);
     }
@@ -695,6 +713,7 @@ impl Gpu {
     pub fn set_weather(&mut self, w: WeatherLook) {
         self.weather = w;
     }
+
 
     pub fn weather(&self) -> WeatherLook {
         self.weather

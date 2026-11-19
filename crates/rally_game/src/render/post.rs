@@ -218,7 +218,7 @@ impl PostPipes {
     }
 
     /// Bloom chain over the whole scene target, then composite each viewport to the screen.
-    pub fn finish(&self, ctx: &mut dyn RenderingBackend, t: &PostTargets, viewports: &[PxRect], grade: &Grade, time: f32) {
+    pub fn finish(&self, ctx: &mut dyn RenderingBackend, t: &PostTargets, viewports: &[PxRect], grade: &Grade, time: f32, scale: f32) {
         let (sw, sh) = (t.w as f32, t.h as f32);
         // bright pass: full -> 1/4 (4 bilinear taps cover a 4x4 block)
         self.run(ctx, &self.bright, t.scene_tex, &t.qa, [1.0 / sw, 1.0 / sh, grade.threshold, grade.knee]);
@@ -241,7 +241,11 @@ impl PostPipes {
             ctx.apply_scissor_rect(vp.x, gl_y, vp.w, vp.h);
             ctx.apply_bindings(&Bindings { vertex_buffers: vec![self.quad_vb], index_buffer: self.quad_ib, images: vec![t.scene_tex, t.qa.tex, t.ea.tex] });
             let u = CompositeUniforms {
-                rect: [vp.x as f32 / sw, gl_y as f32 / sh, vp.w as f32 / sw, vp.h as f32 / sh],
+                // the scene was drawn into the dynamic-resolution sub-rect; sample exactly that
+                rect: {
+                    let (rx, ry, rw, rh) = super::dynres::scale_rect(vp.x, gl_y, vp.w, vp.h, scale);
+                    [rx as f32 / sw, ry as f32 / sh, rw as f32 / sw, rh as f32 / sh]
+                },
                 texel: [1.0 / sw, 1.0 / sh, if t.msaa { 0.0 } else { 1.0 }, grade.bloom],
                 lift: grade.lift,
                 gain: grade.gain,

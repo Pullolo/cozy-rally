@@ -307,7 +307,7 @@ pub fn overlay(quality_label: &str) {
         return;
     }
     let mut lines: Vec<String> = Vec::new();
-    lines.push(format!("{:.1} ms  ({:.0} fps)   worst 2s {:.1} ms   quality {}", avg.frame_ms, 1000.0 / avg.frame_ms.max(0.01), worst, quality_label));
+    lines.push(format!("{:.1} ms  ({:.0} fps)   worst 2s {:.1} ms   quality {}   scene res {:.0}%", avg.frame_ms, 1000.0 / avg.frame_ms.max(0.01), worst, quality_label, super::dynres::last_scale() * 100.0));
     let mut cpu = String::from("cpu ms ");
     for i in 0..SECS {
         cpu += &format!(" {} {:.2}", SEC_NAMES[i], avg.cpu_ms[i]);

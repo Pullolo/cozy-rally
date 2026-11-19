@@ -1,6 +1,7 @@
 pub mod bench;
 pub mod debug;
 pub use debug::{debug_skip, perf_legacy};
+pub mod dynres;
 pub mod gpu;
 pub mod mesh;
 pub mod perf;
