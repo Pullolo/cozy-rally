@@ -7,6 +7,30 @@
 //! there is no shared lock with the real-time thread and it never allocates.
 //!
 //! Without a usable output device everything degrades to silent no-ops.
+//!
+//! # API for the rest of the game
+//! * `init()` once at startup; `set_volumes(master, music, sfx)` (0..1) from settings.
+//! * `set_music(Music::Menu | Race | Results | None)`: crossfades between generative moods.
+//! * `ui_sound(UiSound::Move | Select | Back)`.
+//! * `race_frame(&session, dt)`: called by `RaceSession::update` every frame (also while
+//!   paused). Drives engines, tyres (incl. traction loss, wet hiss, puddle splashes), weather
+//!   ambience (rain / snow hush / wind gusts / rare thunder from `track.weather_at(s)` at the
+//!   first local player), and the generic race cues from `frame_events` (countdown, checkpoint,
+//!   lap, finish, respawn, collisions, landings, water). On point-to-point stages the start
+//!   countdown automatically becomes rally-style pips (5..1 from the countdown clock) + GO tone.
+//! * `stop_cars()` when leaving a race (engines and ambience fade out).
+//!
+//! Campaign / time-trial cues (call from gameplay code, any time):
+//! * `split_chime(faster)`: split vs. best: bright rising chime if faster, soft low two-note if
+//!   slower. Suppresses the generic checkpoint bling if called in the same frame as the
+//!   checkpoint event (i.e. before `race_frame`).
+//! * `medal_jingle(Medal)`: None (gentle chime) / Bronze / Silver / Gold (+sparkle) /
+//!   Platinum (+extra shimmer).
+//! * `new_record()`: "new record!" fanfare.
+//!   Result cues queue up and never overlap (`medal_jingle` then `new_record` play one after
+//!   the other) and, called in the finish frame, replace the generic finish fanfare.
+//! * `stage_countdown_beep(n)`: one rally start pip (n = 5..1) or the GO tone (n = 0), for
+//!   custom countdowns. Not needed for the race countdown (handled automatically).
 //! Debug hook: `COZY_AUDIO_WAV=/path/out.wav` renders the live game audio in real time into a
 //! WAV file instead of opening a device (works headless).
 mod bridge;
@@ -61,6 +85,9 @@ struct Audio {
 
 static AUDIO: OnceLock<Audio> = OnceLock::new();
 static ENABLED: AtomicBool = AtomicBool::new(false);
+/// Campaign cues requested since the last `race_frame` (see `bridge::CueFlags`)
+static SPLIT_CUE: AtomicBool = AtomicBool::new(false);
+static RESULT_CUE: AtomicBool = AtomicBool::new(false);
 static BRIDGE: LazyLock<Mutex<bridge::Bridge>> = LazyLock::new(|| Mutex::new(bridge::Bridge::new()));
 
 fn send(cmd: Cmd) {
@@ -175,6 +202,41 @@ pub fn world_event(e: &WorldEvent, distance: f32) {
     send(Cmd::Sfx { kind, gain, pan: 0.0 });
 }
 
+/// Split time chime: `faster` = beat the best split (bright, rising), else soft and low.
+#[allow(dead_code)]
+pub fn split_chime(faster: bool) {
+    SPLIT_CUE.store(true, Ordering::Relaxed);
+    send(Cmd::Sfx { kind: SfxKind::Split { faster }, gain: 1.0, pan: 0.0 });
+}
+
+/// Medal jingle for a finished stage (queued after any cue still playing).
+#[allow(dead_code)]
+pub fn medal_jingle(m: rally_core::campaign::Medal) {
+    use rally_core::campaign::Medal;
+    let tier = match m {
+        Medal::None => 0,
+        Medal::Bronze => 1,
+        Medal::Silver => 2,
+        Medal::Gold => 3,
+        Medal::Platinum => 4,
+    };
+    RESULT_CUE.store(true, Ordering::Relaxed);
+    send(Cmd::Sfx { kind: SfxKind::Medal(tier), gain: 1.0, pan: 0.0 });
+}
+
+/// "New record!" fanfare (queued after any cue still playing, e.g. the medal jingle).
+#[allow(dead_code)]
+pub fn new_record() {
+    RESULT_CUE.store(true, Ordering::Relaxed);
+    send(Cmd::Sfx { kind: SfxKind::NewRecord, gain: 1.0, pan: 0.0 });
+}
+
+/// One rally start pip (n = 5..1) or the GO tone (n = 0).
+#[allow(dead_code)]
+pub fn stage_countdown_beep(n: u32) {
+    send(Cmd::Sfx { kind: SfxKind::StageBeep(n.min(9)), gain: 1.0, pan: 0.0 });
+}
+
 /// Fade out and release all engine/tyre voices (leaving a race).
 pub fn stop_cars() {
     send(Cmd::StopCars);
@@ -183,13 +245,14 @@ pub fn stop_cars() {
 /// Called once per frame by RaceSession::update (after the world advanced; events are in
 /// `session.frame_events`). Drives engine/tyre loops and one-shots.
 pub fn race_frame(session: &crate::game::RaceSession, dt: f32) {
+    let cues = bridge::CueFlags { split: SPLIT_CUE.swap(false, Ordering::Relaxed), result: RESULT_CUE.swap(false, Ordering::Relaxed) };
     if !ENABLED.load(Ordering::Relaxed) {
         return;
     }
     let listeners: Vec<bridge::Listener> = session.players.iter().map(|p| bridge::Listener { eye: p.cam.eye, target: p.cam.target }).collect();
     let locals: Vec<usize> = session.players.iter().map(|p| p.car).collect();
     if let Ok(mut b) = BRIDGE.lock() {
-        b.frame(&session.world, &locals, &listeners, &session.frame_events, session.paused, dt, &mut send);
+        b.frame(&session.world, &locals, &listeners, &session.frame_events, session.paused, dt, cues, &mut send);
     }
 }
 

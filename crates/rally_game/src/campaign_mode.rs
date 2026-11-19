@@ -373,6 +373,9 @@ pub fn frame(sess: &mut RaceSession) {
                     let k = a.splits.len() - 1;
                     let d = a.best_splits.get(k).map(|b| clock - b);
                     a.flash = Some((k, d, get_time() + 3.0));
+                    if let Some(d) = d {
+                        crate::audio::split_chime(d < 0.0); // [audio]
+                    }
                 }
             }),
             WorldEvent::Race(RaceEvent::Finish { car: c, time, .. }) if c == car => finished = Some(time),
@@ -386,7 +389,12 @@ pub fn frame(sess: &mut RaceSession) {
         }));
         if let Some((id, assists, splits, medals)) = info {
             let replay = sess.tt.as_ref().and_then(|t| t.tt.last_ghost.as_ref()).map(|g| g.to_bytes()).unwrap_or_default();
-            record_finish(&id, &assists, sess.world.cars[car].spec.id, time, &splits, medals, &replay);
+            let r = record_finish(&id, &assists, sess.world.cars[car].spec.id, time, &splits, medals, &replay);
+            // [audio] medal jingle, then the record fanfare when an earlier best was beaten
+            crate::audio::medal_jingle(r.medal);
+            if r.new_best && r.previous_best.is_some() {
+                crate::audio::new_record();
+            }
         }
     }
 }

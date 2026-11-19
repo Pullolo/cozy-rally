@@ -652,7 +652,7 @@ fn sim_race(ck: &mut Checks, dir: &std::path::Path) {
         eye = if eye == Vec3::ZERO { want } else { eye.lerp(want, 0.15) };
         let lis = [bridge::Listener { eye, target: car.pos + Vec3::Y }];
         let mut cmds = Vec::new();
-        br.frame(&world, &[4], &lis, &events, false, frame, &mut |c| cmds.push(c));
+        br.frame(&world, &[4], &lis, &events, false, frame, bridge::CueFlags::default(), &mut |c| cmds.push(c));
         for c in cmds {
             match c {
                 Cmd::Sfx { kind, .. } => {
@@ -682,6 +682,288 @@ fn sim_race(ck: &mut Checks, dir: &std::path::Path) {
     ck.check(voices_max == 4, format!("local + 3 nearest AI engine voices ({voices_max})"));
 }
 
+fn amb(rain: f32, snow: f32, wind: f32, fog: f32, storm: f32) -> Cmd {
+    Cmd::Ambience(AmbienceParams { rain, snow, wind, fog, storm })
+}
+
+fn weather(ck: &mut Checks, dir: &std::path::Path) {
+    println!("\n== weather ambience ==");
+    // rain: drizzle 5 s -> rain 5 s -> storm downpour 6 s (no engine)
+    let mut s = Synth::new(SR);
+    let mut clip = Clip::new();
+    render(&mut s, &mut clip, 16.0, |s, t| {
+        let c = if t < 5.0 { amb(0.3, 0.0, 2.0, 0.15, 0.0) } else if t < 10.0 { amb(0.7, 0.0, 4.1, 0.25, 0.0) } else { amb(1.0, 0.0, 9.5, 0.35, 0.0) };
+        s.handle(c);
+    });
+    write_wav(&dir.join("weather_rain.wav"), &clip);
+    basic(ck, "weather_rain", &clip, (0.002, 0.08), None, s.pre_peak);
+    let m = clip.mono();
+    let seg = |a: f32, b: f32| rms(&m[(a * SR) as usize..(b * SR) as usize]);
+    let (d, r, st) = (seg(2.5, 4.9), seg(7.5, 9.9), seg(13.0, 15.9));
+    println!("    drizzle {:.1} dBFS | rain {:.1} dBFS | downpour {:.1} dBFS", db(d), db(r), db(st));
+    ck.check(d < r && r < st, "rain loudness rises drizzle < rain < downpour".into());
+    ck.check(db(d) > -50.0 && db(d) < -32.0, format!("drizzle is soft but present ({:.1} dBFS)", db(d)));
+    ck.check(db(st) < -20.0, format!("downpour stays under the engines ({:.1} dBFS)", db(st)));
+    // roof drumming: low taps in the 400-700 Hz band present in the downpour
+    let x = &m[(13.0 * SR) as usize..(13.0 * SR) as usize + 16384];
+    let roof = band_rms(x, 450.0, 650.0);
+    let around = (band_rms(x, 250.0, 350.0) + band_rms(x, 800.0, 950.0)) * 0.5;
+    ck.check(roof > around, format!("roof-drum taps stand out around 540 Hz ({:+.1} dB)", db(roof) - db(around)));
+    let side = rms(&clip.l.iter().zip(&clip.r).map(|(a, b)| 0.5 * (a - b)).collect::<Vec<_>>());
+    ck.check(side > 0.3 * rms(&m), format!("rain is wide stereo (side/mid {:.2})", side / rms(&m)));
+
+    // wind: 2 -> 6 -> 12 m/s, 6 s each
+    let mut s = Synth::new(SR);
+    let mut clip = Clip::new();
+    render(&mut s, &mut clip, 18.0, |s, t| {
+        let w = if t < 6.0 { 2.0 } else if t < 12.0 { 6.0 } else { 12.0 };
+        s.handle(amb(0.0, 0.0, w, 0.0, 0.0));
+    });
+    write_wav(&dir.join("weather_wind.wav"), &clip);
+    basic(ck, "weather_wind", &clip, (0.0005, 0.08), None, s.pre_peak);
+    let m = clip.mono();
+    let seg = |a: f32, b: f32| rms(&m[(a * SR) as usize..(b * SR) as usize]);
+    let (w2, w6, w12) = (seg(3.0, 5.9), seg(9.0, 11.9), seg(14.0, 17.9));
+    println!("    wind 2 m/s {:.1} | 6 m/s {:.1} | 12 m/s {:.1} dBFS", db(w2), db(w6), db(w12));
+    ck.check(w2 < w6 && w6 < w12, "wind noise rises with wind strength".into());
+    let env: Vec<f32> = m[(12.5 * SR) as usize..(18.0 * SR) as usize].chunks((SR * 0.25) as usize).map(|c| db(rms(c))).collect();
+    let spread = env.iter().cloned().fold(f32::MIN, f32::max) - env.iter().cloned().fold(f32::MAX, f32::min);
+    ck.check(spread > 3.0, format!("strong wind is gusty ({spread:.1} dB swing in 0.25 s steps)"));
+
+    // thunder: forced one, plus how often it happens on its own in a 4-minute storm
+    let mut s = Synth::new(SR);
+    let mut clip = Clip::new();
+    let mut fired = false;
+    render(&mut s, &mut clip, 7.0, |s, t| {
+        s.handle(amb(1.0, 0.0, 9.0, 0.3, 1.0));
+        if !fired && t > 0.5 {
+            s.handle(Cmd::Sfx { kind: SfxKind::Thunder { strength: 1.0 }, gain: 1.0, pan: -0.3 });
+            fired = true;
+        }
+    });
+    write_wav(&dir.join("weather_storm_thunder.wav"), &clip);
+    basic(ck, "weather_storm_thunder", &clip, (0.002, 0.1), None, s.pre_peak);
+    let m = clip.mono();
+    let lo_t = band_rms(&m[(1.5 * SR) as usize..(1.5 * SR) as usize + 16384], 40.0, 200.0);
+    let lo_b = band_rms(&m[(6.6 * SR) as usize..(6.6 * SR) as usize + 16384], 40.0, 200.0);
+    ck.check(db(lo_t) - db(lo_b) > 6.0, format!("thunder rumble +{:.1} dB in 40-200 Hz", db(lo_t) - db(lo_b)));
+    let tpk = m[(0.5 * SR) as usize..].iter().fold(0.0f32, |a, v| a.max(v.abs()));
+    ck.check(tpk < 0.35, format!("thunder stays soft (peak {tpk:.2})"));
+    let mut s = Synth::new(SR);
+    let mut thunders = 0;
+    let mut rains = 0;
+    let blocks = (240.0 * SR) as usize / BLOCK;
+    for _ in 0..blocks {
+        s.handle(amb(1.0, 0.0, 9.0, 0.3, 1.0));
+        let before = s.notes.active();
+        s.render_block(BLOCK);
+        if s.notes.active() > before + 2 {
+            thunders += 1;
+        }
+        rains += 1;
+    }
+    let _ = rains;
+    ck.check((2..=10).contains(&thunders), format!("thunder is rare in a full storm: {thunders} rolls in 4 minutes"));
+
+    // snow / fog hush on the world's sounds (engine + tyres at speed on gravel)
+    let hf_of = |snow: f32, fog: f32| -> (f32, f32) {
+        let mut s = Synth::new(SR);
+        let mut clip = Clip::new();
+        let mut p = engine_params(2);
+        p.speed = 20.0;
+        p.rpm = 4500.0;
+        p.throttle = 0.6;
+        p.load = 0.6;
+        p.s_hard = 0.0;
+        p.s_loose = 1.0;
+        render(&mut s, &mut clip, 4.0, |s, _| {
+            s.handle(cars_cmd(p));
+            s.handle(amb(0.0, snow, 1.0, fog, 0.0));
+        });
+        let x = &clip.mono()[(3.0 * SR) as usize..(3.0 * SR) as usize + 16384];
+        (band_rms(x, 4000.0, 10000.0), band_rms(x, 80.0, 600.0))
+    };
+    let (hf0, lf0) = hf_of(0.0, 0.0);
+    let (hf1, lf1) = hf_of(0.8, 0.4);
+    ck.check(db(hf0) - db(hf1) > 2.0 && (db(lf0) - db(lf1)).abs() < 1.0, format!("snowfall hush (slight, by design): highs -{:.1} dB, lows {:+.1} dB", db(hf0) - db(hf1), db(lf1) - db(lf0)));
+
+    // wet roads: hiss replaces part of the dry sound; wet squeal is quieter
+    let tyre = |wet: f32, slip: f32, puddle: f32| -> Clip {
+        let mut s = Synth::new(SR);
+        let mut clip = Clip::new();
+        let mut p = engine_params(2);
+        p.speed = 25.0;
+        p.rpm = 4500.0;
+        p.throttle = 0.5;
+        p.load = 0.5;
+        p.wet = wet;
+        p.puddle = puddle;
+        p.slip_lat_hard = slip;
+        render(&mut s, &mut clip, 3.0, |s, _| s.handle(cars_cmd(p)));
+        clip
+    };
+    let dry = tyre(0.0, 0.0, 0.0);
+    let wet = tyre(1.0, 0.0, 0.0);
+    let pud = tyre(1.0, 0.0, 0.8);
+    let mut cat = Clip::new();
+    for c in [&dry, &wet, &pud] {
+        cat.l.extend_from_slice(&c.l);
+        cat.r.extend_from_slice(&c.r);
+    }
+    write_wav(&dir.join("wet_road_dry_wet_puddles.wav"), &cat);
+    basic(ck, "wet_road_dry_wet_puddles", &cat, (0.02, 0.3), None, 0.0);
+    let hb = |c: &Clip| band_rms(&c.mono()[(2.0 * SR) as usize..(2.0 * SR) as usize + 16384], 1500.0, 4000.0);
+    ck.check(db(hb(&wet)) - db(hb(&dry)) > 6.0, format!("wet road hiss +{:.1} dB (1.5-4 kHz) at 25 m/s", db(hb(&wet)) - db(hb(&dry))));
+    ck.check(hb(&pud) > hb(&wet), format!("standing water adds spray (+{:.1} dB)", db(hb(&pud)) - db(hb(&wet))));
+    let sq = |c: &Clip| {
+        let x = &c.mono()[(2.0 * SR) as usize..(2.0 * SR) as usize + 16384];
+        band_rms(x, 750.0, 1000.0)
+    };
+    let (sd, sw) = (sq(&tyre(0.0, 1.0, 0.0)), sq(&tyre(1.0, 1.0, 0.0)));
+    ck.check(db(sd) - db(sw) > 3.0, format!("squeal is softer on a wet road (-{:.1} dB)", db(sd) - db(sw)));
+}
+
+fn campaign_cues(ck: &mut Checks, dir: &std::path::Path) {
+    println!("\n== campaign cues ==");
+    let mut s = Synth::new(SR);
+    let mut clip = Clip::new();
+    // stage start 5-4-3-2-1-GO, split faster / slower, medals 0..4, gold + new record queued
+    let mut plan: Vec<(f32, SfxKind)> = Vec::new();
+    for (i, k) in [5, 4, 3, 2, 1, 0].iter().enumerate() {
+        plan.push((0.2 + i as f32, SfxKind::StageBeep(*k)));
+    }
+    plan.push((7.0, SfxKind::Split { faster: true }));
+    plan.push((8.5, SfxKind::Split { faster: false }));
+    for t in 0..5u8 {
+        plan.push((10.0 + 3.0 * t as f32, SfxKind::Medal(t)));
+    }
+    plan.push((25.0, SfxKind::Medal(3)));
+    plan.push((25.0, SfxKind::NewRecord));
+    let mut next = 0;
+    render(&mut s, &mut clip, 30.0, |s, t| {
+        while next < plan.len() && t >= plan[next].0 {
+            s.handle(Cmd::Sfx { kind: plan[next].1, gain: 1.0, pan: 0.0 });
+            next += 1;
+        }
+    });
+    write_wav(&dir.join("campaign_cues.wav"), &clip);
+    basic(ck, "campaign_cues", &clip, (0.005, 0.2), None, s.pre_peak);
+    let m = clip.mono();
+    let dom = |a: f32, lo: f32, hi: f32| {
+        let x = &m[(a * SR) as usize..(a * SR) as usize + 4096];
+        let mut best = (0.0, 0.0);
+        let mut f = lo;
+        while f < hi {
+            let g = goertzel(x, f);
+            if g > best.0 {
+                best = (g, f);
+            }
+            f *= 1.01;
+        }
+        best.1
+    };
+    let (pip, go) = (dom(0.21, 200.0, 3000.0), dom(5.21, 200.0, 3000.0));
+    ck.check(go > pip * 1.3, format!("rally start: pips ~{pip:.0} Hz, GO ~{go:.0} Hz"));
+    let go_len = rms(&m[(5.55 * SR) as usize..(5.7 * SR) as usize]) > 3.0 * rms(&m[(1.55 * SR) as usize..(1.7 * SR) as usize]);
+    ck.check(go_len, "GO tone is long, the pips are short".into());
+    let (fa, sl) = (dom(7.01, 200.0, 3000.0), dom(8.51, 200.0, 3000.0));
+    ck.check(fa > sl * 2.0, format!("split chime: faster ~{fa:.0} Hz (bright), slower ~{sl:.0} Hz (low)"));
+    let pk = |a: f32, b: f32| m[(a * SR) as usize..(b * SR) as usize].iter().fold(0.0f32, |x, v| x.max(v.abs()));
+    ck.check(pk(8.5, 9.5) < pk(7.0, 8.0), "slower split chime is softer than the faster one".into());
+    // medal richness: active duration above -46 dBFS grows with tier
+    let dur = |a: f32| m[(a * SR) as usize..((a + 2.9) * SR) as usize].chunks((SR * 0.02) as usize).filter(|c| rms(c) > 0.005).count() as f32 * 0.02;
+    let durs: Vec<f32> = (0..5).map(|t| dur(10.0 + 3.0 * t as f32)).collect();
+    println!("    medal jingle lengths (s, none..platinum): {:?}", durs.iter().map(|d| format!("{d:.2}")).collect::<Vec<_>>());
+    ck.check(durs.windows(2).all(|w| w[1] >= w[0]), "medal jingles get longer/richer with each tier".into());
+    // HF sparkle for gold/platinum vs silver
+    let sparkle = |a: f32| {
+        let w = |o: f32| band_rms(&m[((a + o) * SR) as usize..((a + o) * SR) as usize + 16384], 2000.0, 5000.0).powi(2);
+        (w(0.5) + w(0.85) + w(1.2)).sqrt()
+    };
+    ck.check(sparkle(19.0) > 2.0 * sparkle(16.0), format!("gold adds sparkle over silver (+{:.1} dB at 2-5 kHz)", db(sparkle(19.0)) - db(sparkle(16.0))));
+    ck.check(sparkle(22.0) > sparkle(19.0), "platinum sparkles more than gold".into());
+    // queue: the new-record fanfare starts after the gold jingle (sent in the same frame)
+    // the record fanfare's F2 bass (87.3 Hz) is unique to it (the medal bass is C3)
+    let rec = {
+        let mut t = 25.0;
+        loop {
+            let x = &m[(t * SR) as usize..(t * SR) as usize + 8192];
+            if (goertzel(x, 87.31) > 0.002 && goertzel(x, 87.31) > 3.0 * goertzel(x, 105.0)) || t > 29.0 {
+                break t;
+            }
+            t += 0.02;
+        }
+    };
+    // gold jingle = 1.7 s, then the fanfare's bass enters 0.48 s in (window centre adds ~0.08 s)
+    ck.check(rec >= 26.9 && rec < 27.6, format!("new-record fanfare queued after the medal jingle (its bass enters {:.2} s after the medal)", rec - 25.0));
+}
+
+fn stage_sim(ck: &mut Checks, dir: &std::path::Path) {
+    use rally_core::ai::AiDriver;
+    use rally_core::track::{LayoutKind, Track, TrackParams};
+    use rally_core::weather::ConditionsSpec;
+    use rally_core::world::{Controller, RacerSetup, World};
+    use std::sync::Arc;
+    println!("\n== real point-to-point stage in a storm through the game bridge (local = Burrow, 50 s) ==");
+    let params = TrackParams { seed: 11, biome: None, length_class: 1, layout: LayoutKind::PointToPoint { length_m: 3000.0 }, conditions: ConditionsSpec::Fixed(rally_core::weather::WeatherPreset::Storm), ..Default::default() };
+    let track = Arc::new(Track::generate(&params));
+    let racers = [RacerSetup { car_spec: 3, controller: Controller::Local(0) }];
+    let mut world = World::new(track.clone(), &racers, 1);
+    let mut ai = AiDriver::new(1.0, 0.0);
+    let mut br = bridge::Bridge::new();
+    let mut s = Synth::new(SR);
+    s.handle(Cmd::Music(Mood::Race));
+    let mut clip = Clip::new();
+    let frame = 1.0 / 60.0;
+    let mut acc = 0.0;
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    let mut max = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    let mut eye = Vec3::ZERO;
+    render(&mut s, &mut clip, 50.0, |s, _t| {
+        acc += BLOCK as f32 / SR;
+        if acc < frame {
+            return;
+        }
+        acc -= frame;
+        let inp = ai.drive(&world.cars[0], &world.track, frame);
+        world.set_input(0, inp);
+        world.update(frame);
+        let events = world.drain_events();
+        let car = &world.cars[0];
+        let fwd = car.rot * Vec3::NEG_Z;
+        let want = car.pos - fwd * 6.5 + Vec3::Y * 2.4;
+        eye = if eye == Vec3::ZERO { want } else { eye.lerp(want, 0.15) };
+        let lis = [bridge::Listener { eye, target: car.pos + Vec3::Y }];
+        let mut cmds = Vec::new();
+        br.frame(&world, &[0], &lis, &events, false, frame, bridge::CueFlags::default(), &mut |c| cmds.push(c));
+        for c in cmds {
+            match c {
+                Cmd::Sfx { kind, .. } => {
+                    let k = format!("{kind:?}");
+                    let k = k.split([' ', '(', '{']).next().unwrap().to_string();
+                    *counts.entry(k).or_default() += 1;
+                }
+                Cmd::Cars { cars, .. } => {
+                    max.0 = max.0.max(cars[0].wet);
+                    max.1 = max.1.max(cars[0].puddle);
+                }
+                Cmd::Ambience(a) => {
+                    max.2 = max.2.max(a.rain);
+                    max.3 = max.3.max(a.storm);
+                }
+                _ => {}
+            }
+            s.handle(c);
+        }
+    });
+    write_wav(&dir.join("stage_storm_sim.wav"), &clip);
+    basic(ck, "stage_storm_sim", &clip, (0.02, 0.35), None, s.pre_peak);
+    println!("    events: {counts:?}  max wet {:.2} puddle {:.2} rain {:.2} storm {:.2}", max.0, max.1, max.2, max.3);
+    ck.check(counts.get("StageBeep").copied().unwrap_or(0) == 5, format!("rally start pips 4-3-2-1 + GO from the stage countdown ({:?})", counts.get("StageBeep")));
+    ck.check(!counts.contains_key("CountdownTick") && !counts.contains_key("Go"), "no loop-race countdown on a stage".into());
+    ck.check(max.0 > 0.3 && max.2 > 0.3, "stage weather reaches tyres (wetness) and ambience (rain)".into());
+}
+
 fn main() {
     let dir = std::env::args().nth(1).unwrap_or_else(|| "audio_out".into());
     let dir = std::path::PathBuf::from(dir);
@@ -693,9 +975,15 @@ fn main() {
     oneshots(&mut ck, &dir);
     music(&mut ck, &dir);
     sim_race(&mut ck, &dir);
+    weather(&mut ck, &dir);
+    campaign_cues(&mut ck, &dir);
+    stage_sim(&mut ck, &dir);
     // performance
     let perf = |voices: usize, full: bool, music: bool| -> f32 {
         let mut s = Synth::new(SR);
+        if full {
+            s.handle(amb(1.0, 0.0, 10.0, 0.3, 1.0));
+        }
         if music {
             s.handle(Cmd::Music(Mood::Race));
         }
@@ -712,6 +1000,8 @@ fn main() {
             if full {
                 c.slip_lat_hard = 0.5;
                 c.slip_lat_loose = 0.5;
+                c.wet = 1.0;
+                c.puddle = 0.5;
             }
             c.local = i == 0;
             c.gain = 0.3;
@@ -719,14 +1009,27 @@ fn main() {
         s.handle(Cmd::Cars { n: voices as u8, cars, paused: false });
         let mut clip = Clip::new();
         let tp = std::time::Instant::now();
-        render(&mut s, &mut clip, 10.0, |_, _| {});
+        render(&mut s, &mut clip, 10.0, |s, _| {
+            if full {
+                s.handle(amb(1.0, 0.0, 10.0, 0.3, 1.0));
+            }
+        });
         tp.elapsed().as_secs_f32() / 10.0 * 100.0
     };
     let p_music = perf(0, false, true);
     let p_typ = perf(4, false, true);
     let p_worst = perf(8, true, true);
-    println!("\n== perf (% of one core): race music alone {p_music:.1}% | typical race (4 engines + music) {p_typ:.1}% | worst case (8 engines all sliding + music) {p_worst:.1}% ==");
+    println!("\n== perf (% of one core): race music alone {p_music:.1}% | typical race (4 engines + music) {p_typ:.1}% | worst case (8 engines sliding in wet + storm ambience + music) {p_worst:.1}% ==");
     ck.check(p_typ < 8.0, format!("typical race DSP load {p_typ:.1}% < 8% of a core"));
+    let p_storm = {
+        let mut s = Synth::new(SR);
+        let mut clip = Clip::new();
+        let tp = std::time::Instant::now();
+        render(&mut s, &mut clip, 10.0, |s, _| s.handle(amb(1.0, 0.0, 10.0, 0.3, 1.0)));
+        tp.elapsed().as_secs_f32() / 10.0 * 100.0
+    };
+    println!("   storm ambience alone: {p_storm:.1}%");
+    ck.check(p_storm < 3.0, format!("storm ambience DSP load {p_storm:.1}% < 3% of a core"));
     ck.check(p_worst < 15.0, format!("worst-case DSP load {p_worst:.1}% < 15% of a core"));
     println!("\nwrote WAVs to {} in {:.1}s", dir.display(), t0.elapsed().as_secs_f32());
     if ck.fails.is_empty() {

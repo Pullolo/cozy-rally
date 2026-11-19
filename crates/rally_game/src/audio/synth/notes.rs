@@ -147,6 +147,8 @@ struct Voice {
 }
 
 pub struct NotePool {
+    /// Added to every note's delay (used to queue result cues)
+    pub base_delay: f32,
     sr: f32,
     voices: Vec<Voice>,
     counter: u64,
@@ -182,7 +184,7 @@ impl NotePool {
                 order: 0,
             })
             .collect();
-        NotePool { sr, voices, counter: 0 }
+        NotePool { base_delay: 0.0, sr, voices, counter: 0 }
     }
 
     pub fn active(&self) -> usize {
@@ -202,10 +204,11 @@ impl NotePool {
         }
     }
 
-    pub fn play(&mut self, note: Note) {
+    pub fn play(&mut self, mut note: Note) {
         if note.gain <= 1e-5 || !note.freq.is_finite() {
             return;
         }
+        note.delay += self.base_delay;
         let sr = self.sr;
         // free voice, else steal the quietest (preferring music over effects)
         let idx = match self.voices.iter().position(|v| !v.active) {

@@ -5,6 +5,7 @@
 //! The synth is driven by `Cmd`s (plain `Copy` data, safe to receive inside the real-time
 //! callback) and pulled with `render_block`. Nothing here allocates after `Synth::new`.
 
+pub mod ambience;
 pub mod dsp;
 pub mod engine;
 pub mod music;
@@ -12,6 +13,8 @@ pub mod notes;
 pub mod reverb;
 pub mod sfx;
 
+pub use ambience::AmbienceParams;
+use ambience::Ambience;
 use dsp::*;
 use engine::EngineVoice;
 use music::MusicPlayer;
@@ -54,6 +57,10 @@ pub struct EngineParams {
     pub lock_hard: f32,
     pub lock_loose: f32,
     pub in_water: bool,
+    /// Road wetness under the car 0..1 (wet hiss replaces some dry crunch)
+    pub wet: f32,
+    /// Standing water under the wheels 0..1 (spray)
+    pub puddle: f32,
     /// Distance attenuation 0..1
     pub gain: f32,
     /// -1 left .. 1 right
@@ -80,6 +87,35 @@ pub enum SfxKind {
     Finish { place: u32 },
     Respawn,
     Splash { strength: f32 },
+    /// Small splash driving through a puddle
+    Puddle { strength: f32 },
+    /// Far-away soft thunder roll
+    Thunder { strength: f32 },
+    /// Rally start beep: n = 5..1 short pips, 0 = long GO tone
+    StageBeep(u32),
+    /// Split time vs. best: faster (bright, "green") or slower (soft, low)
+    Split { faster: bool },
+    /// Medal jingle: 0 none (gentle finish chime), 1 bronze, 2 silver, 3 gold, 4 platinum
+    Medal(u8),
+    /// "New record!" fanfare
+    NewRecord,
+}
+
+impl SfxKind {
+    /// Result cues are queued so they never overlap: returns their length (s)
+    fn queued_len(&self) -> Option<f32> {
+        match self {
+            SfxKind::Finish { .. } => Some(1.6),
+            SfxKind::Medal(m) => Some(match m {
+                0 => 0.8,
+                1 => 1.0,
+                2 => 1.2,
+                _ => 1.7,
+            }),
+            SfxKind::NewRecord => Some(2.2),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,6 +141,8 @@ pub enum Cmd {
     Ui(UiKind),
     Music(Mood),
     Volumes { master: f32, music: f32, sfx: f32 },
+    /// Weather around the listener; sent every race frame (fades out when it stops coming)
+    Ambience(AmbienceParams),
 }
 
 /// Bus tags for notes
@@ -116,6 +154,14 @@ pub struct Synth {
     pub notes: NotePool,
     pub music: MusicPlayer,
     reverb: Reverb,
+    ambience: Ambience,
+    amb_age: u64,
+    clock: u64,
+    cue_free_at: u64,
+    hush_l: OnePole,
+    hush_r: OnePole,
+    hush_l2: OnePole,
+    hush_r2: OnePole,
     rng: Rng,
     // volumes
     vol_master: f32,
@@ -157,6 +203,14 @@ impl Synth {
             notes: NotePool::new(sr, 72),
             music: MusicPlayer::new(sr, 0xC0217),
             reverb: Reverb::new(sr),
+            ambience: Ambience::new(sr),
+            amb_age: u64::MAX / 2,
+            clock: 0,
+            cue_free_at: 0,
+            hush_l: OnePole::default(),
+            hush_r: OnePole::default(),
+            hush_l2: OnePole::default(),
+            hush_r2: OnePole::default(),
             rng: Rng::new(0xA0D10),
             vol_master: 0.85,
             vol_music: 0.55,
@@ -217,7 +271,20 @@ impl Synth {
                     v.release();
                 }
             }
-            Cmd::Sfx { kind, gain, pan } => sfx::play(&mut self.notes, &mut self.rng, kind, gain, pan),
+            Cmd::Sfx { kind, gain, pan } => {
+                // result cues (finish / medal / record) play one after another
+                if let Some(len) = kind.queued_len() {
+                    let start = self.cue_free_at.max(self.clock);
+                    self.notes.base_delay = (start - self.clock) as f32 / self.sr;
+                    self.cue_free_at = start + (len * self.sr) as u64;
+                }
+                sfx::play(&mut self.notes, &mut self.rng, kind, gain, pan);
+                self.notes.base_delay = 0.0;
+            }
+            Cmd::Ambience(p) => {
+                self.ambience.set(p);
+                self.amb_age = 0;
+            }
             Cmd::Ui(k) => sfx::ui(&mut self.notes, &mut self.rng, k),
             Cmd::Music(m) => self.music.set_mood(m, &mut self.notes),
             Cmd::Volumes { master, music, sfx } => {
@@ -232,6 +299,9 @@ impl Synth {
     pub fn render_block(&mut self, n: usize) {
         denormals_off();
         let n = n.min(BLOCK);
+        if n == 0 {
+            return;
+        }
         self.mus_l[..n].fill(0.0);
         self.mus_r[..n].fill(0.0);
         self.sfx_l[..n].fill(0.0);
@@ -246,6 +316,31 @@ impl Synth {
             if v.active {
                 v.render(n, stale, &mut self.sfx_l, &mut self.sfx_r, &mut self.rev_l, &mut self.rev_r);
             }
+        }
+
+        // weather ambience (+ rare thunder)
+        self.amb_age = self.amb_age.saturating_add(n as u64);
+        let amb_stale = self.amb_age as f32 > (self.sr * 0.4).max(self.cars_interval * 4.0);
+        if let Some(strength) = self.ambience.render(n, amb_stale, &mut self.sfx_l, &mut self.sfx_r) {
+            let pan = self.rng.bi() * 0.6;
+            sfx::play(&mut self.notes, &mut self.rng, SfxKind::Thunder { strength }, 1.0, pan);
+        }
+        // fog / snowfall hush: the world's sounds (not the music) get slightly softer on top
+        let hush = self.ambience.hush;
+        if hush > 1e-3 {
+            // two gentle poles: ~ -3 dB at 5 kHz in heavy snow, transparent in light fog
+            let ha = onepole_coef(16000.0 * (1.0 - 0.85 * hush).powf(1.5) + 1800.0, self.sr);
+            for i in 0..n {
+                let l = self.hush_l.lp(self.sfx_l[i], ha);
+                let r = self.hush_r.lp(self.sfx_r[i], ha);
+                self.sfx_l[i] = self.hush_l2.lp(l, ha);
+                self.sfx_r[i] = self.hush_r2.lp(r, ha);
+            }
+        } else {
+            self.hush_l.z = self.sfx_l[n - 1];
+            self.hush_r.z = self.sfx_r[n - 1];
+            self.hush_l2.z = self.sfx_l[n - 1];
+            self.hush_r2.z = self.sfx_r[n - 1];
         }
 
         // music sequencer schedules notes, then all notes render
@@ -304,6 +399,7 @@ impl Synth {
             self.out_r[i] = soft_clip(r * g);
         }
         self.pre_peak = peak;
+        self.clock += n as u64;
         self.lim_env = flush(self.lim_env);
         self.lofi_l.z = flush(self.lofi_l.z);
         self.lofi_r.z = flush(self.lofi_r.z);

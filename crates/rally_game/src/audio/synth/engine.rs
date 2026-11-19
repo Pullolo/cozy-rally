@@ -143,6 +143,8 @@ struct Ctl {
     lock_hard: f32,
     lock_loose: f32,
     water: f32,
+    wet: f32,
+    puddle: f32,
     pan: f32,
     muffle: f32,
     doppler: f32,
@@ -220,6 +222,10 @@ pub struct EngineVoice {
     wind_w: Wander,
     water_f: Svf,
     water_w: Wander,
+    hiss_f: Svf,
+    hiss_c: SvfCoef,
+    wspray_f: Svf,
+    wspray_c: SvfCoef,
     muffle: OnePole,
     tyre_soft: Svf,
     tyre_soft_c: SvfCoef,
@@ -296,6 +302,10 @@ impl EngineVoice {
             wind_w: Wander::default(),
             water_f: Svf::default(),
             water_w: Wander::default(),
+            hiss_f: Svf::default(),
+            hiss_c: SvfCoef::new(2300.0, 0.45, sr),
+            wspray_f: Svf::default(),
+            wspray_c: SvfCoef::new(4500.0, 0.8, sr),
             muffle: OnePole::default(),
             tyre_soft: Svf::default(),
             tyre_soft_c: SvfCoef::new(5200.0, 0.6, sr),
@@ -376,6 +386,8 @@ impl EngineVoice {
         c.lock_hard += (p.lock_hard - c.lock_hard) * ca;
         c.lock_loose += (p.lock_loose - c.lock_loose) * ca;
         c.water += ((p.in_water as u8 as f32) - c.water) * cs;
+        c.wet += (p.wet.clamp(0.0, 1.0) - c.wet) * tau_coef(0.5, 1.0 / bs);
+        c.puddle += (p.puddle.clamp(0.0, 1.0) - c.puddle) * ca;
         c.pan += (p.pan - c.pan) * cs;
         c.muffle += (p.muffle - c.muffle) * cs;
         c.doppler += (p.doppler - c.doppler) * cs;
@@ -408,8 +420,13 @@ impl EngineVoice {
         let snow = c.s_snow * g;
         let slip_l = c.slip_lat_loose.max(c.lock_loose * 0.9);
         let rumble_amt = g * sp.powf(0.8) * (0.25 * c.s_hard + 0.85 * c.s_loose + 0.45 * c.s_snow + 0.4 * c.s_grass) * 0.55;
-        let road_amt = g * c.s_hard * sp.powf(1.4) * 0.16;
-        let grain_rate = (loose * (25.0 + 950.0 * sp) + (c.s_loose + c.s_grass) * g * (slip_l * 1900.0 + c.spin_loose * 1700.0)) / sr;
+        // wet roads: tyre hiss and spray take over from part of the dry crunch / squeal
+        let dry = 1.0 - 0.55 * c.wet;
+        let road_amt = g * c.s_hard * sp.powf(1.4) * 0.16 * (1.0 - 0.5 * c.wet);
+        let any_slip = c.slip_lat_hard.max(c.slip_lat_loose).max(c.spin_hard).max(c.lock_hard);
+        let hiss_amt = g * (c.wet * sp.powf(1.2) * (0.22 * c.s_hard + 0.1 * (c.s_loose + c.s_grass)) + c.wet * any_slip * 0.07) + c.puddle * g * sp * 0.16;
+        let spray_hi = c.puddle * g * sp * 0.08 + c.wet * c.s_hard * g * sp * sp * 0.03;
+        let grain_rate = dry * (loose * (25.0 + 950.0 * sp) + (c.s_loose + c.s_grass) * g * (slip_l * 1900.0 + c.spin_loose * 1700.0)) / sr;
         let grain_amp = 0.25 + 0.6 * sp + 0.7 * slip_l + 0.6 * c.spin_loose;
         let snow_rate = (snow * (18.0 + 380.0 * sp) + c.s_snow * g * (slip_l + c.spin_loose) * 2600.0) / sr;
         let bed_amt = (c.s_loose * g) * (sp * 0.07 + slip_l * 0.6 + c.spin_loose * 0.38) + c.s_snow * g * (sp * 0.03 + slip_l * 0.55 + c.spin_loose * 0.3);
@@ -420,7 +437,7 @@ impl EngineVoice {
         let sq_lock = smoothstep(0.05, 0.9, c.lock_hard);
         let sq_spin = smoothstep(0.05, 0.9, c.spin_hard);
         let sq = (sq_lat.max(sq_lock).max(sq_spin) * g).min(1.0);
-        let sq_amt = 0.25 * sq.powf(1.2) * smoothstep(1.0, 5.0, c.speed + 4.0 * sq_spin);
+        let sq_amt = 0.25 * sq.powf(1.2) * smoothstep(1.0, 5.0, c.speed + 4.0 * sq_spin) * (1.0 - 0.6 * c.wet);
         let sq_freq = 700.0 + 170.0 * sq_lat - 120.0 * sq_lock + 200.0 * sq_spin;
         let judder = 0.55 * sq_lock;
         let whirr_amt = 0.09 * sq_spin + 0.05 * c.spin_loose;
@@ -613,6 +630,12 @@ impl EngineVoice {
             if wind_amt > 1e-4 {
                 let w = 0.8 + 0.2 * self.wind_w.step(&mut self.rng, 0.7, sr);
                 ty += self.wind_f.bp(noise, &wind_c) * wind_amt * w;
+            }
+            if hiss_amt > 1e-4 {
+                ty += self.hiss_f.bp(n2, &self.hiss_c) * hiss_amt;
+            }
+            if spray_hi > 1e-4 {
+                ty += self.wspray_f.bp(noise, &self.wspray_c) * spray_hi;
             }
             if water_amt > 1e-4 {
                 let w = 0.5 + 0.5 * self.water_w.step(&mut self.rng, 14.0, sr);

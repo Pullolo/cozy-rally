@@ -2,9 +2,9 @@
 //! attenuation / pan / doppler relative to the local cameras, turns wheel state into
 //! surface mix + traction-loss amounts, and maps world events to one-shots.
 //! Depends only on rally_core so the offline renderer can drive it with a real simulation.
-use super::synth::{Cmd, EngineParams, SfxKind, MAX_CARS};
+use super::synth::{AmbienceParams, Cmd, EngineParams, SfxKind, MAX_CARS};
 use rally_core::glam::Vec3;
-use rally_core::race::RaceEvent;
+use rally_core::race::{RaceEvent, RacePhase};
 use rally_core::surface::Surface;
 use rally_core::vehicle::{Car, WheelState};
 use rally_core::world::{World, WorldEvent};
@@ -131,11 +131,42 @@ pub fn attenuation(d: f32) -> f32 {
     if d < 7.0 { 1.0 } else { (7.0 / d).powf(1.15) }
 }
 
+/// Cues the game already requested explicitly this frame (campaign hooks), so the bridge
+/// doesn't also play its generic version.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CueFlags {
+    /// A split chime was played: skip the generic checkpoint bling
+    pub split: bool,
+    /// A medal / record cue was played: skip the generic finish fanfare
+    pub result: bool,
+}
+
+/// Wetness and standing water under a car (max over its left/right wheel tracks)
+fn wet_at(world: &World, i: usize) -> (f32, f32) {
+    let track = &world.track;
+    if track.conditions.keys.is_empty() {
+        return (0.0, 0.0);
+    }
+    let Some(r) = world.race.racers.get(i) else {
+        return (0.0, 0.0);
+    };
+    let wet = track.weather_at(r.s).wetness.clamp(0.0, 1.0);
+    if wet < 0.2 {
+        return (wet, 0.0);
+    }
+    let ht = world.cars[i].spec.half_track;
+    let puddle = track.puddle_at(r.s, r.lateral - ht).max(track.puddle_at(r.s, r.lateral + ht));
+    (wet, puddle.clamp(0.0, 1.0))
+}
+
 #[derive(Default)]
 pub struct Bridge {
     prev_eyes: Vec<Vec3>,
     lis_vel: Vec<Vec3>,
     prev_water: Vec<bool>,
+    prev_puddle: Vec<f32>,
+    puddle_cd: Vec<f32>,
+    countdown: Option<u32>,
 }
 
 impl Bridge {
@@ -169,7 +200,7 @@ impl Bridge {
 
     /// Per-frame update. `locals` are the car indices of local players, `listeners` their cameras.
     #[allow(clippy::too_many_arguments)]
-    pub fn frame(&mut self, world: &World, locals: &[usize], listeners: &[Listener], events: &[WorldEvent], paused: bool, dt: f32, send: &mut dyn FnMut(Cmd)) {
+    pub fn frame(&mut self, world: &World, locals: &[usize], listeners: &[Listener], events: &[WorldEvent], paused: bool, dt: f32, cues: CueFlags, send: &mut dyn FnMut(Cmd)) {
         // listener velocities (for doppler); camera snaps reset them
         self.prev_eyes.resize(listeners.len(), Vec3::ZERO);
         self.lis_vel.resize(listeners.len(), Vec3::ZERO);
@@ -188,6 +219,7 @@ impl Bridge {
             if c < world.cars.len() && n < MAX_CARS {
                 let car = &world.cars[c];
                 let mut p = car_params(c, car);
+                (p.wet, p.puddle) = wet_at(world, c);
                 let sp = self.spatial(listeners, car.pos, car.vel);
                 p.gain = sp.gain.max(0.6) * local_level;
                 p.pan = sp.pan * 0.5;
@@ -217,6 +249,7 @@ impl Bridge {
             }
             let car = &world.cars[i];
             let mut p = car_params(i, car);
+            (p.wet, p.puddle) = wet_at(world, i);
             let sp = self.spatial(listeners, car.pos, car.vel);
             p.gain = sp.gain * 0.9;
             p.pan = sp.pan;
@@ -226,6 +259,48 @@ impl Bridge {
             n += 1;
         }
         send(Cmd::Cars { n: n as u8, cars, paused });
+
+        // ---- weather around the first local player ----
+        let w = locals.first().and_then(|&c| world.race.racers.get(c)).map(|r| world.track.weather_at(r.s)).unwrap_or_default();
+        let precip = w.precipitation.clamp(0.0, 1.0);
+        let wind = (w.wind[0] * w.wind[0] + w.wind[1] * w.wind[1]).sqrt();
+        let storm = (((precip - 0.75) / 0.25).clamp(0.0, 1.0) * ((w.overcast - 0.85) / 0.15).clamp(0.0, 1.0)).max(((wind - 7.0) / 3.0).clamp(0.0, 1.0) * precip);
+        send(Cmd::Ambience(AmbienceParams {
+            rain: if w.snow { 0.0 } else { precip },
+            snow: if w.snow { precip } else { 0.0 },
+            wind,
+            fog: w.fog.clamp(0.0, 1.0),
+            storm,
+        }));
+
+        // ---- puddle splashes (voiced cars only, rising edge, rate limited) ----
+        self.prev_puddle.resize(world.cars.len(), 0.0);
+        self.puddle_cd.resize(world.cars.len(), 0.0);
+        for cd in self.puddle_cd.iter_mut() {
+            *cd = (*cd - dt).max(0.0);
+        }
+        for p in cars.iter().take(n) {
+            let i = p.id as usize;
+            if p.puddle > 0.35 && self.prev_puddle[i] <= 0.35 && p.speed > 4.0 && p.ground > 0.4 && self.puddle_cd[i] <= 0.0 {
+                self.puddle_cd[i] = 0.35;
+                send(Cmd::Sfx { kind: SfxKind::Puddle { strength: p.speed * p.puddle }, gain: p.gain, pan: p.pan });
+            }
+            self.prev_puddle[i] = p.puddle;
+        }
+
+        // ---- rally stages: 5-4-3-2-1 start beeps derived from the countdown clock ----
+        let stage = !world.track.closed;
+        if stage {
+            if let RacePhase::Countdown(t) = world.race.phase {
+                let c = t.ceil().max(0.0) as u32;
+                if self.countdown != Some(c) && (1..=5).contains(&c) {
+                    send(Cmd::Sfx { kind: SfxKind::StageBeep(c), gain: 1.0, pan: 0.0 });
+                }
+                self.countdown = Some(c);
+            } else {
+                self.countdown = None;
+            }
+        }
 
         // ---- water splashes ----
         self.prev_water.resize(world.cars.len(), false);
@@ -264,9 +339,9 @@ impl Bridge {
                     }
                 }
                 WorldEvent::Race(r) => match r {
-                    RaceEvent::CountdownTick(k) => send(Cmd::Sfx { kind: SfxKind::CountdownTick(k), gain: 1.0, pan: 0.0 }),
-                    RaceEvent::Go => send(Cmd::Sfx { kind: SfxKind::Go, gain: 1.0, pan: 0.0 }),
-                    RaceEvent::Checkpoint { car } if is_local(car) => send(Cmd::Sfx { kind: SfxKind::Checkpoint, gain: 1.0, pan: 0.0 }),
+                    RaceEvent::CountdownTick(k) if !stage => send(Cmd::Sfx { kind: SfxKind::CountdownTick(k), gain: 1.0, pan: 0.0 }),
+                    RaceEvent::Go => send(Cmd::Sfx { kind: if stage { SfxKind::StageBeep(0) } else { SfxKind::Go }, gain: 1.0, pan: 0.0 }),
+                    RaceEvent::Checkpoint { car } if is_local(car) && !cues.split => send(Cmd::Sfx { kind: SfxKind::Checkpoint, gain: 1.0, pan: 0.0 }),
                     RaceEvent::Lap { car, lap, .. } if is_local(car) => {
                         if lap + 1 == laps {
                             send(Cmd::Sfx { kind: SfxKind::FinalLap, gain: 1.0, pan: 0.0 });
@@ -275,7 +350,7 @@ impl Bridge {
                         }
                         // lap == laps: the Finish event follows with the fanfare
                     }
-                    RaceEvent::Finish { car, place, .. } if is_local(car) => {
+                    RaceEvent::Finish { car, place, .. } if is_local(car) && !cues.result => {
                         send(Cmd::Sfx { kind: SfxKind::Finish { place: place as u32 }, gain: 1.0, pan: 0.0 })
                     }
                     RaceEvent::Reset { car } => {
