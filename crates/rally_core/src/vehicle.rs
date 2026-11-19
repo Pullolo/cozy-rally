@@ -261,6 +261,54 @@ pub fn car_specs() -> Vec<CarSpec> {
             assist: 0.8,
             color: [0.45, 0.72, 0.48],
         },
+        CarSpec {
+            id: 4,
+            name: "Blossom",
+            blurb: "Pink turbo pocket rocket. Tiny, twitchy, loves to rotate.",
+            mass: 1080.0,
+            half_extents: Vec3::new(0.84, 0.56, 1.95),
+            // short and light: quick to change direction
+            inertia_scale: Vec3::new(1.0, 0.86, 1.0),
+            cg_to_front: 1.08,
+            cg_to_rear: 1.18,
+            half_track: 0.78,
+            mount_height: -0.04,
+            wheel_radius: 0.31,
+            wheel_width: 0.22,
+            susp_rest: 0.38,
+            susp_travel: 0.26,
+            spring_k: 36000.0,
+            damp_bump: 2800.0,
+            damp_rebound: 3700.0,
+            arb_front: 9000.0,
+            arb_rear: 11000.0,
+            tire_grip: 1.15,
+            peak_slip_angle: 0.15,
+            rear_grip_bias: 0.98,
+            max_steer: 0.64,
+            drivetrain: Drivetrain::Awd,
+            // rear-biased AWD
+            awd_front_split: 0.25,
+            // small turbo: strong mid-range, runs out of breath at the top
+            peak_torque: 290.0,
+            peak_rpm: 4000.0,
+            idle_rpm: 950.0,
+            redline: 7000.0,
+            gears: &[2.6, 1.85, 1.42, 1.15, 0.95, 0.8],
+            final_drive: 4.3,
+            reverse_ratio: 3.2,
+            engine_inertia: 0.12,
+            lsd: 0.4,
+            ai_grip: 0.87,
+            brake_force: 13500.0,
+            brake_bias_front: 0.64,
+            handbrake_force: 6500.0,
+            // boxy hatch: more drag, a little less top speed
+            drag: 0.74,
+            downforce: 1.0,
+            assist: 0.62,
+            color: [0.98, 0.60, 0.78],
+        },
     ]
 }
 
@@ -1066,33 +1114,38 @@ impl Car {
         let v_long_body = self.vel.dot(fwd);
         let v_lat_body = self.vel.dot(right);
         let speed_factor = 1.0 / (1.0 + (speed / 22.0).powi(2) * 0.9);
-        let mut neutral = 0.0;
-        if speed > 3.0 && v_long_body > 0.0 {
-            let beta = v_lat_body.atan2(v_long_body.abs());
-            // counter-steer toward the direction of travel
-            neutral = beta * (spec.assist * self.assist_level).min(1.0) * 0.85;
-        }
+        let _ = v_lat_body;
+        // The wheel angle follows the driver's input only: no automatic counter-steer (that
+        // must come from the driver). Assists stay invisible (yaw torque / traction control).
         // Sim: raw angle with speed sensitivity only
-        let mut target = (steer_in * spec.max_steer * speed_factor.max(0.22) + neutral).clamp(-spec.max_steer, spec.max_steer);
+        let mut target = (steer_in * spec.max_steer * speed_factor.max(0.22)).clamp(-spec.max_steer, spec.max_steer);
         // Slip-angle steering limiter (Forza-style): full input puts the front tyres at about
         // their peak slip angle relative to the front axle's actual direction of travel, so
-        // the fronts never plough past the peak (no straight-on understeer / screech on a
-        // keyboard). Partial input = proportional share of the available angle.
+        // the fronts never plough past the peak. It can only *reduce* the angle the driver
+        // asks for, never flip its sign or add steering: centred input = straight wheels, and
+        // full opposite lock in a slide reaches peak slip beyond the direction of travel
+        // (the angle that catches it).
         if let Some(k) = steer_limit_factor(self.assist_level) {
             if v_long_body > 1.0 {
                 let v_f = self.vel + self.ang_vel.cross(fwd * spec.cg_to_front);
                 let theta = v_f.dot(right).atan2(v_f.dot(fwd).max(0.5));
                 let half = k * spec.peak_slip_angle;
-                let (lo, hi) = (theta - half, theta + half);
-                let n0 = neutral.clamp(lo, hi);
-                let limited = if steer_in >= 0.0 { n0 + (hi - n0) * steer_in } else { n0 + (n0 - lo) * steer_in };
+                let limited = if steer_in >= 0.0 { steer_in * (theta + half).max(0.0) } else { steer_in * (half - theta).max(0.0) };
                 // full lock stays available when parking / turning around
                 let w = ((speed - 3.0) / 5.0).clamp(0.0, 1.0);
-                let low = (steer_in * spec.max_steer + neutral).clamp(-spec.max_steer, spec.max_steer);
+                let low = steer_in * spec.max_steer;
                 target = (low + (limited - low) * w).clamp(-spec.max_steer, spec.max_steer);
             }
         }
         target
+    }
+
+    /// Direction of travel of the front axle relative to the car's heading (rad, + = right).
+    /// A front wheel steered to this angle runs at zero slip.
+    pub fn front_travel_angle(&self) -> f32 {
+        let fwd = self.forward();
+        let v_f = self.vel + self.ang_vel.cross(fwd * self.spec.cg_to_front);
+        v_f.dot(self.right()).atan2(v_f.dot(fwd).max(0.5))
     }
 
     /// Steering input (-1..1) that makes `steer_target` closest to `angle` (rad)
@@ -1185,6 +1238,7 @@ pub fn abs_strength(assist_level: f32) -> f32 {
 #[inline]
 pub fn wheel_ground(track: &Track, contact: Vec3, hint: Option<usize>) -> (SurfaceProps, Option<Surface>, TrackQuery) {
     let g = track.ground_at(contact, hint);
+    // ground_at already blends surface + weather (wet grip, puddles)
     (g.props, Some(g.primary), g.query)
 }
 

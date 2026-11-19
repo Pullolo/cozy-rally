@@ -6,3 +6,9 @@ edition = "2024"
 [dependencies]
 glam = "0.27"
 serde = { version = "1.0.229", features = ["derive"] }
+# Global leaderboard client stub (protocol only, see campaign_run::http)
+serde_json = { version = "1", optional = true }
+
+[features]
+default = []
+http-leaderboard = ["dep:serde_json"]

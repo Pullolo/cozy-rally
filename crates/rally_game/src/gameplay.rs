@@ -18,6 +18,8 @@ pub enum GameMode {
     Race,
     /// Solo laps against your best-lap ghost
     TimeTrial,
+    /// A campaign stage (see campaign_mode.rs): solo vs your best ghost for that stage
+    Campaign,
 }
 
 impl GameMode {
@@ -26,6 +28,7 @@ impl GameMode {
         match self {
             GameMode::Race => "Race",
             GameMode::TimeTrial => "Time Trial",
+            GameMode::Campaign => "Campaign",
         }
     }
 }
@@ -48,7 +51,7 @@ pub struct TimeTrialState {
 
 /// Directory for ghost files: $COZY_DATA_DIR, else %APPDATA%\CozyRally (Windows),
 /// else $XDG_DATA_HOME/cozy-rally or ~/.local/share/cozy-rally.
-fn data_dir() -> Option<PathBuf> {
+pub(crate) fn data_dir() -> Option<PathBuf> {
     if let Ok(d) = std::env::var("COZY_DATA_DIR") {
         return Some(PathBuf::from(d));
     }
@@ -81,7 +84,7 @@ fn upload_ghost_meshes(gpu: &mut Gpu) -> Vec<(u8, GpuMesh, GpuMesh)> {
 
 impl TimeTrialState {
     pub fn new(cfg: &SessionConfig, player_cars: &[usize], gpu: &mut Gpu) -> TimeTrialState {
-        let file = ghost_file(cfg);
+        let file = if cfg.mode == GameMode::Campaign { crate::campaign_mode::active_ghost_file() } else { ghost_file(cfg) };
         let best = file.as_ref().and_then(|f| std::fs::read(f).ok()).and_then(|b| GhostLap::from_bytes(&b));
         let loaded_best = best.as_ref().map(|g| g.time);
         TimeTrialState { tt: TimeTrial::new(player_cars, best), ghost_meshes: upload_ghost_meshes(gpu), file, best_flash: 0.0, loaded_best }
@@ -109,7 +112,7 @@ impl TimeTrialState {
 
 /// Create the per-session gameplay state (called from RaceSession::new)
 pub fn session_start(cfg: &SessionConfig, player_cars: &[usize], gpu: &mut Gpu) -> Option<TimeTrialState> {
-    (cfg.mode == GameMode::TimeTrial).then(|| TimeTrialState::new(cfg, player_cars, gpu))
+    matches!(cfg.mode, GameMode::TimeTrial | GameMode::Campaign).then(|| TimeTrialState::new(cfg, player_cars, gpu))
 }
 
 thread_local! {
@@ -127,6 +130,12 @@ pub fn draw_world_overlays(sess: &RaceSession, gpu: &mut Gpu, view: &View, playe
 /// Per-frame gameplay update after the world step (called from RaceSession::update):
 /// ghost recording / delta / saving, racing-line toggle (L / pad LB), rumble for players on pads.
 pub fn frame(sess: &mut RaceSession, dt: f32) {
+    frame_inner(sess, dt);
+    // after the ghost recorder, so a finished stage's recording is available
+    crate::campaign_mode::frame(sess);
+}
+
+fn frame_inner(sess: &mut RaceSession, dt: f32) {
     if let Some(p0) = sess.players.first() {
         let pad_lb = p0.input.pad.and_then(crate::input::pad).is_some_and(|p| p.pressed(crate::input::PadButton::Lb));
         if !sess.paused && (is_key_pressed(KeyCode::L) || pad_lb) {
@@ -203,6 +212,7 @@ pub fn draw_ghost(sess: &RaceSession, gpu: &mut Gpu, view: &View, player: usize)
 
 /// Small time-trial HUD line under the timer panel: live delta to the ghost, last lap result
 pub fn draw_hud(sess: &RaceSession, player: usize, vp: &Viewport) {
+    crate::campaign_mode::draw_hud(sess, player, vp);
     let (until, mode) = LINE_TOAST.with(|t| t.get());
     if get_time() < until && player == 0 {
         let k = scale() * (vp.h / screen_height()).max(0.6);

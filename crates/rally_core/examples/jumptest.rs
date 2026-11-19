@@ -117,7 +117,7 @@ fn main() {
         for seed in 1..=10u64 {
             let track = Track::generate(&TrackParams { seed, biome: None, length_class: 1, ..Default::default() }.with_env_overrides());
             for &j in &track.jumps {
-                for spec in 0..4 {
+                for spec in 0..car_specs().len() {
                     if let Some(r) = run(&track, j, spec, assist, scenario) {
                         if std::env::var("JT_LIST").is_ok() && r.yaw_peak > 0.7 {
                             println!("   seed {seed} jump {j} car {spec}: yaw {:.2} slip {:.1} air {:.2}s v {:.1}", r.yaw_peak, r.beta_peak.to_degrees(), r.air, r.land_v);

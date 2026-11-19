@@ -96,7 +96,7 @@ impl RaceSession {
         let n_ai = config.ai_count;
         let mut rng = rally_core::rng::Rng::new(config.track.seed ^ 0xA1);
         for k in 0..n_ai {
-            let spec = rng.range_i(0, 4) as usize;
+            let spec = rng.range_i(0, rally_core::vehicle::car_specs().len() as i32) as usize; // [gameplay] all cars
             racers.push(RacerSetup { car_spec: spec, controller: Controller::Ai });
             names.push(AI_NAMES[k % AI_NAMES.len()].to_string());
             paints.push((k + 3) % PAINTS.len());

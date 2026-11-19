@@ -220,7 +220,7 @@ impl AiDriver {
             self.profile = None;
         }
         if self.profile.as_ref().map(|p| p.0) != Some(car.spec.id) {
-            let sp = SpeedParams::for_car(&car.spec, self.grip_use() * car.spec.ai_grip, 0.6 + 0.45 * self.personality.skill);
+            let sp = SpeedParams::for_car(&car.spec, self.grip_use() * car.spec.ai_grip, (0.6 + 0.35 * self.personality.skill).min(0.97));
             self.mu_plan = sp.mu;
             let prof = SpeedProfile::build(self.line.as_ref().unwrap(), &sp);
             self.profile = Some((car.spec.id, prof));
@@ -486,6 +486,14 @@ impl AiDriver {
             let yaw_right = -car.ang_vel.dot(car.up());
             let want_yaw = speed * kappa;
             delta += (want_yaw - yaw_right) * 0.12;
+            // the car no longer counter-steers by itself: the AI does it, by keeping the
+            // front tyres inside their peak-slip window around the front axle's direction
+            // of travel (in a slide that means steering into it)
+            if speed > 4.0 {
+                let theta = car.front_travel_angle();
+                let half = car.spec.peak_slip_angle * 0.95;
+                delta = delta.clamp(theta - half, theta + half);
+            }
             // invert the car's steering system (assists / slip-angle limiter included)
             steer = car.steer_input_for_angle(delta);
         }

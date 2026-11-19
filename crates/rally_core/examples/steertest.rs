@@ -96,8 +96,11 @@ fn main() {
     if std::env::args().nth(2).as_deref() == Some("tic") {
         println!("=== THROTTLE IN CORNER (assist {assist}): steady corner at 70 km/h near the limit (steer 0.9), then full throttle 2 s. peak drift deg / yaw gain / spin / recovered, for driver hold | catch | lift");
         for surf in [Surface::Gravel, Surface::Asphalt] {
-            let track = Track::flat_for_tests(surf);
-            for spec in 0..4 {
+            let mut track = Track::flat_for_tests(surf);
+            if std::env::var("WET").is_ok() {
+                track.conditions = rally_core::weather::StageConditions::uniform(rally_core::weather::WeatherPreset::Storm.weather());
+            }
+            for spec in 0..car_specs().len() {
                 let mut line = format!("{:?} {:8}", surf, car_specs()[spec].name);
                 for d in ["hold", "catch", "lift"] {
                     let st: f32 = std::env::var("TIC_STEER").ok().and_then(|v| v.parse().ok()).unwrap_or(0.9);
@@ -111,10 +114,13 @@ fn main() {
     }
     println!("=== STEERING (assist {assist}): speed held, steady-state over 1.5-4 s. latG / front slip deg (peak ~8.6) / front skid (screech 0..1) / yaw rad/s");
     for surf in [Surface::Gravel, Surface::Asphalt] {
-        let track = Track::flat_for_tests(surf);
+        let mut track = Track::flat_for_tests(surf);
+        if std::env::var("WET").is_ok() {
+            track.conditions = rally_core::weather::StageConditions::uniform(rally_core::weather::WeatherPreset::Storm.weather());
+        }
         for (kmh, input) in [(60.0, 1.0), (60.0, 0.5), (90.0, 1.0), (90.0, 0.3)] {
             let mut line = format!("{:?} {kmh:3.0} km/h steer {input:.1}:", surf);
-            for spec in 0..4 {
+            for spec in 0..car_specs().len() {
                 let mut c = fresh(spec, &track, assist, kmh);
                 let (mut lat, mut slip, mut skid, mut yaw, mut n) = (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
                 let mut spun = false;
@@ -138,7 +144,7 @@ fn main() {
         }
         // braking in a corner: full brake + full steer from 80 km/h for 1.2 s
         let mut line = format!("{:?} brake+steer 80:", surf);
-        for spec in 0..4 {
+        for spec in 0..car_specs().len() {
             let mut c = fresh(spec, &track, assist, 80.0);
             let f0 = c.forward();
             let p0 = c.pos;

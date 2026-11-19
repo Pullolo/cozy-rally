@@ -5,6 +5,7 @@ mod camera;
 mod cinematic;
 mod fx;
 mod game;
+mod campaign_mode;
 mod gameplay;
 mod line_assist;
 mod hud;
@@ -315,7 +316,8 @@ impl App {
         if let Some(a) = self.attract.take() {
             a.free(&mut self.gpu);
         }
-        let mut cfg = self.setup.config();
+        // [gameplay] a campaign stage queued by campaign_mode::start_stage wins
+        let mut cfg = campaign_mode::take_pending_config().unwrap_or_else(|| self.setup.config());
         if self.hooks.after_load.as_deref() == Some("results") {
             cfg.laps = 1;
         }
@@ -1006,6 +1008,11 @@ impl App {
             }
         }
         sess.update(dt, touch);
+        // [gameplay] campaign instant restart (T)
+        if campaign_mode::take_restart(&sess.config) {
+            self.start_race();
+            return;
+        }
         if self.hooks.autoplay && sess.players.len() > 1 {
             let j = sess.players[1].car;
             let inp = self.autopilots[1].drive(&sess.world.cars[j], &sess.world.track, dt);
@@ -1431,6 +1438,12 @@ async fn main() {
     set_input_blocked(true);
     if let Ok(seed) = std::env::var("COZY_SEED") {
         app.setup.seed = seed.parse().unwrap_or(1);
+    }
+    // [gameplay] test hook: COZY_STAGE=<stage id> starts a campaign stage directly
+    if let Ok(id) = std::env::var("COZY_STAGE") {
+        if campaign_mode::start_stage(&id, app.setup.cars[0], app.setup.paints[0], (ASSISTS[app.setup.assists].0, ASSISTS[app.setup.assists].1)).is_some() {
+            app.screen = Screen::Loading;
+        }
     }
     if std::env::var("COZY_MODE").is_ok_and(|m| m == "tt" || m == "timetrial") {
         app.setup.mode = 1; // [gameplay] time trial test hook

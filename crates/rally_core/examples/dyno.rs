@@ -35,7 +35,7 @@ fn launch_table() {
     for surf in [Surface::Asphalt, Surface::Gravel, Surface::Snow, Surface::Ice] {
         let track = Track::flat_for_tests(surf);
         println!("--- {:?}", surf);
-        for spec in 0..4 {
+        for spec in 0..car_specs().len() {
             let mut line = format!("{:8}", car_specs()[spec].name);
             for (aname, a) in [ASSISTS[3], ASSISTS[2], ASSISTS[1], ASSISTS[0]] {
                 let mut c = fresh(spec, &track, a);
@@ -80,7 +80,7 @@ fn handling_table() {
         let track = Track::flat_for_tests(surf);
         for (aname, assist) in [ASSISTS[1], ASSISTS[3]] {
             println!("=== {:?} / {aname} assists", surf);
-            for spec in 0..4 {
+            for spec in 0..car_specs().len() {
                 let name = car_specs()[spec].name;
                 let mut c = fresh(spec, &track, assist);
                 c.input = CarInput { throttle: 1.0, ..Default::default() };
@@ -169,7 +169,7 @@ fn rest_table() {
             best = i;
         }
     }
-    for spec in 0..4 {
+    for spec in 0..car_specs().len() {
         let mut line = format!("{:8}", car_specs()[spec].name);
         for (label, on_hill, brake) in [("flat idle", false, 0.0), ("flat hb", false, 1.0), ("slope idle", true, 0.0), ("slope hb", true, 1.0)] {
             let track = if on_hill { &hill } else { &flat };

@@ -45,7 +45,21 @@ fn main() {
             continue;
         }
         let t0 = Instant::now();
-        let track = Arc::new(Track::generate(&TrackParams { seed, biome: None, length_class: 1, ..Default::default() }.with_env_overrides()));
+        let mut params = TrackParams { seed, biome: None, length_class: 1, ..Default::default() }.with_env_overrides();
+        // SIM_WEATHER=clear|drizzle|rain|storm|fog|snowfall|dynamic
+        if let Ok(w) = std::env::var("SIM_WEATHER") {
+            use rally_core::weather::{ConditionsSpec, WeatherPreset as P};
+            params.conditions = match w.as_str() {
+                "drizzle" => ConditionsSpec::Fixed(P::Drizzle),
+                "rain" => ConditionsSpec::Fixed(P::Rain),
+                "storm" => ConditionsSpec::Fixed(P::Storm),
+                "fog" => ConditionsSpec::Fixed(P::Fog),
+                "snowfall" => ConditionsSpec::Fixed(P::Snowfall),
+                "dynamic" => ConditionsSpec::Dynamic,
+                _ => ConditionsSpec::Fixed(P::Clear),
+            };
+        }
+        let track = Arc::new(Track::generate(&params));
         let gen_ms = t0.elapsed().as_millis();
         println!(
             "seed {seed}: {} ({:?}) len {:.0}m jumps {} gen {gen_ms}ms",
@@ -55,7 +69,7 @@ fn main() {
             track.jumps.len()
         );
         let mut rng = Rng::new(seed ^ 0xA1);
-        let mut racers: Vec<RacerSetup> = (0..n_ai).map(|_| RacerSetup { car_spec: rng.range_i(0, 4) as usize, controller: Controller::Ai }).collect();
+        let mut racers: Vec<RacerSetup> = (0..n_ai).map(|_| RacerSetup { car_spec: rng.range_i(0, car_specs().len() as i32) as usize, controller: Controller::Ai }).collect();
         let ref_idx = if with_ref {
             racers.push(RacerSetup { car_spec: (seed % 4) as usize, controller: Controller::Local(0) });
             Some(n_ai)

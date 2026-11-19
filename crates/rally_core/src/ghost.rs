@@ -113,6 +113,8 @@ pub struct TimeTrial {
     pub deltas: Vec<Option<f32>>,
     /// Per tracked car: (last lap time, delta vs the ghost it was racing)
     pub last_lap: Vec<Option<(f32, Option<f32>)>>,
+    /// The most recently completed lap's recording (any tracked car), best or not
+    pub last_ghost: Option<GhostLap>,
     recorders: Vec<Recorder>,
 }
 
@@ -123,6 +125,7 @@ impl TimeTrial {
             new_best: false,
             deltas: vec![None; cars.len()],
             last_lap: vec![None; cars.len()],
+            last_ghost: None,
             recorders: cars.iter().map(|&car| Recorder { car, laps_done: 0, frames: Vec::new(), next_t: 0.0 }).collect(),
         }
     }
@@ -166,10 +169,12 @@ impl TimeTrial {
                 let vs = self.best.as_ref().map(|b| time - b.time);
                 self.last_lap[k] = Some((time, vs));
                 let better = self.best.as_ref().is_none_or(|b| time < b.time);
-                if better && frames.len() > 10 {
-                    self.best = Some(GhostLap { time, car_spec: world.cars[car].spec.id, frames });
+                let lap = GhostLap { time, car_spec: world.cars[car].spec.id, frames };
+                if better && lap.frames.len() > 10 {
+                    self.best = Some(lap.clone());
                     self.new_best = true;
                 }
+                self.last_ghost = Some(lap);
                 self.recorders[k].next_t = 0.0;
             }
             if r.finished {
