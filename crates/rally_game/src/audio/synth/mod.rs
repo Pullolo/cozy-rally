@@ -31,7 +31,8 @@ pub const BLOCK: usize = 64;
 pub struct EngineParams {
     /// Stable key (car index in the world)
     pub id: u32,
-    /// Engine character (CarSpec::id): 0 Pip, 1 Bramble, 2 Thistle, 3 Burrow
+    /// Engine character (CarSpec::id): 0 Pip, 1 Bramble, 2 Thistle, 3 Burrow, 4 Blossom,
+    /// 5 Comet, 6 Zephyr, 7 Dragonfly
     pub kind: u8,
     pub rpm: f32,
     pub idle_rpm: f32,
@@ -40,6 +41,12 @@ pub struct EngineParams {
     /// 0..1 engine load (effective throttle)
     pub load: f32,
     pub shifting: bool,
+    /// Current gear (gear changes trigger shift cuts / downshift blips)
+    pub gear: i8,
+    /// Racing slicks (different squeal, rumble instead of crunch off tarmac)
+    pub slick: bool,
+    /// Floor scraping the ground 0..1 (metallic grind)
+    pub floor_scrape: f32,
     /// m/s
     pub speed: f32,
     /// Fraction of wheels touching the ground

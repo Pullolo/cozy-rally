@@ -12,9 +12,9 @@ use super::{EngineParams, BLOCK};
 pub struct Profile {
     pub cyl: usize,
     /// Firing offset of each cylinder within the 720 deg cycle (0..1)
-    pub offsets: [f32; 8],
+    pub offsets: [f32; MAX_CYL],
     /// Static per-cylinder strength (bank imbalance -> burble)
-    pub amps: [f32; 8],
+    pub amps: [f32; MAX_CYL],
     /// Pulse width as a fraction of the firing interval
     pub width: f32,
     /// 0 = round pulses, 1 = snappy/buzzy pulses
@@ -37,11 +37,30 @@ pub struct Profile {
     pub knock: f32,
     pub turbo: bool,
     pub gain: f32,
+    /// Hybrid electric-motor whine (strongest at launch / low speed)
+    pub ewhine: f32,
+    /// Loudness dip during an upshift (0..1): sharper for race gearboxes
+    pub shift_cut: f32,
+    /// Throttle blip on downshifts (0..1)
+    pub blip: f32,
+}
+
+pub const MAX_CYL: usize = 12;
+
+/// Pad a short per-cylinder array to MAX_CYL
+const fn cyl_arr<const N: usize>(a: [f32; N]) -> [f32; MAX_CYL] {
+    let mut o = [0.0; MAX_CYL];
+    let mut i = 0;
+    while i < N {
+        o[i] = a[i];
+        i += 1;
+    }
+    o
 }
 
 pub fn profile(kind: u8) -> Profile {
     let even = |n: usize| {
-        let mut o = [0.0; 8];
+        let mut o = [0.0; MAX_CYL];
         for (i, v) in o.iter_mut().enumerate().take(n) {
             *v = i as f32 / n as f32;
         }
@@ -52,7 +71,7 @@ pub fn profile(kind: u8) -> Profile {
         0 => Profile {
             cyl: 3,
             offsets: even(3),
-            amps: [1.0, 0.82, 0.92, 0.0, 0.0, 0.0, 0.0, 0.0],
+            amps: cyl_arr([1.0, 0.82, 0.92]),
             width: 0.36,
             snap: 0.75,
             formants: [(560.0, 2.5, 0.55), (1450.0, 3.5, 0.32), (2700.0, 4.0, 0.10)],
@@ -66,12 +85,15 @@ pub fn profile(kind: u8) -> Profile {
             knock: 0.0,
             turbo: false,
             gain: 0.85,
+            ewhine: 0.0,
+            shift_cut: 0.3,
+            blip: 0.2,
         },
         // Bramble: burbly cross-plane V8 coupe (bank pattern A B A A B B B A)
         1 => Profile {
             cyl: 8,
             offsets: even(8),
-            amps: [1.0, 0.66, 1.0, 0.95, 0.70, 0.62, 0.68, 0.97],
+            amps: cyl_arr([1.0, 0.66, 1.0, 0.95, 0.70, 0.62, 0.68, 0.97]),
             width: 0.80,
             snap: 0.15,
             formants: [(130.0, 1.4, 0.75), (340.0, 2.0, 0.45), (820.0, 2.5, 0.15)],
@@ -85,12 +107,15 @@ pub fn profile(kind: u8) -> Profile {
             knock: 0.0,
             turbo: false,
             gain: 0.95,
+            ewhine: 0.0,
+            shift_cut: 0.3,
+            blip: 0.3,
         },
         // Thistle: turbo 4-cylinder rally car
         2 => Profile {
             cyl: 4,
             offsets: even(4),
-            amps: [1.0, 0.93, 0.97, 0.9, 0.0, 0.0, 0.0, 0.0],
+            amps: cyl_arr([1.0, 0.93, 0.97, 0.9]),
             width: 0.5,
             snap: 0.45,
             formants: [(400.0, 2.0, 0.55), (1100.0, 3.0, 0.35), (2300.0, 4.0, 0.12)],
@@ -104,12 +129,103 @@ pub fn profile(kind: u8) -> Profile {
             knock: 0.0,
             turbo: true,
             gain: 0.85,
+            ewhine: 0.0,
+            shift_cut: 0.3,
+            blip: 0.3,
+        },
+        // Blossom: peppy turbo 4-cylinder hot hatch (brighter and smoother than Thistle)
+        4 => Profile {
+            cyl: 4,
+            offsets: even(4),
+            amps: cyl_arr([1.0, 0.95, 0.98, 0.93]),
+            width: 0.48,
+            snap: 0.5,
+            formants: [(470.0, 2.2, 0.5), (1250.0, 3.0, 0.35), (2600.0, 4.0, 0.1)],
+            dry: 0.85,
+            lp_base: 1150.0,
+            lp_rpm: 3000.0,
+            grit: 0.2,
+            jitter: 0.05,
+            lope: 0.0,
+            pops: 0.15,
+            knock: 0.0,
+            turbo: true,
+            gain: 0.8,
+            ewhine: 0.0,
+            shift_cut: 0.3,
+            blip: 0.5,
+        },
+        // Comet: rear-engined GT, high-revving flat six (boxer banks alternate -> slight howl)
+        5 => Profile {
+            cyl: 6,
+            offsets: even(6),
+            amps: cyl_arr([1.0, 0.88, 0.98, 0.86, 1.0, 0.9]),
+            width: 0.5,
+            snap: 0.5,
+            formants: [(520.0, 2.0, 0.5), (1400.0, 3.0, 0.4), (2900.0, 4.0, 0.12)],
+            dry: 0.85,
+            lp_base: 1200.0,
+            lp_rpm: 3200.0,
+            grit: 0.18,
+            jitter: 0.05,
+            lope: 0.0,
+            pops: 0.3,
+            knock: 0.0,
+            turbo: false,
+            gain: 0.8,
+            ewhine: 0.0,
+            shift_cut: 0.45,
+            blip: 0.6,
+        },
+        // Zephyr: hybrid hypercar, twin-turbo V8 + electric motor whine
+        6 => Profile {
+            cyl: 8,
+            offsets: even(8),
+            amps: cyl_arr([1.0, 0.84, 1.0, 0.95, 0.85, 0.8, 0.86, 0.97]),
+            width: 0.7,
+            snap: 0.3,
+            formants: [(190.0, 1.5, 0.6), (540.0, 2.0, 0.45), (1400.0, 3.0, 0.18)],
+            dry: 0.95,
+            lp_base: 800.0,
+            lp_rpm: 2600.0,
+            grit: 0.15,
+            jitter: 0.07,
+            lope: 0.0,
+            pops: 0.2,
+            knock: 0.0,
+            turbo: true,
+            gain: 0.85,
+            ewhine: 1.0,
+            shift_cut: 0.5,
+            blip: 0.5,
+        },
+        // Dragonfly: formula car, high-revving V10 (up to 15k rpm), sharp shifts
+        7 => Profile {
+            cyl: 10,
+            offsets: even(10),
+            amps: cyl_arr([1.0, 0.94, 0.98, 0.92, 1.0, 0.95, 0.97, 0.93, 0.99, 0.94]),
+            width: 0.5,
+            snap: 0.55,
+            formants: [(850.0, 2.5, 0.45), (2100.0, 3.5, 0.3), (3900.0, 4.0, 0.08)],
+            dry: 0.8,
+            lp_base: 1300.0,
+            lp_rpm: 2800.0,
+            grit: 0.16,
+            jitter: 0.04,
+            lope: 0.0,
+            pops: 0.35,
+            knock: 0.0,
+            turbo: false,
+            gain: 0.72,
+            ewhine: 0.0,
+            shift_cut: 0.65,
+            blip: 0.8,
         },
         // Burrow: chuggy low diesel camper
         _ => Profile {
             cyl: 4,
-            offsets: [0.0, 0.255, 0.5, 0.745, 0.0, 0.0, 0.0, 0.0],
-            amps: [1.0, 0.78, 0.94, 0.84, 0.0, 0.0, 0.0, 0.0],
+            offsets: cyl_arr([0.0, 0.255, 0.5, 0.745]),
+            amps: cyl_arr([1.0, 0.78, 0.94, 0.84]),
             width: 0.62,
             snap: 0.55,
             formants: [(105.0, 1.2, 0.8), (250.0, 2.0, 0.5), (650.0, 2.5, 0.15)],
@@ -123,6 +239,9 @@ pub fn profile(kind: u8) -> Profile {
             knock: 0.55,
             turbo: false,
             gain: 1.0,
+            ewhine: 0.0,
+            shift_cut: 0.25,
+            blip: 0.0,
         },
     }
 }
@@ -172,7 +291,7 @@ pub struct EngineVoice {
     ctl: Ctl,
     // engine state
     phase: f32,
-    jit: [f32; 8],
+    jit: [f32; MAX_CYL],
     lim_phase: f32,
     lope: Wander,
     dc: DcBlock,
@@ -194,6 +313,19 @@ pub struct EngineVoice {
     bov_t: f32,
     bov_f: Svf,
     prev_thr: f32,
+    prev_gear: i8,
+    shift_timer: f32,
+    blip_env: f32,
+    ew_ph: [f32; 2],
+    ew_f: Svf,
+    scrape: f32,
+    scrape_f: [Svf; 3],
+    scrape_c: [SvfCoef; 3],
+    scrape_lo: Svf,
+    scrape_lo_c: SvfCoef,
+    spark_env: f32,
+    aero_f: Svf,
+    aero_w: Wander,
     spool_f: Svf,
     spool_c: SvfCoef,
     // tyres
@@ -254,7 +386,7 @@ impl EngineVoice {
             gain: Smooth::default(),
             ctl: Ctl::default(),
             phase: 0.0,
-            jit: [1.0; 8],
+            jit: [1.0; MAX_CYL],
             lim_phase: 0.0,
             lope: Wander::default(),
             dc: DcBlock::default(),
@@ -275,6 +407,19 @@ impl EngineVoice {
             bov_t: 0.0,
             bov_f: Svf::default(),
             prev_thr: 0.0,
+            prev_gear: 0,
+            shift_timer: 0.0,
+            blip_env: 0.0,
+            ew_ph: [0.0; 2],
+            ew_f: Svf::default(),
+            scrape: 0.0,
+            scrape_f: [Svf::default(); 3],
+            scrape_c: [SvfCoef::new(1180.0, 14.0, sr), SvfCoef::new(2710.0, 18.0, sr), SvfCoef::new(4330.0, 20.0, sr)],
+            scrape_lo: Svf::default(),
+            scrape_lo_c: SvfCoef::new(420.0, 0.8, sr),
+            spark_env: 0.0,
+            aero_f: Svf::default(),
+            aero_w: Wander::default(),
             spool_f: Svf::default(),
             spool_c: SvfCoef::new(2600.0, 3.0, sr),
             rumble_f: Svf::default(),
@@ -330,6 +475,7 @@ impl EngineVoice {
         self.ctl.speed = p.speed;
         self.ctl.ground = p.ground;
         self.prev_thr = p.throttle;
+        self.prev_gear = p.gear;
         for (i, c) in self.fm_c.iter_mut().enumerate() {
             let (f, q, _) = self.prof.formants[i];
             *c = SvfCoef::new(f, q, sr);
@@ -344,6 +490,18 @@ impl EngineVoice {
             self.boost *= 0.35;
         }
         self.prev_thr = p.throttle;
+        // gear changes: fast race gearboxes barely raise `shifting`, so detect them here
+        if p.gear != self.prev_gear {
+            if p.gear > self.prev_gear && self.prev_gear >= 1 {
+                self.shift_timer = 0.075;
+            } else if p.gear < self.prev_gear && p.gear >= 1 && self.prof.blip > 0.0 {
+                self.blip_env = self.prof.blip;
+                if self.prof.pops > 0.0 {
+                    self.pop_env = self.pop_env.max(0.5 * self.prof.pops);
+                }
+            }
+            self.prev_gear = p.gear;
+        }
         if p.kind != self.p.kind {
             self.prof = profile(p.kind);
         }
@@ -371,6 +529,8 @@ impl EngineVoice {
         // ---- control rate ----
         let bs = n as f32 / sr;
         let ca = tau_coef(0.035, 1.0 / bs);
+        // slicks: quicker, shorter squeal response
+        let cslip = if p.slick { tau_coef(0.015, 1.0 / bs) } else { ca };
         let cs = tau_coef(0.06, 1.0 / bs);
         let c = &mut self.ctl;
         c.speed += (p.speed - c.speed) * ca;
@@ -379,15 +539,17 @@ impl EngineVoice {
         c.s_loose += (p.s_loose - c.s_loose) * cs;
         c.s_snow += (p.s_snow - c.s_snow) * cs;
         c.s_grass += (p.s_grass - c.s_grass) * cs;
-        c.slip_lat_hard += (p.slip_lat_hard - c.slip_lat_hard) * ca;
-        c.slip_lat_loose += (p.slip_lat_loose - c.slip_lat_loose) * ca;
-        c.spin_hard += (p.spin_hard - c.spin_hard) * ca;
-        c.spin_loose += (p.spin_loose - c.spin_loose) * ca;
-        c.lock_hard += (p.lock_hard - c.lock_hard) * ca;
-        c.lock_loose += (p.lock_loose - c.lock_loose) * ca;
+        c.slip_lat_hard += (p.slip_lat_hard - c.slip_lat_hard) * cslip;
+        c.slip_lat_loose += (p.slip_lat_loose - c.slip_lat_loose) * cslip;
+        c.spin_hard += (p.spin_hard - c.spin_hard) * cslip;
+        c.spin_loose += (p.spin_loose - c.spin_loose) * cslip;
+        c.lock_hard += (p.lock_hard - c.lock_hard) * cslip;
+        c.lock_loose += (p.lock_loose - c.lock_loose) * cslip;
         c.water += ((p.in_water as u8 as f32) - c.water) * cs;
         c.wet += (p.wet.clamp(0.0, 1.0) - c.wet) * tau_coef(0.5, 1.0 / bs);
         c.puddle += (p.puddle.clamp(0.0, 1.0) - c.puddle) * ca;
+        self.scrape += (p.floor_scrape.clamp(0.0, 1.0) - self.scrape) * tau_coef(0.02, 1.0 / bs);
+        self.scrape = flush(self.scrape);
         c.pan += (p.pan - c.pan) * cs;
         c.muffle += (p.muffle - c.muffle) * cs;
         c.doppler += (p.doppler - c.doppler) * cs;
@@ -419,32 +581,62 @@ impl EngineVoice {
         let loose = (c.s_loose + 0.4 * c.s_grass) * g;
         let snow = c.s_snow * g;
         let slip_l = c.slip_lat_loose.max(c.lock_loose * 0.9);
-        let rumble_amt = g * sp.powf(0.8) * (0.25 * c.s_hard + 0.85 * c.s_loose + 0.45 * c.s_snow + 0.4 * c.s_grass) * 0.55;
+        // slicks have no tread to dig in: off tarmac they rumble and skid rather than crunch
+        let (slick_rumble, slick_grain, slick_bed) = if p.slick { (1.6, 0.45, 1.3) } else { (1.0, 1.0, 1.0) };
+        let rumble_amt = g * sp.powf(0.8) * (0.25 * c.s_hard + slick_rumble * (0.85 * c.s_loose + 0.4 * c.s_grass) + 0.45 * c.s_snow) * 0.55;
         // wet roads: tyre hiss and spray take over from part of the dry crunch / squeal
         let dry = 1.0 - 0.55 * c.wet;
         let road_amt = g * c.s_hard * sp.powf(1.4) * 0.16 * (1.0 - 0.5 * c.wet);
         let any_slip = c.slip_lat_hard.max(c.slip_lat_loose).max(c.spin_hard).max(c.lock_hard);
         let hiss_amt = g * (c.wet * sp.powf(1.2) * (0.22 * c.s_hard + 0.1 * (c.s_loose + c.s_grass)) + c.wet * any_slip * 0.07) + c.puddle * g * sp * 0.16;
         let spray_hi = c.puddle * g * sp * 0.08 + c.wet * c.s_hard * g * sp * sp * 0.03;
-        let grain_rate = dry * (loose * (25.0 + 950.0 * sp) + (c.s_loose + c.s_grass) * g * (slip_l * 1900.0 + c.spin_loose * 1700.0)) / sr;
+        let grain_rate = slick_grain * dry * (loose * (25.0 + 950.0 * sp) + (c.s_loose + c.s_grass) * g * (slip_l * 1900.0 + c.spin_loose * 1700.0)) / sr;
         let grain_amp = 0.25 + 0.6 * sp + 0.7 * slip_l + 0.6 * c.spin_loose;
         let snow_rate = (snow * (18.0 + 380.0 * sp) + c.s_snow * g * (slip_l + c.spin_loose) * 2600.0) / sr;
-        let bed_amt = (c.s_loose * g) * (sp * 0.07 + slip_l * 0.6 + c.spin_loose * 0.38) + c.s_snow * g * (sp * 0.03 + slip_l * 0.55 + c.spin_loose * 0.3);
+        let bed_amt = (c.s_loose * g) * (sp * 0.07 * slick_grain.max(0.6) + slick_bed * (slip_l * 0.6 + c.spin_loose * 0.38)) + c.s_snow * g * (sp * 0.03 + slip_l * 0.55 + c.spin_loose * 0.3);
         let spray_amt = (c.s_loose * g) * (c.spin_loose * 0.22 + slip_l * 0.06);
         let grass_amt = c.s_grass * g * (sp * 0.12 + slip_l * 0.3);
         // asphalt squeal: lateral scrub, brake lock or wheelspin beyond grip
-        let sq_lat = smoothstep(0.05, 0.9, c.slip_lat_hard);
-        let sq_lock = smoothstep(0.05, 0.9, c.lock_hard);
-        let sq_spin = smoothstep(0.05, 0.9, c.spin_hard);
+        let sq_lo = if p.slick { 0.12 } else { 0.05 };
+        let sq_lat = smoothstep(sq_lo, 0.9, c.slip_lat_hard);
+        let sq_lock = smoothstep(sq_lo, 0.9, c.lock_hard);
+        let sq_spin = smoothstep(sq_lo, 0.9, c.spin_hard);
         let sq = (sq_lat.max(sq_lock).max(sq_spin) * g).min(1.0);
         let sq_amt = 0.25 * sq.powf(1.2) * smoothstep(1.0, 5.0, c.speed + 4.0 * sq_spin) * (1.0 - 0.6 * c.wet);
-        let sq_freq = 700.0 + 170.0 * sq_lat - 120.0 * sq_lock + 200.0 * sq_spin;
+        let mut sq_freq = 700.0 + 170.0 * sq_lat - 120.0 * sq_lock + 200.0 * sq_spin;
+        let mut sq_amt = sq_amt;
+        if p.slick {
+            // racing slicks: higher, tighter "chirp"
+            sq_freq *= 1.45;
+            sq_amt *= 0.85;
+        }
         let judder = 0.55 * sq_lock;
         let whirr_amt = 0.09 * sq_spin + 0.05 * c.spin_loose;
         let whirr_c = SvfCoef::new(280.0 + 450.0 * spin, 4.0, sr);
         let sq_c = SvfCoef::new(sq_freq * 1.6, 1.5, sr);
         let wind_amt = if p.local { 0.11 * sp * sp } else { 0.0 };
         let wind_c = SvfCoef::new(220.0 + 1000.0 * sp, 0.55, sr);
+        // aero roar above ~200 km/h (camera-relative: local cars only)
+        let aero = if p.local { smoothstep(52.0, 95.0, c.speed) } else { 0.0 };
+        let aero_amt = 0.3 * aero;
+        let aero_c = SvfCoef::new(330.0 + 380.0 * aero, 0.5, sr);
+        // hybrid motor whine: strongest at launch, fades with speed; faint regen whine when lifting
+        let ew_amt = if pr.ewhine > 0.0 {
+            let launch = (0.35 + 0.65 * p.throttle) * (1.0 - smoothstep(4.0, 45.0, c.speed));
+            let regen = if p.throttle < 0.1 && c.speed > 8.0 { 0.35 * (1.0 - smoothstep(15.0, 60.0, c.speed)) } else { 0.0 };
+            pr.ewhine * 0.05 * launch.max(regen) * pr.gain
+        } else {
+            0.0
+        };
+        let ew_f = 480.0 + 52.0 * c.speed;
+        let ew_c = SvfCoef::new((ew_f * 3.1).min(sr * 0.4), 6.0, sr);
+        // floor scraping: soft metallic grind + spark crackle
+        let scrape_amt = 0.36 * self.scrape * (0.4 + 0.6 * sp);
+        let spark_rate = 450.0 * self.scrape / sr;
+        let spark_dec = (-1.0 / (0.0025 * sr)).exp();
+        // gear-change cut timer
+        self.shift_timer = (self.shift_timer - bs).max(0.0);
+        let shift_on = p.shifting || self.shift_timer > 0.0;
         let water_amt = c.water * (0.06 + 0.35 * sp);
         let water_c = SvfCoef::new(700.0, 0.7, sr);
         let muffle_a = onepole_coef(18000.0 * (1.0 - c.muffle).powi(2) + 700.0, sr);
@@ -463,6 +655,7 @@ impl EngineVoice {
         let knock_dec = (-1.0 / (0.0025 * sr)).exp();
         let pop_dec = (-1.0 / (0.014 * sr)).exp();
         let bov_dec = (-1.0 / (0.16 * sr)).exp();
+        let blip_dec = (-1.0 / (0.09 * sr)).exp();
         let wp = pr.width / pr.cyl as f32;
         // quadratic phase warp: snappier attack for buzzy engines (cheap stand-in for u^a)
         let warp = 0.9 * pr.snap;
@@ -473,7 +666,11 @@ impl EngineVoice {
             self.fade += (fade_target - self.fade) * fade_a;
             self.rpm += (target_rpm - self.rpm) * self.rpm_a;
             let load = self.load.step(target_load, load_a);
-            let shift = self.shift.step(if p.shifting { 1.0 } else { 0.0 }, fx_a);
+            let shift = self.shift.step(if shift_on { 1.0 } else { 0.0 }, fx_a);
+            let blip = self.blip_env;
+            if blip > 1e-4 {
+                self.blip_env = flush(blip * blip_dec);
+            }
             // rev limiter: ignition cut bouncing at ~14 Hz
             let mut cut_t = 0.0;
             if limiter {
@@ -487,8 +684,8 @@ impl EngineVoice {
             }
             let cut = self.cut.step(cut_t, fx_a);
             let lope = self.lope.step(&mut self.rng, 2.2, sr) * lope_amt;
-            let rpm_eff = self.rpm * (1.0 + lope) * (1.0 - 0.035 * cut - 0.02 * shift) * c.doppler;
-            let eff_load = load * (1.0 - cut) * (1.0 - shift);
+            let rpm_eff = self.rpm * (1.0 + lope + 0.06 * blip) * (1.0 - 0.035 * cut - 0.03 * shift) * c.doppler;
+            let eff_load = (load * (1.0 - cut) * (1.0 - shift)).max(blip);
 
             // cycle phase
             let prev = self.phase;
@@ -532,8 +729,8 @@ impl EngineVoice {
             for k in 0..3 {
                 y += self.fm[k].bp(x, &self.fm_c[k]) * pr.formants[k].2 * fgain;
             }
-            let amp_t = base_amp * (0.42 + 0.58 * eff_load) * (0.65 + 0.35 * rpm_n) * (1.0 - 0.3 * cut);
-            let amp = self.amp.step(amp_t, load_a);
+            let amp_t = base_amp * (0.42 + 0.58 * eff_load) * (0.65 + 0.35 * rpm_n) * (1.0 - 0.3 * cut) * (1.0 - pr.shift_cut * shift);
+            let amp = self.amp.step(amp_t, if shift_on { fx_a } else { load_a });
             let mut eng = y * amp;
             // diesel clatter
             if self.knock_env > 1e-4 {
@@ -561,6 +758,14 @@ impl EngineVoice {
                     self.bov_env *= bov_dec;
                     self.bov_t += 1.0 / sr;
                 }
+            }
+
+            if ew_amt > 1e-5 {
+                let inc = ew_f * c.doppler / sr;
+                self.ew_ph[0] = (self.ew_ph[0] + inc).fract();
+                let ph = self.ew_ph[0];
+                let tone = sin_turns(ph) + 0.3 * sin_turns(2.0 * ph) + 0.12 * sin_turns(3.0 * ph);
+                eng += (tone + self.ew_f.bp(noise, &ew_c) * 0.6) * ew_amt;
             }
 
             // ---- tyres & environment ----
@@ -626,6 +831,20 @@ impl EngineVoice {
             }
             if whirr_amt > 1e-4 {
                 ty += self.whirr_f.bp(n2, &whirr_c) * whirr_amt;
+            }
+            if aero_amt > 1e-4 {
+                let w = 0.75 + 0.25 * self.aero_w.step(&mut self.rng, 6.0, sr);
+                ty += self.aero_f.bp(n2, &aero_c) * aero_amt * w;
+            }
+            if scrape_amt > 1e-4 || self.spark_env > 1e-4 {
+                if self.rng.chance(spark_rate) {
+                    self.spark_env = self.spark_env.max(self.rng.range(0.4, 1.0));
+                }
+                let ex = noise * (0.35 + self.spark_env);
+                // un-normalised band-pass (peak gain = Q): narrow ringing modes need the resonance gain
+                let metal = (self.scrape_f[0].process(ex, &self.scrape_c[0]).bp + 0.7 * self.scrape_f[1].process(ex, &self.scrape_c[1]).bp + 0.4 * self.scrape_f[2].process(ex, &self.scrape_c[2]).bp) * 0.3;
+                ty += (metal * 1.15 + self.scrape_lo.bp(n2, &self.scrape_lo_c) * 0.45) * scrape_amt;
+                self.spark_env = flush(self.spark_env * spark_dec);
             }
             if wind_amt > 1e-4 {
                 let w = 0.8 + 0.2 * self.wind_w.step(&mut self.rng, 0.7, sr);

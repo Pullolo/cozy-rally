@@ -153,12 +153,8 @@ fn basic(ck: &mut Checks, name: &str, c: &Clip, rms_range: (f32, f32), max_silen
 }
 
 fn engine_params(kind: u8) -> EngineParams {
-    let (idle, red) = match kind {
-        0 => (900.0, 7200.0),
-        1 => (850.0, 7000.0),
-        2 => (900.0, 7200.0),
-        _ => (750.0, 5600.0),
-    };
+    let spec = &rally_core::vehicle::car_specs()[kind as usize];
+    let (idle, red) = (spec.idle_rpm, spec.redline);
     EngineParams {
         id: 0,
         kind,
@@ -170,6 +166,8 @@ fn engine_params(kind: u8) -> EngineParams {
         local: true,
         ground: 1.0,
         s_hard: 1.0,
+        gear: 3,
+        slick: spec.tyre == rally_core::vehicle::TyreType::Slick,
         ..Default::default()
     }
 }
@@ -184,6 +182,7 @@ fn cars_cmd(p: EngineParams) -> Cmd {
 fn sweep_state(p: &mut EngineParams, t: f32) {
     let (idle, red) = (p.idle_rpm, p.redline);
     p.shifting = false;
+    p.gear = if t < 4.8 { 3 } else { 4 };
     if t < 1.0 {
         p.rpm = idle;
         p.throttle = 0.0;
@@ -204,6 +203,7 @@ fn sweep_state(p: &mut EngineParams, t: f32) {
         p.throttle = 1.0;
         p.load = 0.0;
         p.shifting = true;
+        p.gear = 4;
     } else {
         // lift off: revs fall to idle
         let u = ((t - 5.0) / 0.6).min(1.0);
@@ -214,10 +214,10 @@ fn sweep_state(p: &mut EngineParams, t: f32) {
 }
 
 fn engine_sweeps(ck: &mut Checks, dir: &std::path::Path) {
-    let names = ["pip", "bramble", "thistle", "burrow"];
-    let cyls = [3.0, 8.0, 4.0, 4.0];
+    let names = ["pip", "bramble", "thistle", "burrow", "blossom", "comet", "zephyr", "dragonfly"];
+    let cyls = [3.0, 8.0, 4.0, 4.0, 4.0, 6.0, 8.0, 10.0];
     println!("\n== engine sweeps (6 s: idle 1s, full-throttle sweep to redline 3s, limiter 0.8s, shift 0.2s, lift 1s) ==");
-    for kind in 0..4u8 {
+    for kind in 0..8u8 {
         let mut s = Synth::new(SR);
         let mut clip = Clip::new();
         let mut p = engine_params(kind);
@@ -964,6 +964,250 @@ fn stage_sim(ck: &mut Checks, dir: &std::path::Path) {
     ck.check(max.0 > 0.3 && max.2 > 0.3, "stage weather reaches tyres (wetness) and ambience (rain)".into());
 }
 
+fn circuit_cars(ck: &mut Checks, dir: &std::path::Path) {
+    println!("\n== circuit cars: gear sweeps, slicks, floor scrape, e-whine, aero ==");
+    let specs = rally_core::vehicle::car_specs();
+    let names = ["pip", "bramble", "thistle", "burrow", "blossom", "comet", "zephyr", "dragonfly"];
+    for kind in [4u8, 5, 6, 7] {
+        let spec = &specs[kind as usize];
+        let gears = spec.gears;
+        let red = spec.redline;
+        // full-throttle run through every gear, then braking downshifts with blips
+        let mut plan: Vec<(f32, f32, f32, i8, bool)> = Vec::new(); // (t, rpm, throttle, gear, shifting)
+        let mut ups = Vec::new();
+        let mut downs = Vec::new();
+        let dt = 1.0 / 120.0;
+        let mut t = 0.0;
+        let mut rpm = spec.idle_rpm * 1.6;
+        for g in 0..gears.len() {
+            let top = red * 0.95;
+            let start = rpm;
+            let n = (0.55 / dt) as usize;
+            for k in 0..n {
+                let u = k as f32 / n as f32;
+                plan.push((t, start + (top - start) * u, 1.0, g as i8 + 1, false));
+                t += dt;
+            }
+            if g + 1 < gears.len() {
+                ups.push(t);
+                rpm = top * gears[g + 1] / gears[g];
+                let st = (spec.shift_time / dt) as usize;
+                for _ in 0..st {
+                    plan.push((t, rpm, 1.0, g as i8 + 2, spec.shift_time > 0.05));
+                    t += dt;
+                }
+            } else {
+                rpm = top;
+            }
+        }
+        // lift, then brake down through the gears
+        for g in (1..gears.len()).rev() {
+            let lo = red * 0.55;
+            let start = rpm;
+            let n = (0.4 / dt) as usize;
+            for k in 0..n {
+                let u = k as f32 / n as f32;
+                plan.push((t, start + (lo - start) * u, 0.0, g as i8 + 1, false));
+                t += dt;
+            }
+            downs.push(t);
+            rpm = (lo * gears[g - 1] / gears[g]).min(red * 0.97);
+        }
+        for _ in 0..60 {
+            plan.push((t, rpm, 0.0, 1, false));
+            t += dt;
+        }
+        let total = t + 0.3;
+        let mut s = Synth::new(SR);
+        let mut clip = Clip::new();
+        let mut p = engine_params(kind);
+        let mut idx = 0;
+        render(&mut s, &mut clip, total, |s, tt| {
+            while idx + 1 < plan.len() && plan[idx + 1].0 <= tt {
+                idx += 1;
+            }
+            let (_, r, th, g, sh) = plan[idx];
+            p.rpm = r;
+            p.throttle = th;
+            p.load = th * (1.0 - 0.3 * r / red);
+            p.gear = g;
+            p.shifting = sh;
+            p.speed = 10.0 + 60.0 * (tt / total);
+            s.handle(cars_cmd(p));
+        });
+        let name = format!("gears_{}", names[kind as usize]);
+        write_wav(&dir.join(format!("{name}.wav")), &clip);
+        basic(ck, &name, &clip, (0.02, 0.3), None, s.pre_peak);
+        ck.check(s.pre_peak < 0.75, format!("{name}: no limiting needed up to redline (pre-limiter peak {:.3})", s.pre_peak));
+        let m = clip.mono();
+        let r = |a: f32, b: f32| rms(&m[(a * SR) as usize..(b * SR) as usize]);
+        let dips: Vec<f32> = ups.iter().map(|&u| db(r(u + 0.012, u + 0.045)) - db(r(u - 0.07, u - 0.01))).collect();
+        let blips: Vec<f32> = downs.iter().map(|&d| db(r(d + 0.02, d + 0.1)) - db(r(d - 0.1, d - 0.02))).collect();
+        let avg = |v: &[f32]| v.iter().sum::<f32>() / v.len() as f32;
+        println!("    upshift dips dB {:?} | downshift blips dB {:?}", dips.iter().map(|d| format!("{d:+.1}")).collect::<Vec<_>>(), blips.iter().map(|d| format!("{d:+.1}")).collect::<Vec<_>>());
+        ck.check(avg(&dips) < -2.0, format!("{name}: upshift cuts audible (avg {:+.1} dB)", avg(&dips)));
+        ck.check(avg(&blips) > 1.5, format!("{name}: downshift blips audible (avg {:+.1} dB)", avg(&blips)));
+    }
+
+    // floor scrape on the formula car at speed
+    let mut s = Synth::new(SR);
+    let mut clip = Clip::new();
+    let mut p = engine_params(7);
+    p.rpm = 11000.0;
+    p.throttle = 0.7;
+    p.load = 0.6;
+    p.speed = 60.0;
+    p.gear = 6;
+    render(&mut s, &mut clip, 3.5, |s, t| {
+        p.floor_scrape = if (1.5..3.0).contains(&t) { 1.0 } else { 0.0 };
+        s.handle(cars_cmd(p));
+    });
+    write_wav(&dir.join("floor_scrape_dragonfly.wav"), &clip);
+    basic(ck, "floor_scrape_dragonfly", &clip, (0.02, 0.3), None, s.pre_peak);
+    let m = clip.mono();
+    let seg = |a: f32| &m[(a * SR) as usize..(a * SR) as usize + 16384];
+    let (off, on) = (band_rms(seg(0.9), 1000.0, 4500.0), band_rms(seg(2.2), 1000.0, 4500.0));
+    ck.check(db(on) - db(off) > 6.0, format!("floor scrape metallic grind +{:.1} dB (1-4.5 kHz)", db(on) - db(off)));
+    // metallic = narrow resonances: the 2710 Hz mode stands out from its neighbourhood
+    let res = goertzel(seg(2.2), 2710.0) / ((goertzel(seg(2.2), 2450.0) + goertzel(seg(2.2), 2980.0)) * 0.5);
+    ck.check(db(res) > 6.0, format!("scrape has ringing metallic modes ({:+.1} dB at 2.71 kHz)", db(res)));
+    let bb = db(rms(seg(2.2))) - db(rms(seg(0.9)));
+    ck.check(bb > 1.0 && bb < 9.0, format!("scrape is noticeable but not harsh ({bb:+.1} dB overall)"));
+
+    // slicks vs rally tyres
+    let squeal = |slick: bool, loose: bool| -> Clip {
+        let mut s = Synth::new(SR);
+        let mut clip = Clip::new();
+        let mut p = engine_params(5);
+        p.slick = slick;
+        p.rpm = 1500.0;
+        p.throttle = 0.0;
+        p.load = 0.0;
+        p.speed = 25.0;
+        if loose {
+            p.s_hard = 0.0;
+            p.s_loose = 1.0;
+        }
+        render(&mut s, &mut clip, 3.0, |s, t| {
+            let slip = if (0.8..2.0).contains(&t) { 1.0 } else { 0.0 };
+            if loose {
+                p.slip_lat_loose = slip;
+            } else {
+                p.slip_lat_hard = slip;
+            }
+            s.handle(cars_cmd(p));
+        });
+        clip
+    };
+    let (rs, ss) = (squeal(false, false), squeal(true, false));
+    let mut cat = Clip::new();
+    for c in [&rs, &ss] {
+        cat.l.extend_from_slice(&c.l);
+        cat.r.extend_from_slice(&c.r);
+    }
+    write_wav(&dir.join("squeal_rally_vs_slick.wav"), &cat);
+    basic(ck, "squeal_rally_vs_slick", &cat, (0.01, 0.3), None, 0.0);
+    let dom = |c: &Clip| {
+        let x = &c.mono()[(1.3 * SR) as usize..(1.3 * SR) as usize + 16384];
+        let mut best = (0.0, 0.0);
+        let mut f = 500.0;
+        while f < 1800.0 {
+            let g = goertzel(x, f);
+            if g > best.0 {
+                best = (g, f);
+            }
+            f *= 1.005;
+        }
+        best.1
+    };
+    let (fr, fs) = (dom(&rs), dom(&ss));
+    ck.check(fs > fr * 1.3, format!("slick squeal is higher: rally ~{fr:.0} Hz, slick ~{fs:.0} Hz"));
+    // shorter: time for the squeal band to fall 20 dB after the slide ends
+    let tail = |c: &Clip, f: f32| {
+        let m = c.mono();
+        let lvl = |t: f32| goertzel(&m[(t * SR) as usize..(t * SR) as usize + 1024], f);
+        let ref_ = lvl(1.8);
+        let mut t = 2.0;
+        while t < 2.9 && db(lvl(t)) > db(ref_) - 20.0 {
+            t += 0.005;
+        }
+        t - 2.0
+    };
+    let (tr, ts) = (tail(&rs, fr), tail(&ss, fs));
+    ck.check(ts < tr, format!("slick squeal is shorter (release {:.0} ms vs rally {:.0} ms)", ts * 1000.0, tr * 1000.0));
+    let (rl, sl) = (squeal(false, true), squeal(true, true));
+    let lo = |c: &Clip| band_rms(&c.mono()[(1.3 * SR) as usize..(1.3 * SR) as usize + 16384], 40.0, 200.0);
+    // rolling (before the slide) crunch: slicks have no tread to throw gravel
+    let hi = |c: &Clip| band_rms(&c.mono()[(0.3 * SR) as usize..(0.3 * SR) as usize + 16384], 2000.0, 3200.0);
+    ck.check(db(lo(&sl)) - db(lo(&rl)) > 1.5, format!("slicks on gravel rumble more (+{:.1} dB at 40-200 Hz)", db(lo(&sl)) - db(lo(&rl))));
+    ck.check(db(hi(&rl)) - db(hi(&sl)) > 1.5, format!("...and crunch less when rolling (-{:.1} dB at 2-3.2 kHz)", db(hi(&rl)) - db(hi(&sl))));
+
+    // Zephyr electric whine: strong at launch, fading with speed
+    let whine = |speed: f32| -> (Clip, f32) {
+        let mut s = Synth::new(SR);
+        let mut clip = Clip::new();
+        let mut p = engine_params(6);
+        p.rpm = 3500.0;
+        p.throttle = 1.0;
+        p.load = 0.9;
+        p.speed = speed;
+        render(&mut s, &mut clip, 2.0, |s, _| s.handle(cars_cmd(p)));
+        let f = 480.0 + 52.0 * speed;
+        let x = &clip.mono()[(1.2 * SR) as usize..(1.2 * SR) as usize + 16384];
+        let pr = db(goertzel(x, f)) - db((goertzel(x, f * 0.94) + goertzel(x, f * 1.06)) * 0.5);
+        (clip, pr)
+    };
+    let (wl, pl) = whine(2.0);
+    let (_, ph) = whine(55.0);
+    write_wav(&dir.join("zephyr_launch_whine.wav"), &wl);
+    ck.check(pl > 10.0, format!("zephyr e-whine audible at launch ({pl:+.1} dB tone prominence)"));
+    ck.check(ph < pl - 6.0, format!("zephyr e-whine fades with speed ({ph:+.1} dB at 55 m/s)"));
+
+    // aero roar above ~200 km/h for the local car only
+    let aero = |speed: f32, local: bool| -> f32 {
+        let mut s = Synth::new(SR);
+        let mut clip = Clip::new();
+        let mut p = engine_params(7);
+        p.rpm = 12000.0;
+        p.throttle = 0.8;
+        p.load = 0.7;
+        p.speed = speed;
+        p.local = local;
+        render(&mut s, &mut clip, 2.0, |s, _| s.handle(cars_cmd(p)));
+        band_rms(&clip.mono()[(1.2 * SR) as usize..(1.2 * SR) as usize + 16384], 250.0, 900.0)
+    };
+    let (a40, a85, a85r) = (aero(40.0, true), aero(85.0, true), aero(85.0, false));
+    ck.check(db(a85) - db(a40) > 2.0, format!("aero roar at 306 km/h +{:.1} dB over 144 km/h (250-900 Hz)", db(a85) - db(a40)));
+    ck.check(a85r < a85, "aero roar is camera-relative (only on the local car)".into());
+
+    // per-voice CPU of the busiest engines (8 voices each)
+    for kind in [0u8, 7] {
+        let mut s = Synth::new(SR);
+        let mut cars = [EngineParams::default(); MAX_CARS];
+        for (i, c) in cars.iter_mut().enumerate() {
+            *c = engine_params(kind);
+            c.id = i as u32;
+            c.rpm = c.redline * 0.8;
+            c.throttle = 1.0;
+            c.load = 1.0;
+            c.speed = 60.0;
+            c.floor_scrape = 0.5;
+            c.slip_lat_hard = 0.5;
+            c.local = i == 0;
+            c.gain = 0.3;
+        }
+        s.handle(Cmd::Cars { n: MAX_CARS as u8, cars, paused: false });
+        let mut clip = Clip::new();
+        let tp = std::time::Instant::now();
+        render(&mut s, &mut clip, 10.0, |_, _| {});
+        let pct = tp.elapsed().as_secs_f32() / 10.0 * 100.0;
+        println!("    8x {} voices (squealing + scraping): {pct:.1}% of one core ({:.2}% per voice)", names[kind as usize], pct / 8.0);
+        if kind == 7 {
+            ck.check(pct < 10.0, format!("8 Dragonfly V10 voices {pct:.1}% < 10% of a core"));
+        }
+    }
+}
+
 fn main() {
     let dir = std::env::args().nth(1).unwrap_or_else(|| "audio_out".into());
     let dir = std::path::PathBuf::from(dir);
@@ -971,6 +1215,7 @@ fn main() {
     let mut ck = Checks { fails: Vec::new() };
     let t0 = std::time::Instant::now();
     engine_sweeps(&mut ck, &dir);
+    circuit_cars(&mut ck, &dir);
     traction(&mut ck, &dir);
     oneshots(&mut ck, &dir);
     music(&mut ck, &dir);
