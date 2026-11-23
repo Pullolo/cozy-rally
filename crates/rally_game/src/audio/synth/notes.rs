@@ -327,6 +327,7 @@ impl NotePool {
         n: usize,
         layer_gains: &[f32; 4],
         wow: f32,
+        send_gain: [f32; 2],
         sfx_l: &mut [f32; BLOCK],
         sfx_r: &mut [f32; BLOCK],
         mus_l: &mut [f32; BLOCK],
@@ -350,7 +351,7 @@ impl NotePool {
             let (pl, pr) = pan_gains(v.n.pan);
             let gl = v.n.gain * pl * lg;
             let gr = v.n.gain * pr * lg;
-            let send = v.n.send;
+            let send = v.n.send * send_gain[(bus != 0) as usize];
             let pitch = if bus == 0 { 1.0 } else { wow };
             let (ol, or) = if bus == 0 { (&mut *sfx_l, &mut *sfx_r) } else { (&mut *mus_l, &mut *mus_r) };
             // filter cutoff glide for noise voices (control rate)

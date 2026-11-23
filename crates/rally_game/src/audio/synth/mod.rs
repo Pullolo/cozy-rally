@@ -325,6 +325,17 @@ impl Synth {
             }
         }
 
+        // bus volumes (smoothed per block). Reverb sends are scaled by their own bus so the
+        // music's reverb tail is silent when the music slider is at 0 (and vice versa).
+        let a = tau_coef(0.08, self.sr / n as f32);
+        self.sm_master += (self.vol_master - self.sm_master) * a;
+        self.sm_music += (self.vol_music - self.sm_music) * a;
+        self.sm_sfx += (self.vol_sfx - self.sm_sfx) * a;
+        for i in 0..n {
+            self.rev_l[i] *= self.sm_sfx;
+            self.rev_r[i] *= self.sm_sfx;
+        }
+
         // weather ambience (+ rare thunder)
         self.amb_age = self.amb_age.saturating_add(n as u64);
         let amb_stale = self.amb_age as f32 > (self.sr * 0.4).max(self.cars_interval * 4.0);
@@ -357,6 +368,7 @@ impl Synth {
             n,
             &layer_gains,
             self.music.wow(),
+            [self.sm_sfx, self.sm_music],
             &mut self.sfx_l,
             &mut self.sfx_r,
             &mut self.mus_l,
@@ -366,16 +378,7 @@ impl Synth {
         );
         self.music.render_crackle(n, &mut self.mus_l, &mut self.mus_r);
 
-        let a = tau_coef(0.08, self.sr / n as f32);
-        self.sm_master += (self.vol_master - self.sm_master) * a;
-        self.sm_music += (self.vol_music - self.sm_music) * a;
-        self.sm_sfx += (self.vol_sfx - self.sm_sfx) * a;
         let (gm, gs) = (self.sm_music, self.sm_sfx);
-        // reverb send scaled like the buses feeding it (music dominates the send)
-        for i in 0..n {
-            self.rev_l[i] *= gs.max(gm);
-            self.rev_r[i] *= gs.max(gm);
-        }
         self.reverb.process(n, &mut self.rev_l, &mut self.rev_r);
 
         let rel = tau_coef(0.25, self.sr);
