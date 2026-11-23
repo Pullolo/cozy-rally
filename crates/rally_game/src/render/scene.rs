@@ -558,6 +558,44 @@ fn road_strips(hw: f32) -> Vec<(f32, f32, StripKind)> {
     ]
 }
 
+/// Circuit cross-section: solid white edge lines and one clean tarmac surface
+fn circuit_strips(hw: f32) -> Vec<(f32, f32, StripKind)> {
+    vec![(-hw, -hw + 0.28, StripKind::Line), (-hw + 0.28, hw - 0.28, StripKind::Road), (hw - 0.28, hw, StripKind::Line)]
+}
+
+const CIRCUIT_TARMAC: [f32; 3] = [0.33, 0.33, 0.36];
+pub const CIRCUIT_RUNOFF_TARMAC: [f32; 3] = [0.43, 0.43, 0.46];
+
+/// Where the rubbered-in racing line sits laterally at sample `i` (m from the centre): drifts
+/// to the inside of corners at the apex, back out on the straights.
+fn rubber_line(track: &Track, i: usize) -> f32 {
+    let n = track.samples.len() as isize;
+    let mut c = 0.0;
+    let mut wsum = 0.0;
+    for k in -14..=14isize {
+        let w = 1.0 - (k.abs() as f32 / 15.0);
+        c += track.samples[((i as isize + k).rem_euclid(n)) as usize].curvature * w;
+        wsum += w;
+    }
+    let c = c / wsum;
+    let hw = track.samples[i].half_width;
+    // positive curvature = left turn -> inside is left (negative lateral)
+    -(c * 60.0).clamp(-1.0, 1.0) * hw * 0.55
+}
+
+fn circuit_road_color(track: &Track, i: usize, kind: StripKind, s: f32, lat: f32, seed: u32) -> ([f32; 3], f32) {
+    if kind == StripKind::Line {
+        return ([0.95, 0.95, 0.93], 0.15);
+    }
+    let wear = 0.965 + (noise::fbm(s * 0.04, lat * 0.25, 2, seed + 41) * 0.5 + 0.5) * 0.06;
+    let mut c = shade(CIRCUIT_TARMAC, wear);
+    // rubber: a soft darker band along the racing line
+    let d = (lat - rubber_line(track, i % track.samples.len())).abs();
+    let rubber = 1.0 - smoothstep(0.6, 2.0, d);
+    c = shade(c, 1.0 - 0.13 * rubber);
+    (c, 0.1 + 0.05 * rubber)
+}
+
 /// Colour (rgb) and gloss for a road vertex
 fn road_vertex_color(look: &RoadLook, kind: StripKind, s: f32, lat: f32, hw: f32, seed: u32) -> ([f32; 3], f32) {
     let wear = 0.95 + (noise::fbm(s * 0.05, lat * 0.3, 2, seed + 41) * 0.5 + 0.5) * 0.08;
@@ -633,7 +671,9 @@ pub fn road_mesh(track: &Track, painter: &GroundPainter) -> MeshBuilder {
         let fb = flat_right(ib);
         let sb_scale = b.half_width / a.half_width;
         let (sa, sb) = (i as f32 * 2.0, (i + 1) as f32 * 2.0);
-        for (from, to, kind) in road_strips(a.half_width) {
+        let circuit = track.is_circuit();
+        let strips = if circuit { circuit_strips(a.half_width) } else { road_strips(a.half_width) };
+        for (from, to, kind) in strips {
             // subdivide wide strips so the road follows the crowned terrain exactly
             let pieces = ((to - from) / 1.1).ceil().max(1.0) as usize;
             for k in 0..pieces {
@@ -645,6 +685,9 @@ pub fn road_mesh(track: &Track, painter: &GroundPainter) -> MeshBuilder {
                 let b0 = ground(b.pos + fb * l0 * sb_scale, lift);
                 let b1 = ground(b.pos + fb * l1 * sb_scale, lift);
                 let col = |idx: usize, s: f32, l: f32, hw: f32| {
+                    if circuit {
+                        return enc(wet_road(track, s, l, circuit_road_color(track, idx, kind, s, l, seed)));
+                    }
                     let look = road_look_vertex(track, idx, l, seed);
                     enc(wet_road(track, s, l, road_vertex_color(&look, kind, s, l, hw, seed)))
                 };
@@ -666,8 +709,16 @@ pub fn road_mesh(track: &Track, painter: &GroundPainter) -> MeshBuilder {
                 let lift = 0.035;
                 let p = [ground(a.pos + fa * la0, lift), ground(a.pos + fa * la1, lift), ground(b.pos + fb * lb1, lift), ground(b.pos + fb * lb0, lift)];
                 let t = |d: f32| smoothstep(0.0, SHOULDER, d);
+                let edge_kind = |e: rally_core::track::CircuitEdge| if side < 0.0 { e.runoff_left.kind } else { e.runoff_right.kind };
                 let col = |pt: Vec3, d: f32, look: &RoadLook| {
                     let g = painter.color(pt.x, pt.y, pt.z, 1.0, false);
+                    if circuit {
+                        // circuits: tidy verge in the colour of the run-off it leads to
+                        return match edge_kind(track.edge(i)) {
+                            rally_core::track::RunoffKind::Tarmac => rgb(shade(CIRCUIT_RUNOFF_TARMAC, 0.98)),
+                            _ => rgb(mix(g, [0.42, 0.62, 0.30], 0.15)),
+                        };
+                    }
                     let sh = mix(st.shoulder, look.edge, 0.35 * (1.0 - t(d)));
                     rgb(mix(sh, g, t(d)))
                 };
@@ -677,7 +728,7 @@ pub fn road_mesh(track: &Track, painter: &GroundPainter) -> MeshBuilder {
             }
         }
         // dashed centre line (tarmac), fading with the look
-        let dash = la.dash.min(lb.dash);
+        let dash = if circuit { 0.0 } else { la.dash.min(lb.dash) };
         if dash > 0.05 && (i / 3) % 2 == 0 {
             let a0 = ground(a.pos - fa * 0.12, 0.05);
             let a1 = ground(a.pos + fa * 0.12, 0.05);
@@ -882,13 +933,43 @@ fn add_far_prop(far: &mut MeshBuilder, near: &MeshBuilder, base: Vec3) {
     }
 }
 
+/// Circuits: is `p` on the track, kerbs, verge or a non-grass run-off (where nothing grows)?
+fn circuit_clear_zone(track: &Track, p: Vec3, hint: &mut Option<usize>) -> bool {
+    let q = track.query(p, *hint);
+    *hint = Some(q.index);
+    let hw = track.samples[q.index].half_width;
+    let e = track.edge(q.index);
+    let (kerb, ro) = if q.lateral < 0.0 { (e.kerb_left, e.runoff_left) } else { (e.kerb_right, e.runoff_right) };
+    let clear = if ro.kind == rally_core::track::RunoffKind::Grass { 0.0 } else { ro.width };
+    q.dist < (hw + kerb).max(hw + SHOULDER + clear) + 0.4
+}
+
+/// Small swaying vegetation (grass tufts, flowers, small bushes): wind-weighted vertices and low
+fn is_small_foliage(m: &MeshBuilder) -> bool {
+    let mut sway = false;
+    let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+    for ch in &m.chunks {
+        for v in &ch.vertices {
+            sway |= v.color[3] < 255;
+            lo = lo.min(v.pos[1]);
+            hi = hi.max(v.pos[1]);
+        }
+    }
+    sway && hi - lo < 1.6
+}
+
 pub fn prop_tiles(track: &Track, gpu: &mut Gpu) -> Vec<PropTile> {
     let mut tiles: HashMap<(i32, i32), (MeshBuilder, MeshBuilder)> = HashMap::new();
     let mut one = MeshBuilder::new();
+    let mut hint = None;
     for p in &track.props {
         let key = ((p.pos.x / PROP_TILE).floor() as i32, (p.pos.z / PROP_TILE).floor() as i32);
         one.chunks.clear();
         models::add_prop(&mut one, p, &track.style);
+        if track.is_circuit() && circuit_clear_zone(track, p.pos, &mut hint) && is_small_foliage(&one) {
+            // no grass / flowers growing through kerbs, gravel traps, tarmac run-off or the track
+            continue;
+        }
         let t = tiles.entry(key).or_default();
         t.0.append(&one);
         add_far_prop(&mut t.1, &one, p.pos);
@@ -1043,6 +1124,15 @@ pub fn detail_mesh(track: &Track, painter: &GroundPainter) -> MeshBuilder {
                 let hw = track.samples[q.index].half_width;
                 if q.dist < hw + 0.5 {
                     continue;
+                }
+                if track.is_circuit() {
+                    // circuits: tidy verges, nothing growing through kerbs, gravel or tarmac run-off
+                    let e = track.edge(q.index);
+                    let ro = if q.lateral < 0.0 { e.runoff_left } else { e.runoff_right };
+                    let clear = if ro.kind == rally_core::track::RunoffKind::Grass { 0.0 } else { ro.width };
+                    if q.dist < hw + SHOULDER + clear + 0.4 {
+                        continue;
+                    }
                 }
                 let p = Vec3::new(p2.x, y - 0.02, p2.z);
                 let key = ((p.x / 32.0).floor() as i32, (p.z / 32.0).floor() as i32);
@@ -1660,10 +1750,18 @@ fn circuit_dressing(m: &mut MeshBuilder, track: &Track) {
     use rally_core::track::RunoffKind;
     let n = track.samples.len();
     let hf = &track.terrain;
+    let seed = track.params.seed as u32;
     let ground = |p: Vec3, lift: f32| Vec3::new(p.x, hf.height(p.x, p.z) + lift, p.z);
     let fr = |i: usize| {
         let s = &track.samples[i % n];
         Vec3::new(s.right.x, 0.0, s.right.z).normalize()
+    };
+    // gravel traps: warm beige, but grey pebbles in the desert so they stand out from the sand
+    let (gravel_a, gravel_b) = if track.biome == Biome::Desert { ([0.74, 0.71, 0.66], [0.60, 0.57, 0.53]) } else { ([0.86, 0.78, 0.62], [0.74, 0.66, 0.52]) };
+    let (kerb_red, kerb_white) = match track.biome {
+        Biome::Desert => ([0.84, 0.22, 0.17], [0.97, 0.94, 0.88]),
+        Biome::Autumn => ([0.80, 0.20, 0.17], [0.96, 0.93, 0.86]),
+        _ => ([0.86, 0.19, 0.17], [0.96, 0.96, 0.94]),
     };
     for i in 0..n {
         if i % 16 == 0 {
@@ -1673,38 +1771,104 @@ fn circuit_dressing(m: &mut MeshBuilder, track: &Track) {
         let (a, b) = (&track.samples[i], &track.samples[j]);
         let (ea, eb) = (track.edge(i), track.edge(j));
         let (fa, fb) = (fr(i), fr(j));
+        // point at fraction t along the segment, lateral l (scaled with the width), lift h
+        let at = |t: f32, side: f32, l_from_edge: f32, h: f32| {
+            let pos = a.pos.lerp(b.pos, t);
+            let f = fa.lerp(fb, t).normalize_or_zero();
+            let hw = a.half_width + (b.half_width - a.half_width) * t;
+            ground(pos + f * side * (hw + l_from_edge), h)
+        };
         for side in [-1.0f32, 1.0] {
             let (ka, kb) = if side < 0.0 { (ea.kerb_left, eb.kerb_left) } else { (ea.kerb_right, eb.kerb_right) };
             if ka > 0.0 && kb > 0.0 {
-                let col = if (i / 2) % 2 == 0 { [0.86, 0.18, 0.16] } else { [0.96, 0.96, 0.94] };
-                let p = |s: &rally_core::track::TrackSample, f: Vec3, l: f32| ground(s.pos + f * side * l, 0.075);
-                m.quad(p(a, fa, a.half_width), p(a, fa, a.half_width + ka), p(b, fb, b.half_width + kb), p(b, fb, b.half_width), rgb(col));
+                // raised rumble kerb: angled red/white blocks (1 m), sloping up to a lip
+                let kw = (ka + kb) * 0.5;
+                for blk in 0..2 {
+                    let (t0, t1) = (blk as f32 * 0.5, blk as f32 * 0.5 + 0.5);
+                    let skew = 0.18;
+                    let col = rgb(if (i * 2 + blk) % 2 == 0 { kerb_red } else { kerb_white });
+                    let side_col = rgb(shade(if (i * 2 + blk) % 2 == 0 { kerb_red } else { kerb_white }, 0.78));
+                    let in0 = at(t0, side, -0.02, 0.05);
+                    let in1 = at(t1, side, -0.02, 0.05);
+                    let out0 = at((t0 + skew).min(1.0), side, kw, 0.13);
+                    let out1 = at((t1 + skew).min(1.0), side, kw, 0.13);
+                    tri_up(m, [(in0, col), (out1, col), (out0, col)]);
+                    tri_up(m, [(in0, col), (in1, col), (out1, col)]);
+                    // outer lip face down to the ground
+                    let g0 = at((t0 + skew).min(1.0), side, kw, 0.0);
+                    let g1 = at((t1 + skew).min(1.0), side, kw, 0.0);
+                    m.quad(out0, out1, g1, g0, side_col);
+                }
             }
             let (ra, rb) = if side < 0.0 { (ea.runoff_left, eb.runoff_left) } else { (ea.runoff_right, eb.runoff_right) };
             if ra.width > 0.5 && rb.width > 0.5 && ra.kind != RunoffKind::Grass {
-                let col = match ra.kind {
-                    RunoffKind::Gravel => [0.82, 0.74, 0.58],
-                    _ => [0.42, 0.42, 0.46],
-                };
-                let e0a = a.half_width + SHOULDER;
-                let e0b = b.half_width + SHOULDER;
-                let p = |s: &rally_core::track::TrackSample, f: Vec3, l: f32| ground(s.pos + f * side * l, 0.06);
-                m.quad(p(a, fa, e0a), p(a, fa, e0a + ra.width), p(b, fb, e0b + rb.width), p(b, fb, e0b), rgb(shade(col, 0.97 + rally_core::rng::hash2(i as i32, 3, 5) * 0.05)));
+                let w = (ra.width + rb.width) * 0.5;
+                let pieces = ((w / 1.6).ceil() as usize).max(1);
+                for k in 0..pieces {
+                    for half in 0..2 {
+                        let (t0, t1) = (half as f32 * 0.5, half as f32 * 0.5 + 0.5);
+                        let (l0, l1) = (SHOULDER + w * k as f32 / pieces as f32, SHOULDER + w * (k + 1) as f32 / pieces as f32);
+                        let pts = [at(t0, side, l0, 0.05), at(t0, side, l1, 0.05), at(t1, side, l1, 0.05), at(t1, side, l0, 0.05)];
+                        // per-vertex speckle: gravel reads as coarse texture, tarmac as patchy asphalt
+                        let c = |p: Vec3| -> [u8; 4] {
+                            let h = hash2((p.x * 1.7).round() as i32, (p.z * 1.7).round() as i32, seed + 7);
+                            match ra.kind {
+                                RunoffKind::Gravel => {
+                                    let edge = 1.0 - 0.1 * (1.0 - smoothstep(0.0, 1.0, (p - pts[0]).length().min(1.0)));
+                                    rgb(shade(mix(gravel_a, gravel_b, h), edge * (0.95 + 0.1 * hash2((p.x * 3.1) as i32, (p.z * 3.1) as i32, seed))))
+                                }
+                                _ => rgb(shade(CIRCUIT_RUNOFF_TARMAC, 0.95 + h * 0.07)),
+                            }
+                        };
+                        let cs = [c(pts[0]), c(pts[1]), c(pts[2]), c(pts[3])];
+                        tri_up(m, [(pts[0], cs[0]), (pts[1], cs[1]), (pts[2], cs[2])]);
+                        tri_up(m, [(pts[0], cs[0]), (pts[2], cs[2]), (pts[3], cs[3])]);
+                    }
+                }
             }
         }
     }
-    // grid boxes behind the start line
+    // grid boxes behind the start line, numbered
     m.begin_chunk();
-    for (pos, rot) in track.grid_slots(8) {
+    let white = rgb([0.96, 0.96, 0.94]);
+    for (slot, (pos, rot)) in track.grid_slots(8).into_iter().enumerate() {
         let fwd = rot * Vec3::NEG_Z;
         let right = rot * Vec3::X;
         let (fw, rt) = (Vec3::new(fwd.x, 0.0, fwd.z).normalize(), Vec3::new(right.x, 0.0, right.z).normalize());
         let c = pos + fw * 2.4;
-        for (o, w, l) in [(-1.3f32, 0.14f32, 1.2f32), (1.3, 0.14, 1.2)] {
-            let q = |x: f32, z: f32| ground(c + rt * x + fw * z, 0.07);
-            m.quad(q(o - w, -l), q(o + w, -l), q(o + w, 0.0), q(o - w, 0.0), rgb([0.96, 0.96, 0.94]));
-        }
         let q = |x: f32, z: f32| ground(c + rt * x + fw * z, 0.07);
-        m.quad(q(-1.44, -0.14), q(1.44, -0.14), q(1.44, 0.14), q(-1.44, 0.14), rgb([0.96, 0.96, 0.94]));
+        for (o, w, l) in [(-1.3f32, 0.14f32, 1.2f32), (1.3, 0.14, 1.2)] {
+            tri_up(m, [(q(o - w, -l), white), (q(o + w, -l), white), (q(o + w, 0.0), white)]);
+            tri_up(m, [(q(o - w, -l), white), (q(o + w, 0.0), white), (q(o - w, 0.0), white)]);
+        }
+        tri_up(m, [(q(-1.44, -0.14), white), (q(1.44, -0.14), white), (q(1.44, 0.14), white)]);
+        tri_up(m, [(q(-1.44, -0.14), white), (q(1.44, 0.14), white), (q(-1.44, 0.14), white)]);
+        // grid position number painted in the box (7-segment, readable from the car behind)
+        seven_seg(m, slot + 1, |x, z| q(x, z - 0.75), white);
+    }
+}
+
+/// Paint digit(s) of `n` as 7-segment bars; `at(x, z)` maps digit-local coords (x right,
+/// z forward/up, metres) to the ground.
+fn seven_seg(m: &mut MeshBuilder, n: usize, at: impl Fn(f32, f32) -> Vec3, col: [u8; 4]) {
+    const SEGS: [u8; 10] = [0b0111111, 0b0000110, 0b1011011, 0b1001111, 0b1100110, 0b1101101, 0b1111101, 0b0000111, 0b1111111, 0b1101111];
+    let digits: Vec<usize> = n.to_string().bytes().map(|b| (b - b'0') as usize).collect();
+    let (w, h, t) = (0.32f32, 0.56f32, 0.07f32);
+    let total = digits.len() as f32 * (w + 0.16) - 0.16;
+    for (di, &d) in digits.iter().enumerate() {
+        let x0 = -total * 0.5 + di as f32 * (w + 0.16);
+        let bits = SEGS[d];
+        // segments a..g: (x, z) centre, horizontal?
+        let segs = [(w * 0.5, h, true), (w, h * 0.75, false), (w, h * 0.25, false), (w * 0.5, 0.0, true), (0.0, h * 0.25, false), (0.0, h * 0.75, false), (w * 0.5, h * 0.5, true)];
+        for (k, &(cx, cz, horiz)) in segs.iter().enumerate() {
+            if bits & (1 << k) == 0 {
+                continue;
+            }
+            let (hx, hz) = if horiz { (w * 0.5, t * 0.5) } else { (t * 0.5, h * 0.25) };
+            let (x, z) = (x0 + cx, cz - h * 0.5);
+            let p = [at(x - hx, z - hz), at(x + hx, z - hz), at(x + hx, z + hz), at(x - hx, z + hz)];
+            tri_up(m, [(p[0], col), (p[1], col), (p[2], col)]);
+            tri_up(m, [(p[0], col), (p[2], col), (p[3], col)]);
+        }
     }
 }

@@ -56,6 +56,8 @@ struct CompositeUniforms {
     gain: [f32; 3],
     grade: [f32; 4],
     extra: [f32; 4],
+    /// x speed streak amount
+    motion: [f32; 4],
 }
 
 struct Target {
@@ -175,6 +177,7 @@ fn composite_meta() -> ShaderMeta {
                 UniformDesc::new("gain", UniformType::Float3),
                 UniformDesc::new("grade", UniformType::Float4),
                 UniformDesc::new("extra", UniformType::Float4),
+                UniformDesc::new("motion", UniformType::Float4),
             ],
         },
     }
@@ -187,6 +190,8 @@ pub struct PxRect {
     pub y: i32,
     pub w: i32,
     pub h: i32,
+    /// 0..1 high-speed factor of this viewport's camera (speed streaks)
+    pub speed: f32,
 }
 
 impl PostPipes {
@@ -251,6 +256,7 @@ impl PostPipes {
                 gain: grade.gain,
                 grade: [grade.saturation, grade.contrast, grade.vignette, grade.warmth],
                 extra: [vp.w as f32 / vp.h.max(1) as f32, grade.softness, time, grade.exposure],
+                motion: [vp.speed, 0.0, 0.0, 0.0],
             };
             ctx.apply_uniforms(UniformsSource::table(&u));
             ctx.draw(0, 6, 1);

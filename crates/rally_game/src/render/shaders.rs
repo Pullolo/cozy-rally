@@ -451,8 +451,10 @@ attribute vec2 in_pos;
 uniform vec4 rect; // source uv rect (x, y, w, h)
 varying vec2 v_uv;
 varying vec2 v_local;
+varying vec2 v_radial;
 void main() {
     v_local = in_pos;
+    v_radial = (in_pos - 0.5) * rect.zw;
     v_uv = rect.xy + in_pos * rect.zw;
     gl_Position = vec4(in_pos * 2.0 - 1.0, 0.0, 1.0);
 }
@@ -530,6 +532,8 @@ uniform vec3 lift;    // shadow tint
 uniform vec3 gain;    // highlight tint
 uniform vec4 grade;   // x saturation, y contrast, z vignette, w warmth
 uniform vec4 extra;   // x aspect (w/h), y softness, z time, w exposure
+uniform vec4 motion;  // x speed streak amount (0..1)
+varying vec2 v_radial;
 
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 
@@ -569,6 +573,18 @@ void main() {
         c = fxaa(v_uv);
     } else {
         c = texture2D(scene, v_uv).rgb;
+    }
+    // speed streaks: gentle radial blur towards the edges at very high speed
+    if (motion.x > 0.001) {
+        vec2 p = v_local - 0.5;
+        float edge = smoothstep(0.24, 0.7, length(p * vec2(extra.x, 1.0) / max(extra.x, 1.0) * 1.6)) * motion.x;
+        if (edge > 0.002) {
+            vec3 acc = c;
+            for (int k = 1; k <= 6; k++) {
+                acc += texture2D(scene, v_uv - v_radial * (0.0075 * float(k) * edge)).rgb;
+            }
+            c = mix(c, acc / 7.0, min(1.0, edge * 1.3));
+        }
     }
     // bloom: a tight glow plus a wide, soft halation for a dreamy film-like feel
     vec3 b1 = texture2D(bloom1, v_uv).rgb;

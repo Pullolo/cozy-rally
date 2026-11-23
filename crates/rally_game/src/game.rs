@@ -341,6 +341,7 @@ impl RaceSession {
                     gpu.end_shadow();
                 }
             }
+            gpu.set_view_speed(self.players.get(i).map_or(0.0, |p| p.cam.speed_fx));
             gpu.begin_scene((vp.x * dpi) as i32, (vp.y * dpi) as i32, (vp.w * dpi) as i32, (vp.h * dpi) as i32);
             self.scene.draw_opaque(gpu, &view);
             self.draw_cars(gpu, &view);
@@ -461,7 +462,14 @@ impl RaceSession {
 /// Debug/screenshot camera: `COZY_CAM_S=<metres from the start line>` puts a chase camera at that
 /// point of the stage (weather sampled there too). Returns the absolute arc length.
 fn debug_cam_s(track: &Track) -> Option<f32> {
-    std::env::var("COZY_CAM_S").ok().and_then(|v| v.parse::<f32>().ok()).map(|v| track.start_s + v)
+    // a comma-separated list cycles every 6 s of wall time (several spots in one capture run)
+    let v = std::env::var("COZY_CAM_S").ok()?;
+    let list: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+    if list.is_empty() {
+        return None;
+    }
+    let k = (macroquad::time::get_time() / 6.0) as usize % list.len();
+    Some(track.start_s + list[k])
 }
 
 pub fn interp(car: &rally_core::vehicle::Car, alpha: f32) -> (Vec3, Quat) {

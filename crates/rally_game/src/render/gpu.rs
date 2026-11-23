@@ -377,6 +377,8 @@ pub struct Gpu {
     shadow_receive: bool,
     /// weather for the viewport being drawn
     weather: WeatherLook,
+    /// high-speed factor for the next `begin_scene` (speed streaks in post)
+    view_speed: f32,
 }
 
 pub const STREAM_VERTS: usize = 60_000;
@@ -507,6 +509,7 @@ impl Gpu {
             frame_scale: 1.0,
             shadow_receive: true,
             weather: WeatherLook::default(),
+            view_speed: 0.0,
         }
     }
 
@@ -658,7 +661,7 @@ impl Gpu {
             ctx.begin_pass(Some(p.scene_pass), PassAction::Nothing);
             self.target = Target::Scene;
             let first = self.frame_viewports.is_empty();
-            self.frame_viewports.push(PxRect { x, y, w, h });
+            self.frame_viewports.push(PxRect { x, y, w, h, speed: self.view_speed });
             if first && self.frame_scale < 0.999 {
                 // the unused part of the target must not hold stale pixels (bloom reads it)
                 ctx.apply_viewport(0, 0, p.w as i32, p.h as i32);
@@ -707,6 +710,11 @@ impl Gpu {
     /// Used around fx so soft dust/smoke stays light instead of catching car shadows.
     pub fn set_shadow_receive(&mut self, on: bool) {
         self.shadow_receive = on;
+    }
+
+    /// 0..1 high-speed factor of the next viewport (radial speed streaks in post; 0 = off)
+    pub fn set_view_speed(&mut self, f: f32) {
+        self.view_speed = f.clamp(0.0, 1.0);
     }
 
     /// Weather for the following draws (per viewport; reset by `finish_frame` / `begin_3d`)
