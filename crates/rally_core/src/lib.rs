@@ -5,6 +5,7 @@ pub mod biome;
 pub mod conditions;
 pub mod corridor;
 pub mod campaign;
+pub mod circuits;
 pub mod campaign_run;
 pub mod ghost;
 pub mod input;

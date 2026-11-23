@@ -1255,3 +1255,322 @@ pub fn design_stage(rng: &mut Rng, difficulty: u8, stage_len: f32, spacing: f32,
     let _ = elem_s;
     Some(StageLayout { pts, features, tech, camber, start_s: start_s * scale, finish_s: finish_s * scale, climbs })
 }
+
+// =============================================================================================
+// Tarmac racing circuits
+// =============================================================================================
+
+/// Circuit size classes (TrackParams::length_class for Discipline::Circuit)
+pub const CIRCUIT_SIZE_NAMES: [&str; 3] = ["Sprint", "Grand Prix", "Ring"];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CJ {
+    Sweeper,
+    Medium,
+    HeavyBrake,
+    Hairpin,
+    Esses,
+    DoubleApex,
+    Tightening,
+    Carousel,
+}
+
+/// Corner with circuit proportions (long clothoids for high speed)
+fn ccurve(sign: f32, angle: f32, r_in: f32, r_out: f32, ramp: f32, kind: FeatureKind, camber: f32, tech: f32) -> Elem {
+    curve(sign, angle, r_in, r_out, ramp, ramp * 1.15, kind, camber, tech)
+}
+
+fn circuit_junction(rng: &mut Rng, kind: CJ, dir: f32, delta: f32, out: &mut Vec<Elem>) {
+    let link = |rng: &mut Rng, lo: f32, hi: f32| Elem::Straight { len: rng.range(lo, hi), main: None, frac: 0.0 };
+    match kind {
+        CJ::Sweeper => {
+            let r = rng.range(150.0, 330.0);
+            out.push(ccurve(dir, delta, r, r, rng.range(40.0, 70.0), FeatureKind::Sweeper, 0.6, 0.0));
+        }
+        CJ::Medium => {
+            let r = rng.range(55.0, 115.0);
+            out.push(ccurve(dir, delta, r, r, rng.range(22.0, 38.0), FeatureKind::Medium, 0.6, 0.3));
+        }
+        CJ::Tightening => {
+            let r = rng.range(40.0, 70.0);
+            if rng.chance(0.5) {
+                out.push(ccurve(dir, delta, r * 2.4, r, rng.range(25.0, 40.0), FeatureKind::Tightening, 0.6, 0.4));
+            } else {
+                out.push(ccurve(dir, delta, r, r * 2.4, rng.range(20.0, 30.0), FeatureKind::Opening, 0.6, 0.4));
+            }
+        }
+        CJ::Carousel => {
+            // steeply banked long bowl
+            let r = rng.range(38.0, 55.0);
+            out.push(ccurve(dir, delta, r, r, rng.range(20.0, 30.0), FeatureKind::Medium, 2.2, 0.5));
+        }
+        CJ::DoubleApex => {
+            let f = rng.range(0.4, 0.6);
+            let r = rng.range(42.0, 75.0);
+            out.push(ccurve(dir, delta * f, r, r, rng.range(18.0, 28.0), FeatureKind::Medium, 0.6, 0.5));
+            out.push(link(rng, 15.0, 45.0));
+            out.push(ccurve(dir, delta * (1.0 - f), r * rng.range(0.8, 1.2), r, rng.range(18.0, 28.0), FeatureKind::Medium, 0.6, 0.5));
+        }
+        CJ::HeavyBrake => {
+            if delta > deg(65.0) && delta < deg(115.0) {
+                let r = rng.range(22.0, 38.0);
+                out.push(ccurve(dir, delta, r, r, rng.range(10.0, 16.0), FeatureKind::Square, 0.6, 0.8));
+            } else {
+                let a = deg(rng.range(84.0, 96.0));
+                let r = rng.range(22.0, 38.0);
+                out.push(ccurve(dir, a, r, r, rng.range(10.0, 16.0), FeatureKind::Square, 0.6, 0.8));
+                let rem = delta - a;
+                if rem.abs() > deg(8.0) {
+                    out.push(link(rng, 90.0, 220.0));
+                    let r2 = rng.range(80.0, 180.0);
+                    out.push(ccurve(rem.signum() * dir, rem.abs(), r2, r2, 35.0, FeatureKind::Medium, 0.6, 0.2));
+                }
+            }
+        }
+        CJ::Hairpin => {
+            let h = rng.range(deg(132.0), deg(165.0)).clamp(delta + deg(50.0), delta + deg(125.0));
+            let r = rng.range(15.0, 24.0);
+            out.push(ccurve(dir, h, r * 1.2, r, rng.range(12.0, 18.0), FeatureKind::Hairpin, 0.8, 1.0));
+            out.push(link(rng, 90.0, 180.0));
+            let counter = h - delta;
+            let r2 = rng.range(60.0, 140.0);
+            out.push(ccurve(-dir, counter, r2, r2, rng.range(25.0, 40.0), FeatureKind::Medium, 0.6, 0.3));
+        }
+        CJ::Esses => {
+            let b = deg(rng.range(30.0, 50.0));
+            let a = (delta + b) * rng.range(0.4, 0.6);
+            let c = delta + b - a;
+            let r = rng.range(70.0, 140.0);
+            out.push(ccurve(dir, a, r, r, 25.0, FeatureKind::SBend, 0.6, 0.5));
+            out.push(link(rng, 10.0, 40.0));
+            out.push(ccurve(-dir, b, r * rng.range(0.8, 1.2), r, 25.0, FeatureKind::SBend, 0.6, 0.5));
+            out.push(link(rng, 10.0, 40.0));
+            out.push(ccurve(dir, c, r * rng.range(0.8, 1.2), r, 25.0, FeatureKind::SBend, 0.6, 0.5));
+        }
+    }
+}
+
+/// Chicane inserted into a straight (net zero heading)
+fn circuit_chicane(rng: &mut Rng, out: &mut Vec<Elem>) {
+    let sign = if rng.chance(0.5) { 1.0 } else { -1.0 };
+    let a = deg(rng.range(35.0, 55.0));
+    let r = rng.range(20.0, 30.0);
+    out.push(ccurve(sign, a, r, r, 8.0, FeatureKind::Chicane, 0.4, 0.9));
+    out.push(Elem::Straight { len: rng.range(0.0, 8.0), main: None, frac: 0.0 });
+    out.push(ccurve(-sign, a, r, r, 8.0, FeatureKind::Chicane, 0.4, 0.9));
+}
+
+/// Design a closed racing circuit. `size` 0 = Sprint (~2.5 km), 1 = GP (~4.5 km), 2 = Ring
+/// (~9-11 km, many corners, built for crests and blind bends).
+pub fn design_circuit(rng: &mut Rng, size: u8, difficulty: u8, spacing: f32, max_half_width: f32, shoulder: f32) -> Option<Layout> {
+    let dbg = std::env::var("CIRCUIT_DEBUG").is_ok();
+    let size = (size as usize).min(2);
+    let d = (difficulty as usize).min(2);
+    let target = [2500.0, 4500.0, 10000.0][size] * rng.range(0.9, 1.1);
+    let k_main = match size {
+        0 => rng.range_i(6, 9),
+        1 => rng.range_i(9, 13),
+        _ => rng.range_i(18, 25),
+    } as usize;
+    let dir = if rng.chance(0.5) { 1.0 } else { -1.0 };
+    let mut deltas: Vec<f32> = (0..k_main).map(|_| rng.range(0.5, 1.6)).collect();
+    for _ in 0..4 {
+        let sum: f32 = deltas.iter().sum();
+        for dl in deltas.iter_mut() {
+            *dl = (*dl / sum * TAU).clamp(deg(18.0), deg(125.0));
+        }
+    }
+    let sum: f32 = deltas.iter().sum();
+    deltas.iter_mut().for_each(|dl| *dl *= TAU / sum);
+
+    // mandatory corners first, the rest by weight
+    let mut kinds = vec![CJ::Medium; k_main];
+    let mut order: Vec<usize> = (1..k_main).collect(); // junction 0 ends the pit straight: heavy braking
+    for i in (1..order.len()).rev() {
+        let j = rng.range_i(0, i as i32 + 1) as usize;
+        order.swap(i, j);
+    }
+    kinds[0] = if rng.chance(0.6) { CJ::HeavyBrake } else { CJ::Hairpin };
+    let mandatory: Vec<CJ> = match size {
+        0 => vec![CJ::Hairpin, CJ::Esses],
+        1 => vec![CJ::Hairpin, CJ::HeavyBrake, CJ::Esses, CJ::DoubleApex, CJ::Sweeper],
+        _ => vec![CJ::Hairpin, CJ::Hairpin, CJ::HeavyBrake, CJ::HeavyBrake, CJ::Esses, CJ::Esses, CJ::Esses, CJ::Carousel, CJ::DoubleApex, CJ::Sweeper, CJ::Sweeper],
+    };
+    let mut oi = 0;
+    for m in mandatory {
+        if oi < order.len() {
+            kinds[order[oi]] = m;
+            oi += 1;
+        }
+    }
+    let w = [[0.34, 0.26, 0.12, 0.04, 0.1, 0.08, 0.06], [0.26, 0.24, 0.14, 0.07, 0.12, 0.1, 0.07], [0.2, 0.22, 0.15, 0.1, 0.14, 0.1, 0.09]][d];
+    for &j in &order[oi..] {
+        let r = rng.f32();
+        let mut acc = 0.0;
+        let opts = [CJ::Sweeper, CJ::Medium, CJ::Esses, CJ::Hairpin, CJ::DoubleApex, CJ::HeavyBrake, CJ::Tightening];
+        let mut pick = CJ::Medium;
+        for (o, p) in opts.iter().zip(w.iter()) {
+            acc += p;
+            if r < acc {
+                pick = *o;
+                break;
+            }
+        }
+        if pick == CJ::Hairpin && size == 0 {
+            pick = CJ::HeavyBrake;
+        }
+        kinds[j] = pick;
+    }
+
+    // elements: S_0 J_0 S_1 J_1 ... ; S_0 is the pit straight; one long back straight
+    let back = 1 + rng.range_i(0, (k_main - 1) as i32) as usize;
+    let mut elems: Vec<Elem> = Vec::new();
+    let mut weights = vec![0.0f32; k_main];
+    let chicane_p = [0.15, 0.22, 0.25][size];
+    for k in 0..k_main {
+        if k > 0 && rng.chance(chicane_p) {
+            let f = rng.range(0.3, 0.7);
+            elems.push(Elem::Straight { len: 0.0, main: Some(k), frac: f });
+            circuit_chicane(rng, &mut elems);
+            elems.push(Elem::Straight { len: 0.0, main: Some(k), frac: 1.0 - f });
+        } else {
+            elems.push(Elem::Straight { len: 0.0, main: Some(k), frac: 1.0 });
+        }
+        let mut wk = rng.range(0.4, 1.4);
+        if matches!(kinds[k], CJ::Hairpin | CJ::HeavyBrake) {
+            wk *= 1.8; // speed before heavy braking
+        }
+        if k == 0 {
+            wk *= 3.0;
+        }
+        if k == back {
+            wk *= 3.0;
+        }
+        weights[k] = wk;
+        circuit_junction(rng, kinds[k], dir, deltas[k], &mut elems);
+    }
+    let min_main = [500.0, 650.0, 700.0][size];
+    let min_back = [330.0, 550.0, 700.0][size];
+    let min_other = [70.0, 90.0, 80.0][size];
+    let min_len = |k: usize| if k == 0 { min_main } else if k == back { min_back } else { min_other };
+    let zero = vec![0.0; k_main];
+    let fixed: f32 = elems.iter().map(|e| e.len(&zero)).sum();
+    let remaining = (target - fixed).max(k_main as f32 * 120.0);
+    let wsum: f32 = weights.iter().sum();
+    let mut mains: Vec<f32> = (0..k_main).map(|k| (remaining * weights[k] / wsum).max(min_len(k))).collect();
+    mains[0] = mains[0].min(1150.0);
+
+    // close the loop: weighted min-norm change of the straight lengths
+    let mut free = vec![true; k_main];
+    for _ in 0..8 {
+        let it = integrate(&elems, &mains);
+        let f = *it.pts.last().unwrap();
+        if f.length() < 0.05 {
+            break;
+        }
+        let mut m = [0.0f32; 3];
+        for k in 0..k_main {
+            if free[k] {
+                let u = it.main_dir[k];
+                let wk = mains[k];
+                m[0] += wk * u.x * u.x;
+                m[1] += wk * u.x * u.y;
+                m[2] += wk * u.y * u.y;
+            }
+        }
+        let det = m[0] * m[2] - m[1] * m[1];
+        if det.abs() < 1e-3 {
+            if dbg { eprintln!("reject: singular"); }
+            return None;
+        }
+        let lx = -(m[2] * f.x - m[1] * f.y) / det;
+        let ly = -(-m[1] * f.x + m[0] * f.y) / det;
+        for k in 0..k_main {
+            if free[k] {
+                let u = it.main_dir[k];
+                let nl = mains[k] + mains[k] * (u.x * lx + u.y * ly);
+                if nl < min_len(k) {
+                    mains[k] = min_len(k);
+                    free[k] = false;
+                } else {
+                    mains[k] = nl;
+                }
+            }
+        }
+    }
+    let it = integrate(&elems, &mains);
+    if it.pts.last().unwrap().length() > 0.3 || (it.end_heading.abs() - TAU).abs() > 0.02 {
+        if dbg { eprintln!("reject: not closed {:.1}", it.pts.last().unwrap().length()); }
+        return None;
+    }
+    if mains[0] > 1300.0 || mains.iter().any(|&m| m > 1400.0) {
+        if dbg { eprintln!("reject: long straight {:?}", mains.iter().map(|m| *m as i32).collect::<Vec<_>>()); }
+        return None; // no absurd drag strips
+    }
+    let total = it.total;
+    if total < target * 0.75 || total > target * 1.4 {
+        if dbg { eprintln!("reject: length {total:.0} vs {target:.0}"); }
+        return None;
+    }
+    let mut bmin = Vec2::splat(f32::MAX);
+    let mut bmax = Vec2::splat(f32::MIN);
+    for p in &it.pts {
+        bmin = bmin.min(*p);
+        bmax = bmax.max(*p);
+    }
+    if (bmax - bmin).max_element() > total * 0.45 + 200.0 {
+        if dbg { eprintln!("reject: bbox"); }
+        return None;
+    }
+    let mut fine = it.pts.clone();
+    let resid = *fine.last().unwrap();
+    let nf = fine.len() as f32;
+    for (i, p) in fine.iter_mut().enumerate() {
+        *p -= resid * (i as f32 / (nf - 1.0));
+    }
+    let count = (total / spacing).round() as usize;
+    let pts0 = resample_loop(&fine, count);
+    let scale = count as f32 * spacing / total;
+    // start/finish line 65% along the pit straight (room for the grid behind it)
+    let start_s = (it.starts[0] + mains[0] * 0.65) * scale;
+    let shift = (start_s / spacing).round() as usize % count;
+    let mut pts = pts0;
+    pts.rotate_left(shift);
+    let shift_s = shift as f32 * spacing;
+    let len_final = count as f32 * spacing;
+    // sections (incl. a share of the run-off) must not overlap
+    let near = 2.0 * (max_half_width + shoulder) + 8.0;
+    if !clearance_ok(&pts, spacing, near, near + 22.0) {
+        if dbg { eprintln!("reject: clearance"); }
+        return None;
+    }
+    let mut features = Vec::new();
+    let mut tech = vec![0.0f32; count];
+    let mut camber = vec![1.0f32; count];
+    for (ei, e) in elems.iter().enumerate() {
+        let s0 = (it.starts[ei] * scale - shift_s).rem_euclid(len_final);
+        let l = e.len(&mains) * scale;
+        let s1 = (s0 + l).rem_euclid(len_final);
+        match *e {
+            Elem::Straight { main, .. } => {
+                if main.is_some() {
+                    features.push(Feature { kind: FeatureKind::Straight, s0, s1, main, jump_kink: false, camber: 1.0 });
+                }
+            }
+            Elem::Curve { kind, camber: cam, tech: t, .. } => {
+                features.push(Feature { kind, s0, s1, main: None, jump_kink: false, camber: cam });
+                let i0 = (s0 / spacing).floor() as isize;
+                let i1 = i0 + (l / spacing).ceil() as isize;
+                for i in i0 - 8..=i1 + 8 {
+                    let j = i.rem_euclid(count as isize) as usize;
+                    let edge = if i < i0 { (i0 - i) as f32 / 8.0 } else if i > i1 { (i - i1) as f32 / 8.0 } else { 0.0 };
+                    tech[j] = tech[j].max(t * (1.0 - edge));
+                    if (i0..=i1).contains(&i) {
+                        camber[j] = cam;
+                    }
+                }
+            }
+        }
+    }
+    Some(Layout { pts, features, tech, camber })
+}

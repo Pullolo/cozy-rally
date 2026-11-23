@@ -312,6 +312,13 @@ pub fn upcoming(notes: &PaceNotes, s: f32, n: usize) -> Vec<Upcoming> {
 }
 
 /// Grade (1..=6, 7 = flat) for a speed in km/h
+/// Circuit grades (reference circuit car with slicks + downforce): 1 <80 .. 6 <260 km/h
+pub const CIRCUIT_GRADE_KMH: [f32; 6] = [80.0, 110.0, 140.0, 175.0, 215.0, 260.0];
+
+pub fn grade_for_speed_circuit(kmh: f32) -> u8 {
+    CIRCUIT_GRADE_KMH.iter().position(|&g| kmh < g).map(|p| p as u8 + 1).unwrap_or(7)
+}
+
 pub fn grade_for_speed(kmh: f32) -> u8 {
     GRADE_KMH.iter().position(|&g| kmh < g).map(|p| p as u8 + 1).unwrap_or(7)
 }
@@ -482,9 +489,19 @@ pub fn notes_for(track: &Track) -> PaceNotes {
         let bank_into = (a..=b).map(|i| track.samples[i % n].bank).sum::<f32>() / (b - a + 1) as f32 * r.sign;
         let w_use = (2.0 * hw_min - 2.2).max(1.0);
         let line_gain = if linked { 0.3 } else { 0.55 } * w_use / (1.0 - (angle.min(std::f32::consts::PI) * 0.5).cos()).max(1e-3);
-        let speed_for = |k: f32| corner_speed(1.0 / (1.0 / k.max(1e-5) + line_gain), bank_into, mu) * 3.6;
+        let circuit = track.is_circuit();
+        let speed_for = |k: f32| {
+            let r = 1.0 / k.max(1e-5) + line_gain;
+            if circuit {
+                // slicks + downforce: v^2 = mu g R / (1 - mu c R)
+                crate::track::circuit_corner_speed(r, crate::track::CIRCUIT_REF_MU * mu / REF_GRIP / 1.05) * 3.6
+            } else {
+                corner_speed(1.0 / r, bank_into, mu) * 3.6
+            }
+        };
+        let grade = |v: f32| if circuit { grade_for_speed_circuit(v) } else { grade_for_speed(v) };
         let v = speed_for(peak);
-        let mut sev = grade_for_speed(v);
+        let mut sev = grade(v);
         let min_radius = 1.0 / peak;
         let span_len = (b - a + 1) as f32 * ds;
 
@@ -492,7 +509,7 @@ pub fn notes_for(track: &Track) -> PaceNotes {
         let third = ((b - a) / 3).max(1);
         let k_in = (a..=a + third).map(|i| kavg[i % n]).fold(0.0, f32::max);
         let k_out = (b.saturating_sub(third).max(a)..=b).map(|i| kavg[i % n]).fold(0.0, f32::max);
-        let (sev_in, sev_out) = (grade_for_speed(speed_for(k_in)).min(6), grade_for_speed(speed_for(k_out)).min(6));
+        let (sev_in, sev_out) = (grade(speed_for(k_in)).min(6), grade(speed_for(k_out)).min(6));
         let mut mods = Vec::new();
         let mut exit_severity = None;
 
@@ -537,7 +554,7 @@ pub fn notes_for(track: &Track) -> PaceNotes {
             distance_to_next: 0,
             angle_deg,
             min_radius,
-            speed_kmh: v.min(160.0),
+            speed_kmh: v.min(if circuit { 340.0 } else { 160.0 }),
             text: String::new(),
         });
     }
@@ -794,7 +811,8 @@ pub fn notes_for(track: &Track) -> PaceNotes {
             continue;
         }
         let gap = fwd(prev_end, nt.s_start);
-        let v_app = (prev_exit_speed * prev_exit_speed + 2.0 * 4.5 * gap).sqrt().min(40.0);
+        let v_cap = if track.is_circuit() { 80.0 } else { 40.0 };
+        let v_app = (prev_exit_speed * prev_exit_speed + 2.0 * 4.5 * gap).sqrt().min(v_cap);
         let v_c = nt.speed_kmh / 3.6;
         let ratio = v_app / v_c.max(1.0);
         let mut score = 0;

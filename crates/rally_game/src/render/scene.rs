@@ -708,6 +708,9 @@ pub fn road_mesh(track: &Track, painter: &GroundPainter) -> MeshBuilder {
         }
     }
     }
+    if track.is_circuit() {
+        circuit_dressing(&mut m, track);
+    }
     m
 }
 
@@ -1648,5 +1651,60 @@ impl Scene {
         if let Some(w) = self.water {
             gpu.free(w);
         }
+    }
+}
+
+/// Circuits: red/white kerbs, run-off areas (tarmac / gravel traps) and grid boxes.
+/// Isolated so the rendering side can restyle it freely.
+fn circuit_dressing(m: &mut MeshBuilder, track: &Track) {
+    use rally_core::track::RunoffKind;
+    let n = track.samples.len();
+    let hf = &track.terrain;
+    let ground = |p: Vec3, lift: f32| Vec3::new(p.x, hf.height(p.x, p.z) + lift, p.z);
+    let fr = |i: usize| {
+        let s = &track.samples[i % n];
+        Vec3::new(s.right.x, 0.0, s.right.z).normalize()
+    };
+    for i in 0..n {
+        if i % 16 == 0 {
+            m.begin_chunk();
+        }
+        let j = (i + 1) % n;
+        let (a, b) = (&track.samples[i], &track.samples[j]);
+        let (ea, eb) = (track.edge(i), track.edge(j));
+        let (fa, fb) = (fr(i), fr(j));
+        for side in [-1.0f32, 1.0] {
+            let (ka, kb) = if side < 0.0 { (ea.kerb_left, eb.kerb_left) } else { (ea.kerb_right, eb.kerb_right) };
+            if ka > 0.0 && kb > 0.0 {
+                let col = if (i / 2) % 2 == 0 { [0.86, 0.18, 0.16] } else { [0.96, 0.96, 0.94] };
+                let p = |s: &rally_core::track::TrackSample, f: Vec3, l: f32| ground(s.pos + f * side * l, 0.075);
+                m.quad(p(a, fa, a.half_width), p(a, fa, a.half_width + ka), p(b, fb, b.half_width + kb), p(b, fb, b.half_width), rgb(col));
+            }
+            let (ra, rb) = if side < 0.0 { (ea.runoff_left, eb.runoff_left) } else { (ea.runoff_right, eb.runoff_right) };
+            if ra.width > 0.5 && rb.width > 0.5 && ra.kind != RunoffKind::Grass {
+                let col = match ra.kind {
+                    RunoffKind::Gravel => [0.82, 0.74, 0.58],
+                    _ => [0.42, 0.42, 0.46],
+                };
+                let e0a = a.half_width + SHOULDER;
+                let e0b = b.half_width + SHOULDER;
+                let p = |s: &rally_core::track::TrackSample, f: Vec3, l: f32| ground(s.pos + f * side * l, 0.06);
+                m.quad(p(a, fa, e0a), p(a, fa, e0a + ra.width), p(b, fb, e0b + rb.width), p(b, fb, e0b), rgb(shade(col, 0.97 + rally_core::rng::hash2(i as i32, 3, 5) * 0.05)));
+            }
+        }
+    }
+    // grid boxes behind the start line
+    m.begin_chunk();
+    for (pos, rot) in track.grid_slots(8) {
+        let fwd = rot * Vec3::NEG_Z;
+        let right = rot * Vec3::X;
+        let (fw, rt) = (Vec3::new(fwd.x, 0.0, fwd.z).normalize(), Vec3::new(right.x, 0.0, right.z).normalize());
+        let c = pos + fw * 2.4;
+        for (o, w, l) in [(-1.3f32, 0.14f32, 1.2f32), (1.3, 0.14, 1.2)] {
+            let q = |x: f32, z: f32| ground(c + rt * x + fw * z, 0.07);
+            m.quad(q(o - w, -l), q(o + w, -l), q(o + w, 0.0), q(o - w, 0.0), rgb([0.96, 0.96, 0.94]));
+        }
+        let q = |x: f32, z: f32| ground(c + rt * x + fw * z, 0.07);
+        m.quad(q(-1.44, -0.14), q(1.44, -0.14), q(1.44, 0.14), q(-1.44, 0.14), rgb([0.96, 0.96, 0.94]));
     }
 }

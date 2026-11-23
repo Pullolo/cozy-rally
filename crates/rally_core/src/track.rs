@@ -76,6 +76,14 @@ impl TrackParams {
         if let Some(st) = std::env::var("COZY_STAGE").ok().and_then(|id| crate::campaign::find_stage(&id)) {
             return st.params;
         }
+        // COZY_CIRCUIT=<circuit id> plays a named circuit; COZY_DISCIPLINE=circuit a random one
+        if let Some(c) = std::env::var("COZY_CIRCUIT").ok().and_then(|id| crate::circuits::find_circuit(&id)) {
+            return c.params;
+        }
+        if std::env::var("COZY_DISCIPLINE").is_ok_and(|v| v.eq_ignore_ascii_case("circuit")) {
+            self.discipline = Discipline::Circuit;
+            self.surface = SurfaceMode::Tarmac;
+        }
         // COZY_WEATHER=<preset>|dynamic|stormy: fixed weather for loop races (visual testing)
         if let Ok(v) = std::env::var("COZY_WEATHER") {
             use crate::weather::{ConditionsSpec as C, WeatherPreset as P};
@@ -252,6 +260,22 @@ pub struct GroundInfo {
     /// Blended tyre/handling properties (continuous across every surface change)
     pub props: SurfaceProps,
     pub query: TrackQuery,
+    /// Which part of the road cross-section this is (kerbs / run-off exist on circuits)
+    pub zone: GroundZone,
+    /// Circuits: outside the white line (track limits); always false on rally tracks
+    pub beyond_limits: bool,
+}
+
+/// Cross-section zone under a point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroundZone {
+    Road,
+    Kerb,
+    /// Shoulder / paved verge
+    Shoulder,
+    /// Prepared run-off (tarmac or gravel trap)
+    Runoff,
+    Offroad,
 }
 
 struct SpatialGrid {
@@ -327,6 +351,8 @@ pub struct Track {
     pub splits: Vec<f32>,
     /// Coarse distance-to-road field (corridor terrain, prop budgets, render LOD / culling)
     pub road_dist: crate::corridor::RoadDistanceField,
+    /// Circuits: kerbs and run-off per sample (empty on rally tracks; use `edge(i)`)
+    pub circuit_edges: Vec<CircuitEdge>,
     grid: SpatialGrid,
     prop_grid: SpatialGrid,
 }
@@ -402,6 +428,7 @@ impl Track {
         let mut attempt = 0u64;
         loop {
             let t = match params.layout {
+                LayoutKind::Loop if params.discipline == Discipline::Circuit => Self::try_generate_circuit(params, attempt),
                 LayoutKind::Loop => Self::try_generate(params, attempt),
                 LayoutKind::PointToPoint { length_m } => Self::try_generate_stage(params, attempt, length_m),
             };
@@ -613,6 +640,7 @@ impl Track {
             finish_s: length,
             splits: Vec::new(),
             road_dist: crate::corridor::RoadDistanceField::build(&pts, min, max, 10.0, 400.0),
+            circuit_edges: Vec::new(),
             features: layout.features,
             surface_map,
             grid,
@@ -716,11 +744,14 @@ impl Track {
     pub fn ground_at(&self, p: Vec3, hint: Option<usize>) -> GroundInfo {
         use crate::surfacemap::{shoulder_of, smoothstep as ss};
         let q = self.query(p, hint);
+        if self.is_circuit() {
+            return self.circuit_ground(q);
+        }
         let hw = self.samples[q.index].half_width;
         let off = self.style.offroad_surface;
         let e2 = ss(hw + SHOULDER - 0.4, hw + SHOULDER + 0.4, q.dist);
         if e2 >= 1.0 {
-            return GroundInfo { primary: off, secondary: off, blend: 0.0, props: off.props(), query: q };
+            return GroundInfo { primary: off, secondary: off, blend: 0.0, props: off.props(), query: q, zone: GroundZone::Offroad, beyond_limits: false };
         }
         let m = self.surface_map.mix_at(q.s, q.lateral.clamp(-(hw + SHOULDER), hw + SHOULDER));
         let e1 = ss(hw + 0.1, hw + 0.7, q.dist);
@@ -764,7 +795,8 @@ impl Track {
         acc.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
         let (primary, w1) = acc[0];
         let (secondary, w2) = if acc.len() > 1 { acc[1] } else { (primary, 0.0) };
-        GroundInfo { primary, secondary, blend: w2 / (w1 + w2).max(1e-6), props, query: q }
+        let zone = if q.dist <= hw + 0.4 { GroundZone::Road } else { GroundZone::Shoulder };
+        GroundInfo { primary, secondary, blend: w2 / (w1 + w2).max(1e-6), props, query: q, zone, beyond_limits: false }
     }
 
     /// Interpolated centre-line frame at arc length s: (position, tangent, right, up)
@@ -802,10 +834,13 @@ impl Track {
                 let row = k / 2;
                 // a lone stage car starts centred right at the line
                 let side = if count == 1 && !self.closed { 0.0 } else if k % 2 == 0 { -1.0 } else { 1.0 };
-                let back = if count == 1 && !self.closed { 3.0 } else { 8.0 + row as f32 * 8.0 + (k % 2) as f32 * 3.0 };
+                let circuit = self.is_circuit();
+                // circuits: staggered grid boxes, one car every 7 m alternating sides
+                let back = if count == 1 && !self.closed { 3.0 } else if circuit { 6.0 + k as f32 * 7.0 } else { 8.0 + row as f32 * 8.0 + (k % 2) as f32 * 3.0 };
                 let s = self.start_s - back;
                 let (p, _, r, _) = self.frame_at(s);
-                let mut pos = p + r * side * 2.6;
+                let lat = if circuit { self.samples[self.sample_index((s / SAMPLE_SPACING) as isize)].half_width * 0.42 } else { 2.6 };
+                let mut pos = p + r * side * lat;
                 pos.y = self.terrain.height(pos.x, pos.z) + 0.6;
                 (pos, self.rotation_at(s))
             })
@@ -999,6 +1034,551 @@ impl Track {
 // ======================================================================== prop placement
 
 /// Yaw that turns a prop's local +Z towards direction `d` (XZ)
+// =============================================================================================
+// Tarmac racing circuits (Discipline::Circuit)
+// =============================================================================================
+
+/// What lies beyond the paved verge on one side of a circuit sample.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RunoffKind {
+    /// Grass verge (no prepared run-off)
+    #[default]
+    Grass,
+    /// Paved run-off area
+    Tarmac,
+    /// Gravel trap: deep loose gravel that slows cars down hard (terrible for slicks)
+    Gravel,
+}
+
+/// Run-off area on one side: kind and width (m) beyond the paved verge (`half_width + SHOULDER`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Runoff {
+    pub kind: RunoffKind,
+    pub width: f32,
+}
+
+/// Extra circuit data per sample (all zero / grass on rally tracks).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CircuitEdge {
+    /// Kerb width (m) just outside the white line on the left / right (0 = no kerb).
+    /// Kerbs span `half_width .. half_width + kerb` laterally.
+    pub kerb_left: f32,
+    pub kerb_right: f32,
+    pub runoff_left: Runoff,
+    pub runoff_right: Runoff,
+}
+
+/// Surface properties of zones that have no own `Surface` variant.
+pub fn kerb_props() -> SurfaceProps {
+    SurfaceProps { bumpiness: 0.022, rolling: 0.014, ..Surface::Asphalt.props() }
+}
+
+pub fn gravel_trap_props() -> SurfaceProps {
+    SurfaceProps { grip: 0.5, slide_grip: 0.72, rolling: 0.17, bumpiness: 0.035, ..Surface::Gravel.props() }
+}
+
+/// Reference circuit car for grading / budgets: slick grip and downforce per mass
+/// (v^2 = mu g R / (1 - mu c R), c = k/m with downforce F = k v^2).
+pub const CIRCUIT_REF_MU: f32 = 1.5;
+pub const CIRCUIT_REF_AERO: f32 = 0.0009;
+
+/// Max cornering speed (m/s) of the reference circuit car on radius `r` (m), friction `mu`.
+pub fn circuit_corner_speed(r: f32, mu: f32) -> f32 {
+    let denom = 1.0 - mu * CIRCUIT_REF_AERO * r;
+    if denom <= 0.08 {
+        return 95.0;
+    }
+    (mu * 9.81 * r / denom).sqrt().min(95.0)
+}
+
+impl Track {
+    /// Tarmac racing circuit (kerbs, run-off, pit straight, track limits)
+    pub fn is_circuit(&self) -> bool {
+        self.params.discipline == Discipline::Circuit
+    }
+
+    /// Circuit data at a sample (kerbs / run-off); default (none) on rally tracks
+    pub fn edge(&self, i: usize) -> CircuitEdge {
+        self.circuit_edges.get(i).copied().unwrap_or_default()
+    }
+
+    fn try_generate_circuit(params: &TrackParams, attempt: u64) -> Option<Track> {
+        let mut rng = Rng::new(params.seed.wrapping_mul(31).wrapping_add(attempt * 7919) ^ 0xC1C0_17);
+        let biome = params.biome.unwrap_or_else(|| Biome::from_index((Rng::new(params.seed).next_u64() % 5) as usize));
+        let mut style = biome.style();
+        let style0 = biome.style();
+        let noise_seed = (params.seed as u32).wrapping_mul(2654435761);
+        let diff = params.difficulty.min(2);
+        let size = params.length_class.min(2);
+        let ring = size == 2;
+        // 12-16 m wide (the Ring is narrower and rougher), pit straight wider still
+        let (hw_lo, hw_hi) = [(6.2, 7.2), (6.5, 7.8), (5.0, 6.3)][size as usize];
+        let half_w_base = hw_hi + 1.6;
+        let nat = |x: f32, z: f32| natural_height(&style0, biome, noise_seed, x, z);
+
+        let mut lay = None;
+        for _ in 0..200 {
+            if let Some(l) = crate::layout::design_circuit(&mut rng, size, diff, SAMPLE_SPACING, hw_hi, SHOULDER) {
+                lay = Some(l);
+                break;
+            }
+        }
+        let lay = lay?;
+        let pts = lay.pts;
+        let n = pts.len();
+        let length = n as f32 * SAMPLE_SPACING;
+        let raw = signed_curvature_2d(&pts);
+        if raw.iter().any(|c| c.abs() > 1.0 / 12.0) {
+            return None;
+        }
+        let mut curv = raw;
+        smooth_closed_f32(&mut curv, 2, 2);
+        let grid = SpatialGrid::new(&pts, 16.0, 60.0);
+
+        // ---- elevation: gentle parkland circuits, a hilly "Ring"
+        let amp = if ring { 2.2 } else { 0.4 };
+        let mut elev: Vec<f32> = pts.iter().map(|p| nat(p.x, p.y) * amp).collect();
+        smooth_closed_f32(&mut elev, if ring { 10 } else { 22 }, 3);
+        slope_limit(&mut elev, if ring { 0.11 } else { 0.05 } * SAMPLE_SPACING);
+        smooth_closed_f32(&mut elev, 4, 2);
+        // the Ring: wide crests (some go light at speed), compressions, blind brows before bends
+        let mut jumps = Vec::new();
+        if ring {
+            let feats = &lay.features;
+            let mut bumps: Vec<(f32, f32, f32)> = Vec::new();
+            let count = (length / 650.0) as usize;
+            let mut tries = 0;
+            while bumps.len() < count && tries < 400 {
+                tries += 1;
+                let f = &feats[rng.range_i(0, feats.len() as i32) as usize];
+                let crest = rng.chance(0.62);
+                let c = if f.kind.is_corner() && crest { f.s0 - rng.range(10.0, 40.0) } else { f.s0 + rng.range(0.0, f.len(length).max(1.0)) }.rem_euclid(length);
+                let w = rng.range(45.0, 85.0);
+                if c.min(length - c) < 350.0 || bumps.iter().any(|b| { let d = (b.0 - c).rem_euclid(length); d.min(length - d) < b.2 + w + 30.0 }) {
+                    continue;
+                }
+                // speed there: reference car on the local curvature (straights ~ 75 m/s)
+                let i = (c / SAMPLE_SPACING) as usize % n;
+                let k = (-15..=15).map(|o: isize| curv[(i as isize + o).rem_euclid(n as isize) as usize].abs()).fold(1e-4, f32::max);
+                let v = circuit_corner_speed(1.0 / k, CIRCUIT_REF_MU).min(78.0);
+                let g = if crest && rng.chance(0.35) { 1.15 } else { 0.8 }; // a few "flying" brows
+                let a_max = g * 9.81 * 2.0 * w * w / (std::f32::consts::PI.powi(2) * v * v);
+                let a = rng.range(1.2, 3.2).min(a_max);
+                if a < 0.4 {
+                    continue;
+                }
+                bumps.push((c, if crest { a } else { -a.min(2.2) }, w));
+            }
+            for &(c, a, w) in &bumps {
+                let r = (w / SAMPLE_SPACING).ceil() as isize;
+                let ci = (c / SAMPLE_SPACING).round() as isize;
+                for k in -r..=r {
+                    let x = (k as f32 * SAMPLE_SPACING / w).clamp(-1.0, 1.0);
+                    elev[(ci + k).rem_euclid(n as isize) as usize] += a * 0.5 * (1.0 + (x * std::f32::consts::PI).cos());
+                }
+                if a > 1.5 {
+                    jumps.push(((c / SAMPLE_SPACING) as usize) % n);
+                }
+            }
+            slope_limit(&mut elev, 0.14 * SAMPLE_SPACING);
+        }
+        // level pit straight around the start/finish line
+        let e0 = elev[0];
+        for k in -170isize..=170 {
+            let i = k.rem_euclid(n as isize) as usize;
+            let t = smoothstep(170.0, 110.0, k.unsigned_abs() as f32);
+            elev[i] += (e0 - elev[i]) * t;
+        }
+
+        // ---- width, banking, samples (all tarmac)
+        let mut wn: Vec<f32> = (0..n).map(|i| noise::value2(i as f32 * 0.012, 7.7, noise_seed) * 0.5 + 0.5).collect();
+        smooth_closed_f32(&mut wn, 10, 2);
+        let hws: Vec<f32> = (0..n)
+            .map(|i| {
+                let pit = smoothstep(320.0, 220.0, (i.min(n - i)) as f32 * SAMPLE_SPACING);
+                hw_lo + (hw_hi - hw_lo) * wn[i] + pit * 1.5
+            })
+            .collect();
+        let mut bank: Vec<f32> = (0..n)
+            .map(|i| {
+                let cam = lay.camber[i];
+                if cam > 1.5 { (curv[i] * 30.0).clamp(-0.26, 0.26) } else { (curv[i] * 18.0).clamp(-0.05, 0.05) }
+            })
+            .collect();
+        smooth_closed_f32(&mut bank, 6, 2);
+        style.road_surface = Surface::Asphalt;
+        style.road = crate::surfacemap::road_color(biome, Surface::Asphalt);
+        style.road_edge = [0.95, 0.95, 0.92];
+        style.shoulder = [0.46, 0.46, 0.5];
+        let surface_map = crate::surfacemap::SurfaceMap::uniform(Surface::Asphalt, length);
+        let mut samples = Vec::with_capacity(n);
+        for i in 0..n {
+            let p = Vec3::new(pts[i].x, elev[i], pts[i].y);
+            let j1 = (i + 1) % n;
+            let j0 = (i + n - 1) % n;
+            let tangent = (Vec3::new(pts[j1].x, elev[j1], pts[j1].y) - Vec3::new(pts[j0].x, elev[j0], pts[j0].y)).normalize();
+            let flat_right = tangent.cross(Vec3::Y).normalize();
+            let right = (flat_right * bank[i].cos() + Vec3::Y * bank[i].sin()).normalize();
+            let up = right.cross(tangent).normalize();
+            samples.push(TrackSample {
+                pos: p,
+                tangent,
+                right,
+                up,
+                s: i as f32 * SAMPLE_SPACING,
+                half_width: hws[i],
+                bank: bank[i],
+                curvature: curv[i],
+                surface: Surface::Asphalt,
+                surface_next: Surface::Asphalt,
+                surface_blend: 0.0,
+            });
+        }
+
+        // ---- kerbs and run-off from the corners
+        let edges = circuit_edges(&samples, &pts, &grid, &mut rng);
+
+        // ---- terrain: corridor detail (run-off kept flat), coarse far away
+        let mut min = Vec2::splat(f32::MAX);
+        let mut max = Vec2::splat(f32::MIN);
+        for p in &pts {
+            min = min.min(*p);
+            max = max.max(*p);
+        }
+        let margin = 170.0;
+        min -= Vec2::splat(margin);
+        max += Vec2::splat(margin);
+        let road_dist = crate::corridor::RoadDistanceField::build(&pts, min, max, 10.0, 600.0);
+        let nx = ((max.x - min.x) / TERRAIN_CELL).ceil() as usize + 1;
+        let nz = ((max.y - min.y) / TERRAIN_CELL).ceil() as usize + 1;
+        let mut hf = Heightfield::new(min, TERRAIN_CELL, nx, nz);
+        let cs = 4usize;
+        let (cnx, cnz) = (nx / cs + 2, nz / cs + 2);
+        let coarse: Vec<f32> = (0..cnx * cnz).map(|k| nat(min.x + ((k % cnx) * cs) as f32 * TERRAIN_CELL, min.y + ((k / cnx) * cs) as f32 * TERRAIN_CELL) * amp).collect();
+        let max_runoff = 34.0;
+        let road_zone = BLEND + half_w_base + SHOULDER + max_runoff;
+        let mut candidates: Vec<(usize, f32)> = Vec::with_capacity(96);
+        for iz in 0..nz {
+            for ix in 0..nx {
+                let x = min.x + ix as f32 * TERRAIN_CELL;
+                let z = min.y + iz as f32 * TERRAIN_CELL;
+                let dist = road_dist.at(x, z);
+                let id = hf.idx(ix, iz);
+                if dist > STAGE_TERRAIN_CORRIDOR {
+                    let (cx, cz) = (ix / cs, iz / cs);
+                    let (fx, fz) = ((ix % cs) as f32 / cs as f32, (iz % cs) as f32 / cs as f32);
+                    let c = |a: usize, b: usize| coarse[b.min(cnz - 1) * cnx + a.min(cnx - 1)];
+                    let h0 = c(cx, cz) + (c(cx + 1, cz) - c(cx, cz)) * fx;
+                    let h1 = c(cx, cz + 1) + (c(cx + 1, cz + 1) - c(cx, cz + 1)) * fx;
+                    hf.heights[id] = h0 + (h1 - h0) * fz;
+                    continue;
+                }
+                let nat_h = nat(x, z) * amp;
+                let mut h = nat_h;
+                if dist < road_zone + 12.0 {
+                    let q = Vec2::new(x, z);
+                    candidates.clear();
+                    grid.for_each_near(q, road_zone, |j| {
+                        let d = pts[j as usize].distance_squared(q);
+                        if d < road_zone * road_zone {
+                            candidates.push((j as usize, d));
+                        }
+                    });
+                    if !candidates.is_empty() {
+                        candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+                        let mut sections: Vec<usize> = Vec::new();
+                        for &(j, _) in candidates.iter() {
+                            let near_existing = sections.iter().any(|&k| {
+                                let d = (k as isize - j as isize).unsigned_abs();
+                                let ds = d.min(n - d) as f32 * SAMPLE_SPACING;
+                                ds < 1.4 * pts[k].distance(pts[j]) + 8.0
+                            });
+                            if !near_existing {
+                                sections.push(j);
+                            }
+                        }
+                        let mut wsum = 1.0;
+                        let mut hsum = nat_h;
+                        let mut exact = None;
+                        for &j in &sections {
+                            let (lat, along_h, hw) = road_profile_at(&samples, j, q);
+                            let e = edges[j];
+                            let ro = if lat < 0.0 { e.runoff_left.width } else { e.runoff_right.width };
+                            let core = hw + SHOULDER + ro;
+                            let t = smoothstep(core, core + BLEND, lat.abs());
+                            if t <= 1e-4 {
+                                exact = Some(along_h);
+                                break;
+                            }
+                            let w = ((1.0 - t) / t).powi(2);
+                            wsum += w;
+                            hsum += w * along_h;
+                        }
+                        h = exact.unwrap_or(hsum / wsum);
+                    }
+                }
+                hf.heights[id] = h;
+            }
+        }
+        let water_level = if style.has_water {
+            let min_road = elev.iter().cloned().fold(f32::MAX, f32::min);
+            Some(min_road - 3.5)
+        } else {
+            None
+        };
+        let n_cp = if ring { 16 } else { 8 };
+        let checkpoints = (0..n_cp).map(|k| k * n / n_cp).collect();
+        let mut track = Track {
+            params: params.clone(),
+            biome,
+            style,
+            samples,
+            length,
+            terrain: hf,
+            props: Vec::new(),
+            checkpoints,
+            water_level,
+            jumps,
+            conditions: crate::weather::StageConditions::default(),
+            weather_events: Vec::new(),
+            closed: true,
+            start_s: 0.0,
+            finish_s: length,
+            splits: Vec::new(),
+            road_dist,
+            circuit_edges: edges,
+            features: lay.features,
+            surface_map,
+            grid,
+            prop_grid: SpatialGrid::new(&[Vec2::ZERO], 32.0, 1.0),
+        };
+        let heights: Vec<f32> = track.samples.iter().map(|s| s.pos.y).collect();
+        (track.conditions, track.weather_events) = build_conditions(params, biome, &heights, 0.0, length, true);
+        track.place_props(&mut rng, noise_seed);
+        // circuit hygiene: no rally furniture, nothing solid on the track side of the run-off
+        let mut props = std::mem::take(&mut track.props);
+        let landmark = |k: PropKind| matches!(k, PropKind::Windmill | PropKind::Lighthouse | PropKind::Mesa | PropKind::Barn | PropKind::Cottage | PropKind::SkiCabin);
+        props.retain(|p| {
+            if matches!(p.kind, PropKind::Chevron | PropKind::ArrowSign | PropKind::HayBale | PropKind::Cone) {
+                return false;
+            }
+            let q = track.query(p.pos, None);
+            let e = track.edge(q.index);
+            let ro = if q.lateral < 0.0 { e.runoff_left.width } else { e.runoff_right.width };
+            let clear = track.samples[q.index].half_width + SHOULDER + ro + if p.radius > 0.0 || p.kind == PropKind::Spectator { 4.0 } else { 1.0 };
+            q.dist > clear && (q.dist < STAGE_PROP_CORRIDOR || (landmark(p.kind) && q.dist < 420.0))
+        });
+        let pp: Vec<Vec2> = props.iter().map(|p| Vec2::new(p.pos.x, p.pos.z)).collect();
+        if !pp.is_empty() {
+            track.prop_grid = SpatialGrid::new(&pp, 12.0, 10.0);
+        }
+        track.props = props;
+        Some(track)
+    }
+
+    /// Circuit ground zones: track (inside the white line), kerb, paved verge, run-off
+    /// (tarmac or gravel trap), grass. Smooth 0.3-0.6 m blends between zones.
+    fn circuit_ground(&self, q: TrackQuery) -> GroundInfo {
+        use crate::surfacemap::smoothstep as ss;
+        let smp = &self.samples[q.index];
+        let hw = smp.half_width;
+        let e = self.edge(q.index);
+        let left = q.lateral < 0.0;
+        let kerb = if left { e.kerb_left } else { e.kerb_right };
+        let ro = if left { e.runoff_left } else { e.runoff_right };
+        let d = q.dist;
+        let road = Surface::Asphalt.props();
+        let verge = SurfaceProps { grip: road.grip * 0.97, bumpiness: 0.006, ..road };
+        let ro_props = match ro.kind {
+            RunoffKind::Tarmac => road,
+            RunoffKind::Gravel => gravel_trap_props(),
+            RunoffKind::Grass => Surface::Grass.props(),
+        };
+        let grass = self.style.offroad_surface;
+        let mut props = road;
+        let mut zone = GroundZone::Road;
+        let mut primary = Surface::Asphalt;
+        let mut secondary = Surface::Asphalt;
+        let mut blend = 0.0;
+        if kerb > 0.0 {
+            let t = ss(hw - 0.05, hw + 0.25, d) * (1.0 - ss(hw + kerb - 0.1, hw + kerb + 0.3, d));
+            props = SurfaceProps::lerp(props, kerb_props(), t);
+            if t > 0.5 {
+                zone = GroundZone::Kerb;
+            }
+        }
+        let t_v = ss(hw + kerb.max(0.2) - 0.1, hw + kerb.max(0.2) + 0.3, d);
+        props = SurfaceProps::lerp(props, verge, t_v);
+        if t_v > 0.5 {
+            zone = GroundZone::Shoulder;
+        }
+        let edge = hw + SHOULDER;
+        let t_r = ss(edge - 0.3, edge + 0.3, d);
+        props = SurfaceProps::lerp(props, ro_props, t_r);
+        if t_r > 0.0 && ro.kind != RunoffKind::Tarmac {
+            secondary = if ro.kind == RunoffKind::Gravel { Surface::Gravel } else { grass };
+            blend = t_r.min(0.5);
+        }
+        if t_r > 0.5 {
+            zone = if ro.width > 0.5 { GroundZone::Runoff } else { GroundZone::Offroad };
+            if ro.kind != RunoffKind::Tarmac {
+                std::mem::swap(&mut primary, &mut secondary);
+                blend = 1.0 - t_r.max(0.5);
+            }
+        }
+        let t_g = ss(edge + ro.width - 0.3, edge + ro.width + 0.3, d);
+        if ro.width > 0.5 && t_g > 0.0 {
+            props = SurfaceProps::lerp(props, grass.props(), t_g);
+            if t_g > 0.5 {
+                zone = GroundZone::Offroad;
+                primary = grass;
+                secondary = grass;
+                blend = 0.0;
+            }
+        }
+        if !self.conditions.keys.is_empty() {
+            let w = self.conditions.at(q.s);
+            if w.wetness > 0.0 {
+                props.grip *= w.grip_factor(primary);
+            }
+        }
+        GroundInfo { primary, secondary, blend, props, query: q, zone, beyond_limits: d > hw + 0.25 }
+    }
+}
+
+/// Kerbs at turn-in / apex / exit and run-off on the outside of corners. Run-off width is
+/// limited so it never reaches another part of the circuit.
+fn circuit_edges(samples: &[TrackSample], pts: &[Vec2], grid: &SpatialGrid, rng: &mut Rng) -> Vec<CircuitEdge> {
+    let n = samples.len();
+    let mut edges = vec![CircuitEdge::default(); n];
+    let k_on = 1.0 / 260.0;
+    let idx = |i: isize| i.rem_euclid(n as isize) as usize;
+    // corner runs
+    let start = (0..n).find(|&i| samples[i].curvature.abs() < k_on).unwrap_or(0);
+    let mut runs: Vec<(usize, usize, f32)> = Vec::new();
+    let mut cur: Option<(usize, usize, f32)> = None;
+    for o in 0..=n {
+        let i = start + o;
+        let k = samples[i % n].curvature;
+        let on = k.abs() >= k_on && o < n;
+        match cur.as_mut() {
+            Some(r) if on && k.signum() == r.2 => r.1 = i,
+            _ => {
+                if let Some(r) = cur.take() {
+                    runs.push(r);
+                }
+                if on {
+                    cur = Some((i, i, k.signum()));
+                }
+            }
+        }
+    }
+    let mut want_ro = vec![(Runoff::default(), Runoff::default()); n];
+    for &(a, b, sign) in &runs {
+        let len = (b - a + 1) as f32;
+        let peak = (a..=b).map(|i| samples[i % n].curvature.abs()).fold(0.0, f32::max);
+        let r = 1.0 / peak.max(1e-4);
+        if r > 420.0 || len < 4.0 {
+            continue; // flat kink: no kerbs
+        }
+        let apex = (a..=b).max_by(|&x, &y| samples[x % n].curvature.abs().partial_cmp(&samples[y % n].curvature.abs()).unwrap()).unwrap();
+        // inside = left for left turns (curvature > 0)
+        let inside_left = sign > 0.0;
+        let set = |e: &mut CircuitEdge, left: bool, w: f32| {
+            if left {
+                e.kerb_left = e.kerb_left.max(w);
+            } else {
+                e.kerb_right = e.kerb_right.max(w);
+            }
+        };
+        let kw = if r < 30.0 { 1.2 } else { 1.6 };
+        let span = ((len * 0.3) as isize).max(5);
+        for k in -span..=span {
+            set(&mut edges[idx(apex as isize + k)], inside_left, kw);
+        }
+        // turn-in (outside) and exit (outside, longer)
+        for k in -4..=((len * 0.15) as isize).max(3) {
+            set(&mut edges[idx(a as isize + k)], !inside_left, 1.2);
+        }
+        let exit_len = ((len * 0.3) as isize + 10).min(30);
+        for k in -((len * 0.25) as isize)..=exit_len {
+            set(&mut edges[idx(b as isize + k)], !inside_left, kw + 0.2);
+        }
+        // run-off outside, sized by the reference speed
+        let v = circuit_corner_speed(r, CIRCUIT_REF_MU) * 3.6;
+        let kind = if v > 150.0 { if rng.chance(0.6) { RunoffKind::Gravel } else { RunoffKind::Tarmac } } else if rng.chance(0.7) { RunoffKind::Tarmac } else { RunoffKind::Gravel };
+        let width = (v * 0.13).clamp(12.0, 32.0);
+        for k in -12..=((len as isize) + 25) {
+            let i = idx(a as isize + k);
+            let ro = Runoff { kind, width };
+            if inside_left {
+                if want_ro[i].1.width < width {
+                    want_ro[i].1 = ro;
+                }
+            } else if want_ro[i].0.width < width {
+                want_ro[i].0 = ro;
+            }
+        }
+        // a little paved inside run-off at slow corners
+        if v < 110.0 {
+            for k in 0..=(len as isize) {
+                let i = idx(a as isize + k);
+                let ro = Runoff { kind: RunoffKind::Tarmac, width: 6.0 };
+                if inside_left {
+                    if want_ro[i].0.width < 6.0 {
+                        want_ro[i].0 = ro;
+                    }
+                } else if want_ro[i].1.width < 6.0 {
+                    want_ro[i].1 = ro;
+                }
+            }
+        }
+    }
+    // limit by the space to other parts of the circuit; feather the wanted widths along s
+    let mut lim = vec![[60.0f32; 2]; n];
+    for i in 0..n {
+        let smp = &samples[i];
+        let mut space = [60.0f32, 60.0f32]; // left, right
+        grid.for_each_near(pts[i], 80.0, |j| {
+            let j = j as usize;
+            let d = (i as isize - j as isize).unsigned_abs();
+            if d.min(n - d) < 40 {
+                return;
+            }
+            let off = pts[j] - pts[i];
+            let r2 = Vec2::new(smp.right.x, smp.right.z).normalize_or_zero();
+            let side = if off.dot(r2) < 0.0 { 0 } else { 1 };
+            space[side] = space[side].min(off.length() * 0.5);
+        });
+        for s in 0..2 {
+            lim[i][s] = (space[s] - smp.half_width - SHOULDER - 3.0).max(0.0);
+        }
+    }
+    for side in 0..2 {
+        let mut w: Vec<f32> = want_ro.iter().map(|r| if side == 0 { r.0.width } else { r.1.width }).collect();
+        smooth_closed_f32(&mut w, 5, 2);
+        for i in 0..n {
+            let mut ro = if side == 0 { want_ro[i].0 } else { want_ro[i].1 };
+            if ro.width == 0.0 && w[i] > 0.5 {
+                // feathered edge of a neighbouring run-off: take its kind
+                let k = (1..=12).find_map(|o| {
+                    let a = if side == 0 { want_ro[idx(i as isize - o)].0 } else { want_ro[idx(i as isize - o)].1 };
+                    let b = if side == 0 { want_ro[idx(i as isize + o)].0 } else { want_ro[idx(i as isize + o)].1 };
+                    if a.width > 0.0 { Some(a.kind) } else if b.width > 0.0 { Some(b.kind) } else { None }
+                });
+                ro.kind = k.unwrap_or_default();
+            }
+            ro.width = w[i].min(lim[i][side]);
+            if side == 0 {
+                edges[i].runoff_left = ro;
+            } else {
+                edges[i].runoff_right = ro;
+            }
+        }
+    }
+    edges
+}
+
 // =============================================================================================
 // Point-to-point stages
 // =============================================================================================
@@ -1280,6 +1860,7 @@ impl Track {
             finish_s,
             splits,
             road_dist,
+            circuit_edges: Vec::new(),
             features: lay.features,
             surface_map,
             grid,
@@ -2141,7 +2722,7 @@ impl<'a> PropPlacer<'a> {
                 let x = hf.origin.x + (ix as f32 + rng.range(0.1, 0.9)) * spacing;
                 let z = hf.origin.y + (iz as f32 + rng.range(0.1, 0.9)) * spacing;
                 // stages: nothing far from the road corridor (cheap distance field check)
-                if !t.closed && t.road_distance(x, z) > STAGE_PROP_CORRIDOR {
+                if (!t.closed || t.is_circuit()) && t.road_distance(x, z) > STAGE_PROP_CORRIDOR {
                     continue;
                 }
                 let forest = noise::fbm(x * 0.012, z * 0.012, 3, noise_seed + 999) * 0.5 + 0.5;
