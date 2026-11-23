@@ -34,6 +34,8 @@ pub struct RacingLine {
     pub seg: Vec<f32>,
     /// true for samples inside a jump's take-off / flight zone
     pub jump_zone: Vec<bool>,
+    /// Road wetness 0..1 per sample (slicks lose extra grip in the wet)
+    pub wet: Vec<f32>,
     /// Surface grip multiplier where the line runs (per-sample surfaces + patches, blended;
     /// min over neighbouring samples so patches are seen early)
     pub grip: Vec<f32>,
@@ -172,7 +174,8 @@ impl RacingLine {
             .collect();
         let grip: Vec<f32> = (0..n).map(|i| (-2isize..=2).map(|k| raw_grip[wrap(i as isize + k, n)]).fold(f32::MAX, f32::min)).collect();
         let bank_into: Vec<f32> = (0..n).map(|i| track.samples[i].bank * curvature[i].signum()).collect();
-        RacingLine { offset, limit, pos, curvature, vcurv, seg, jump_zone, grip, bank_into, length }
+        let wet: Vec<f32> = (0..n).map(|i| if track.conditions.keys.is_empty() { 0.0 } else { track.conditions.at(track.samples[i].s).wetness }).collect();
+        RacingLine { offset, limit, pos, curvature, vcurv, seg, jump_zone, wet, grip, bank_into, length }
     }
 
     /// Interpolated line offset at track arc length s
@@ -219,6 +222,10 @@ pub struct SpeedParams {
     pub v_max: f32,
     /// Speed cap at jump take-offs
     pub jump_speed: f32,
+    /// Tyre load sensitivity (friction falls as downforce loads the tyres)
+    pub load_sens: f32,
+    /// Racing slicks (extra grip loss in the wet)
+    pub slick: bool,
 }
 
 impl SpeedParams {
@@ -241,8 +248,10 @@ impl SpeedParams {
             power_per_kg: peak_power * 0.88 * 0.82 / m,
             drag_per_kg: spec.drag / m,
             down_per_kg: spec.downforce / m,
-            v_max: 54.0,
+            v_max: if spec.class == crate::vehicle::CarClass::Circuit { 95.0 } else { 54.0 },
             jump_speed: 33.0,
+            load_sens: crate::vehicle::load_sensitivity(spec.tyre),
+            slick: spec.tyre == crate::vehicle::TyreType::Slick,
         }
     }
 }
@@ -267,21 +276,29 @@ impl SpeedProfile {
         let mut corner = vec![p.v_max; n];
         // per-sample friction: tyre x surface; tight corners (R < ~25 m) give a bit less
         // (load transfer, steering lock, slow-speed traction)
-        let mu_at = |i: usize| {
+        // ... and at speed: downforce adds load, load sensitivity takes a little friction back
+        let mu_at_v = |i: usize, v: f32| {
             let r = 1.0 / line.curvature[i].abs().max(1e-4);
             let tight = 1.0 - 0.13 * (((28.0 - r) / 16.0).clamp(0.0, 1.0));
-            p.mu * line.grip[i] * tight
+            let wet = if p.slick { 1.0 - 0.24 * line.wet.get(i).copied().unwrap_or(0.0) } else { 1.0 };
+            let load = (1.0 - p.load_sens * p.down_per_kg * v * v / g).clamp(0.55, 1.1);
+            p.mu * line.grip[i] * tight * wet * load
         };
+        let mu_at = |i: usize| mu_at_v(i, 0.0);
         for i in 0..n {
             let k = line.curvature[i].abs();
             let kv = if line.jump_zone[i] { 0.0 } else { line.vcurv[i].clamp(-0.08, 0.08) };
-            let mu = mu_at(i);
-            // banking towards the inside helps, off-camber hurts
+            // banking towards the inside helps, off-camber hurts; with downforce:
+            // v^2 = mu g R / (1 - mu k_aero R / m), iterated for the load-dependent mu
             let tb = line.bank_into[i].clamp(-0.3, 0.3).tan();
-            let num = (mu + tb).max(0.05);
-            let den = (1.0 - mu * tb).max(0.2);
-            let denom = k * den - mu * kv - mu * p.down_per_kg;
-            let mut v = if denom > 1e-5 { (g * num / denom).sqrt() } else { p.v_max };
+            let mut v = p.v_max;
+            for it in 0..3 {
+                let mu = if it == 0 { mu_at(i) } else { mu_at_v(i, v) };
+                let num = (mu + tb).max(0.05);
+                let den = (1.0 - mu * tb).max(0.2);
+                let denom = k * den - mu * kv - mu * p.down_per_kg;
+                v = if denom > 1e-5 { (g * num / denom).sqrt().min(p.v_max) } else { p.v_max };
+            }
             // crests: don't take off on a hump that isn't a jump (keeps normal load positive)
             if kv < -1e-4 && !line.jump_zone[i] {
                 v = v.min((g * 1.15 / -kv).sqrt());
@@ -303,10 +320,14 @@ impl SpeedProfile {
                 let ds = line.seg[i];
                 let v = limit[j];
                 // friction circle: braking grip left after the lateral demand
-                let mu = mu_at(i);
+                let mu = mu_at_v(i, v);
+                // normal load: weight + downforce, less over crests (more in dips)
+                let kv = if line.jump_zone[i] { 0.0 } else { line.vcurv[i].clamp(-0.08, 0.08) };
+                let crest = (1.0 + v * v * kv / g).clamp(0.45, 1.25);
+                let normal = (g + p.down_per_kg * v * v) * crest;
                 let lat = v * v * line.curvature[i].abs();
-                let lat_frac = (lat / (mu * g).max(0.1)).min(1.0);
-                let brake = p.brake_sys.min(mu * g * 1.05) * p.brake_use;
+                let lat_frac = (lat / (mu * normal).max(0.1)).min(1.0);
+                let brake = p.brake_sys.min(mu * normal) * p.brake_use;
                 let avail = brake * (1.0 - lat_frac * lat_frac).max(0.12).sqrt();
                 // can't brake in the air
                 let avail = if line.jump_zone[i] && !line.jump_zone[wrap(i as isize - 14, n)] { avail } else if line.jump_zone[i] { avail * 0.15 } else { avail };

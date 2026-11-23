@@ -69,9 +69,12 @@ fn main() {
             track.jumps.len()
         );
         let mut rng = Rng::new(seed ^ 0xA1);
-        let mut racers: Vec<RacerSetup> = (0..n_ai).map(|_| RacerSetup { car_spec: rng.range_i(0, car_specs().len() as i32) as usize, controller: Controller::Ai }).collect();
+        // SIM_CARS=circuit: circuit-class cars only (else rally class)
+        let circuit = std::env::var("SIM_CARS").is_ok_and(|v| v == "circuit");
+        let pool: Vec<usize> = car_specs().iter().enumerate().filter(|(_, s)| (s.class == rally_core::vehicle::CarClass::Circuit) == circuit).map(|(i, _)| i).collect();
+        let mut racers: Vec<RacerSetup> = (0..n_ai).map(|_| RacerSetup { car_spec: pool[rng.range_i(0, pool.len() as i32) as usize], controller: Controller::Ai }).collect();
         let ref_idx = if with_ref {
-            racers.push(RacerSetup { car_spec: (seed % 4) as usize, controller: Controller::Local(0) });
+            racers.push(RacerSetup { car_spec: pool[(seed as usize) % pool.len()], controller: Controller::Local(0) });
             Some(n_ai)
         } else {
             None

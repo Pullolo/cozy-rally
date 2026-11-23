@@ -96,7 +96,10 @@ impl RaceSession {
         let n_ai = config.ai_count;
         let mut rng = rally_core::rng::Rng::new(config.track.seed ^ 0xA1);
         for k in 0..n_ai {
-            let spec = rng.range_i(0, rally_core::vehicle::car_specs().len() as i32) as usize; // [gameplay] all cars
+            // [gameplay] AI cars of the track's discipline (circuit cars on circuits, rally cars elsewhere)
+            let want_circuit = config.track.discipline == rally_core::track::Discipline::Circuit;
+            let pool: Vec<usize> = rally_core::vehicle::car_specs().iter().enumerate().filter(|(_, s)| (s.class == rally_core::vehicle::CarClass::Circuit) == want_circuit).map(|(i, _)| i).collect();
+            let spec = pool[rng.range_i(0, pool.len() as i32) as usize];
             racers.push(RacerSetup { car_spec: spec, controller: Controller::Ai });
             names.push(AI_NAMES[k % AI_NAMES.len()].to_string());
             paints.push((k + 3) % PAINTS.len());
