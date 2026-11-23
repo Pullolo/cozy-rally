@@ -1,5 +1,7 @@
 #[path = "../../src/render/bench.rs"]
 pub mod bench;
+#[path = "../../src/render/dynres.rs"]
+pub mod dynres;
 #[path = "../../src/render/debug.rs"]
 pub mod debug;
 #[path = "../../src/render/gpu.rs"]
