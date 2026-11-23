@@ -78,7 +78,52 @@ fn run(spec: usize, track: &Track, assist: f32, kmh: f32, pattern: &dyn Fn(f32) 
     (tail_yaw, flips, drift, spun)
 }
 
+/// Corner exit: steady corner at `kmh` with keyboard steer held (part throttle), then full
+/// throttle while keeping the steering for 1 s, then straightening. Returns (max drift deg,
+/// km/h when rear wheelspin (slip ratio > 2x peak) last ended, spun)
+fn exit(spec: usize, track: &Track, assist: f32, kmh: f32, steer_hold: f32) -> (f32, f32, bool) {
+    let mut c = fresh(spec, track, assist, kmh);
+    let mut steer = 0.0f32;
+    let (mut drift, mut spin_end, mut spun) = (0.0f32, 0.0f32, false);
+    let mut t = 0.0;
+    while t < 8.0 {
+        let tgt = if t < 2.5 { steer_hold } else if t < 3.5 { steer_hold } else { 0.0 };
+        steer += (tgt - steer).clamp(-6.0 * DT, 6.0 * DT);
+        let v = c.vel.length() * 3.6;
+        let thr = if t < 2.5 { if v < kmh { ((kmh - v) * 0.3).clamp(0.0, 1.0) } else { 0.0 } } else { 1.0 };
+        c.input = CarInput { throttle: thr, steer, ..Default::default() };
+        c.step(DT, track);
+        t += DT;
+        if t > 2.5 {
+            drift = drift.max(c.telemetry.drift_angle.abs().to_degrees());
+            if c.telemetry.drift_angle.abs() > 1.2 || c.up().y < 0.5 {
+                spun = true;
+            }
+            let spin = c.wheels[2..].iter().any(|w| w.contact && w.slip_ratio > 2.0 * w.peak_slip_ratio.max(0.02));
+            if spin {
+                spin_end = v;
+            }
+        }
+    }
+    (drift, spin_end, spun)
+}
+
 fn main() {
+    if std::env::var("EXIT").is_ok() {
+        let track = Track::flat_for_tests(Surface::Asphalt);
+        println!("=== CORNER EXIT: full throttle from a steady corner (max drift deg, speed where wheelspin ended, spun)");
+        for spec in [2usize, 5, 6, 7] {
+            for (an, a) in [("Cozy", 1.3f32), ("Normal", 1.0), ("Sport", 0.55), ("Sim", 0.0)] {
+                let mut line = format!("{:9} {an:6}", car_specs()[spec].name);
+                for kmh in [50.0f32, 80.0, 120.0] {
+                    let (d, se, sp) = exit(spec, &track, a, kmh, 0.6);
+                    line += &format!(" | {kmh:3.0}: drift {d:5.1} spin->{se:5.0} {}", if sp { "SPUN" } else { "    " });
+                }
+                println!("{line}");
+            }
+        }
+        return;
+    }
     let assist: f32 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(1.0);
     let kmh_arg: Option<f32> = std::env::args().nth(2).and_then(|s| s.parse().ok());
     let track = Track::flat_for_tests(Surface::Asphalt);

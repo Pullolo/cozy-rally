@@ -853,6 +853,33 @@ impl Car {
         let mut total_drive_torque = if self.frozen || shifting || self.gear == 0 { 0.0 } else { engine_torque * ratio * DRIVELINE_EFF };
         let reflected_inertia = if clutch_slip || shifting { 0.0 } else { spec.engine_inertia * ratio * ratio };
 
+        // Circuit cars: traction-limited torque map (part of the car, like a race ECU's
+        // per-gear torque maps, not an assist). Their engines make far more torque in the low
+        // gears than slicks can put down, so with an on/off keyboard throttle the rear would
+        // light up out of every slow corner. Wheel torque is capped near what the driven axle
+        // can transmit (incl. downforce and the grip already used for cornering); lower assist
+        // levels leave more surplus so the throttle still has to be respected.
+        if spec.class == CarClass::Circuit && total_drive_torque > 0.0 && !self.frozen {
+            let vl = v_long_body.max(0.0);
+            let df = spec.downforce * vl * vl;
+            let wb = spec.cg_to_front + spec.cg_to_rear;
+            let (static_load, aero_load, bias) = match spec.drivetrain {
+                Drivetrain::Rwd => (spec.mass * GRAVITY * spec.cg_to_front / wb, df * (1.0 - spec.aero_front), spec.rear_grip_bias),
+                Drivetrain::Fwd => (spec.mass * GRAVITY * spec.cg_to_rear / wb, df * spec.aero_front, 1.0),
+                Drivetrain::Awd => (spec.mass * GRAVITY, df, 1.0),
+            };
+            let load = static_load + aero_load;
+            let ls = load_sensitivity(spec.tyre);
+            let mu = spec.tire_grip * bias * (1.0 - ls * (load / static_load.max(1.0) - 1.0)).max(0.6);
+            // grip already used sideways (steady-state lateral acceleration = yaw rate x speed)
+            let a_max = mu * (spec.mass * GRAVITY + df) / spec.mass;
+            let lat_use = (self.ang_vel.dot(up).abs() * speed / a_max.max(1.0)).min(1.0);
+            let lon_room = (1.0 - lat_use * lat_use).max(0.0).sqrt().max(0.35);
+            let surplus = 0.98 + (1.0 - tc_strength(self.assist_level)) * 0.28;
+            let cap = mu * load * spec.wheel_radius * surplus * lon_room;
+            total_drive_torque = total_drive_torque.min(cap);
+        }
+
         // assists that follow the player's assist level: traction control, stability control, ABS
         let tc = tc_strength(self.assist_level);
         let abs = abs_strength(self.assist_level);
