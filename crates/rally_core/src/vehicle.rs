@@ -391,7 +391,7 @@ pub fn car_specs() -> Vec<CarSpec> {
             engine_inertia: 0.12,
             lsd: 0.45,
             ai_grip: 0.9,
-            aero_front: 0.38,
+            aero_front: 0.34,
             shift_time: 0.08,
             brake_force: 32000.0,
             brake_bias_front: 0.6,
@@ -440,7 +440,7 @@ pub fn car_specs() -> Vec<CarSpec> {
             engine_inertia: 0.14,
             lsd: 0.4,
             ai_grip: 0.9,
-            aero_front: 0.42,
+            aero_front: 0.40,
             shift_time: 0.06,
             brake_force: 42000.0,
             brake_bias_front: 0.58,
@@ -475,7 +475,7 @@ pub fn car_specs() -> Vec<CarSpec> {
             arb_rear: 26000.0,
             tire_grip: 1.78,
             peak_slip_angle: 0.095,
-            rear_grip_bias: 1.04,
+            rear_grip_bias: 1.08,
             max_steer: 0.5,
             drivetrain: Drivetrain::Rwd,
             awd_front_split: 0.0,
@@ -489,7 +489,7 @@ pub fn car_specs() -> Vec<CarSpec> {
             engine_inertia: 0.05,
             lsd: 0.5,
             ai_grip: 0.9,
-            aero_front: 0.42,
+            aero_front: 0.36,
             shift_time: 0.05,
             brake_force: 30000.0,
             brake_bias_front: 0.58,
@@ -1423,7 +1423,7 @@ pub fn tyre_surface_factor(tyre: TyreType, p: &SurfaceProps, wetness: f32) -> f3
         TyreType::Slick => {
             let loose = (p.bumpiness / 0.01).clamp(0.0, 1.0);
             let icy = ((0.5 - p.grip) / 0.2).clamp(0.0, 1.0);
-            (1.0 - 0.6 * loose - 0.4 * icy).max(0.3) * (1.0 - 0.24 * wetness.clamp(0.0, 1.0))
+            (1.0 - 0.68 * loose - 0.4 * icy).max(0.28) * (1.0 - 0.24 * wetness.clamp(0.0, 1.0))
         }
     }
 }
