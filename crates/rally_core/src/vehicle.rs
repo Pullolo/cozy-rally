@@ -81,6 +81,27 @@ pub struct CarSpec {
     pub assist: f32,
     /// Base paint colour (render hint)
     pub color: [f32; 3],
+    /// Rally cars (all surfaces) or circuit cars (tarmac racers: GT / hypercar / formula)
+    pub class: CarClass,
+    /// Tyre compound: rally tyres work everywhere; slicks are superb on tarmac only
+    pub tyre: TyreType,
+}
+
+/// Car discipline (shared interface; gameplay/UI filter cars per track discipline).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CarClass {
+    Rally,
+    /// Tarmac circuit racers: GT, hypercar, open-wheel formula
+    Circuit,
+}
+
+/// Tyre compound (shared interface; the tyre model scales surface grip by it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TyreType {
+    /// Treaded rally tyres: good on every surface
+    Rally,
+    /// Racing slicks: much more grip on tarmac, very poor on loose/wet surfaces
+    Slick,
 }
 
 pub fn car_specs() -> Vec<CarSpec> {
@@ -128,6 +149,8 @@ pub fn car_specs() -> Vec<CarSpec> {
             downforce: 0.8,
             assist: 0.75,
             color: [0.95, 0.55, 0.45],
+            class: CarClass::Rally,
+            tyre: TyreType::Rally,
         },
         CarSpec {
             id: 1,
@@ -172,6 +195,8 @@ pub fn car_specs() -> Vec<CarSpec> {
             downforce: 1.0,
             assist: 0.6,
             color: [0.35, 0.62, 0.95],
+            class: CarClass::Rally,
+            tyre: TyreType::Rally,
         },
         CarSpec {
             id: 2,
@@ -216,6 +241,8 @@ pub fn car_specs() -> Vec<CarSpec> {
             downforce: 1.5,
             assist: 0.65,
             color: [0.98, 0.82, 0.30],
+            class: CarClass::Rally,
+            tyre: TyreType::Rally,
         },
         CarSpec {
             id: 3,
@@ -260,6 +287,8 @@ pub fn car_specs() -> Vec<CarSpec> {
             downforce: 0.5,
             assist: 0.8,
             color: [0.45, 0.72, 0.48],
+            class: CarClass::Rally,
+            tyre: TyreType::Rally,
         },
         CarSpec {
             id: 4,
@@ -308,6 +337,8 @@ pub fn car_specs() -> Vec<CarSpec> {
             downforce: 1.0,
             assist: 0.62,
             color: [0.98, 0.60, 0.78],
+            class: CarClass::Rally,
+            tyre: TyreType::Rally,
         },
     ]
 }

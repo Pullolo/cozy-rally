@@ -37,6 +37,19 @@ pub struct TrackParams {
     /// Weather / conditions along the track
     #[serde(default)]
     pub conditions: crate::weather::ConditionsSpec,
+    /// Rally stage/loop (default) or a tarmac racing circuit for the circuit car class
+    #[serde(default)]
+    pub discipline: Discipline,
+}
+
+/// Track discipline (shared interface).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Discipline {
+    /// Rally roads (gravel/dirt/snow/mixed), current behaviour
+    #[default]
+    Rally,
+    /// Tarmac racing circuit: wide, fast, kerbs, run-off, grandstands (closed loop, laps)
+    Circuit,
 }
 
 /// Track topology.
@@ -94,7 +107,7 @@ impl TrackParams {
 
 impl Default for TrackParams {
     fn default() -> Self {
-        TrackParams { seed: 1, biome: None, length_class: 1, difficulty: default_difficulty(), surface: SurfaceMode::BiomeDefault, layout: LayoutKind::Loop, conditions: crate::weather::ConditionsSpec::BiomeDefault }
+        TrackParams { seed: 1, biome: None, length_class: 1, difficulty: default_difficulty(), surface: SurfaceMode::BiomeDefault, layout: LayoutKind::Loop, conditions: crate::weather::ConditionsSpec::BiomeDefault, discipline: Discipline::Rally }
     }
 }
 

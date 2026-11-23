@@ -87,6 +87,7 @@ fn stage_c(id: &str, name: &str, blurb: &str, seed: u64, biome: Biome, km: f32, 
             surface,
             layout: LayoutKind::PointToPoint { length_m: km * 1000.0 },
             conditions,
+            discipline: crate::track::Discipline::Rally,
         },
         cars: cars.to_vec(),
     }
