@@ -1373,7 +1373,15 @@ impl Car {
             let v = v_long_body.abs().max(1.0);
             let wb = spec.cg_to_front + spec.cg_to_rear;
             let a_max = GRAVITY * spec.tire_grip * (1.0 + spec.downforce * v * v / (spec.mass * GRAVITY));
-            let cap = (wb * a_max / (v * v) + k * spec.peak_slip_angle).min(spec.max_steer);
+            let mut cap = (wb * a_max / (v * v) + k * spec.peak_slip_angle).min(spec.max_steer);
+            // countersteer room: steering toward the direction of travel (catching / holding a
+            // drift) may go as far past the static cap as the front axle is sliding, so a
+            // drift can be held with opposite lock. Steering into the slide is never reduced.
+            if v_long_body > 1.0 {
+                let v_f = self.vel + self.ang_vel.cross(fwd * spec.cg_to_front);
+                let theta = v_f.dot(right).atan2(v_f.dot(fwd).max(0.5));
+                cap = (cap + (steer_in.signum() * theta).max(0.0)).min(spec.max_steer);
+            }
             let w = ((speed - 3.0) / 5.0).clamp(0.0, 1.0);
             let low = steer_in * spec.max_steer;
             return (low + (steer_in * cap - low) * w).clamp(-spec.max_steer, spec.max_steer);
