@@ -46,7 +46,7 @@ pub enum Prio {
 struct CarFx {
     /// fractional emission accumulators per wheel (spin jet, spin debris, slide fan, slide
     /// debris, lock puffs, lock debris, rolling debris, water)
-    acc: [[f32; 10]; 4],
+    acc: [[f32; 12]; 4],
     trail_acc: f32,
     mist_acc: f32,
     exhaust_acc: f32,
@@ -54,6 +54,10 @@ struct CarFx {
     prev_wheel: [Vec3; 4],
     has_prev: bool,
     prev_shifting: bool,
+    prev_gear: i32,
+    /// wheel was on a kerb last frame (circuits)
+    prev_kerb: [bool; 4],
+    scrape_acc: f32,
     prev_in_water: bool,
     chains: [MarkChain; 4],
     /// time each wheel has been off the ground (marks bridge small hops)
@@ -159,13 +163,19 @@ pub struct Fx {
 /// Deterministic traction-loss showcase (visual testing). Overrides only the FX's view of
 /// player 1's wheels; physics is untouched.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum TestMode {
+pub(super) enum TestMode {
     /// Driven wheels spinning flat out: from 2 s into the countdown until 2.5 s after GO
     Launch,
     /// Rear-biased slide to the car's right, from GO+1.5 s for 8 s
     Slide,
     /// All four wheels locked, from GO+1.5 s for 8 s
     Lock,
+    /// Floor scraping (sparks) from GO+1.5 s for 8 s
+    Scrape,
+    /// Wheels treated as in a gravel trap, GO+1.5 s for 8 s
+    Trap,
+    /// A kerb strike on every wheel twice a second, GO+1.5 s for 8 s
+    Kerb,
 }
 
 impl Fx {
@@ -220,6 +230,9 @@ impl Fx {
                 Ok("launch") => Some(TestMode::Launch),
                 Ok("slide") => Some(TestMode::Slide),
                 Ok("lock") => Some(TestMode::Lock),
+                Ok("scrape") => Some(TestMode::Scrape),
+                Ok("trap") => Some(TestMode::Trap),
+                Ok("kerb") => Some(TestMode::Kerb),
                 _ => None,
             },
             test_announced: false,
@@ -444,7 +457,8 @@ impl Fx {
 
 impl Fx {
     /// Forced traction state for the showcase test hook (None = use the real one)
-    fn test_traction(&mut self, ci: usize, wi: usize, car: &rally_core::vehicle::Car) -> Option<Traction> {
+    /// The active showcase test mode for car `ci` (player 1 only), if any
+    fn test_mode(&mut self, ci: usize) -> Option<TestMode> {
         let mode = self.test?;
         if self.locals.first() != Some(&ci) {
             return None;
@@ -463,6 +477,14 @@ impl Fx {
             self.test_announced = true;
             println!("[fx] test {:?} active at fx time {:.2}", mode, t);
         }
+        Some(mode)
+    }
+
+    fn test_traction(&mut self, ci: usize, wi: usize, car: &rally_core::vehicle::Car) -> Option<Traction> {
+        let mode = self.test_mode(ci)?;
+        if !matches!(mode, TestMode::Launch | TestMode::Slide | TestMode::Lock) {
+            return None;
+        }
         let fwd = car.rot * Vec3::NEG_Z;
         let right = car.rot * Vec3::X;
         let mut tr = Traction { fwd, lat_dir: right, surf_sign: 1.0, ..Default::default() };
@@ -478,6 +500,7 @@ impl Fx {
             }
             TestMode::Slide => tr.slide = if wi >= 2 { 1.0 } else { 0.7 },
             TestMode::Lock => tr.lock = 1.0,
+            _ => {}
         }
         tr.loss = tr.spin.max(tr.slide).max(tr.lock);
         Some(tr)

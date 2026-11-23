@@ -382,8 +382,12 @@ pub fn glow(b: &mut Batches, bs: &Basis, circ: &Circle, p: &Particle, dist: f32,
             }
         }
         Shape::Spark => {
-            let tail = p.vel * 0.045;
-            let side = p.vel.cross(bs.toward).normalize_or_zero() * s;
+            // streak along the spark's motion relative to what it was shed from (`home` holds
+            // the car velocity for floor-scrape sparks), so sparks flying with a fast car stay
+            // short bright streaks instead of metres-long smears
+            let rel = p.vel - p.home;
+            let tail = (rel * 0.06).clamp_length_max(0.7);
+            let side = rel.cross(bs.toward).normalize_or_zero() * s;
             let batch = b.room(4);
             let i0 = batch.vert(p.pos + side, n, c);
             let i1 = batch.vert(p.pos - side, n, c);
