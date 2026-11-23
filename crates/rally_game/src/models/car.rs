@@ -225,6 +225,8 @@ struct Green {
     c_from: f32,
     /// roof stripe colour between |x| in (0.10, 0.28)
     stripe: Option<[f32; 3]>,
+    /// rear "glass" is a solid engine deck (mid/rear-engine cars)
+    rear_solid: bool,
 }
 
 fn glass_c(c: [f32; 3], a: f32) -> [u8; 4] {
@@ -305,6 +307,7 @@ fn greenhouse(m: &mut MeshBuilder, g: &mut MeshBuilder, secs: &[Sec], gr: &Green
                 (0, 2) | (2, 2) => (false, gr.pillar),
                 (0, _) => (true, GLASS),
                 (2, 1) => (false, gr.pillar),
+                (2, _) if gr.rear_solid => (false, if kd >= 3 { gr.roof } else { gr.pillar }),
                 (2, _) => (true, GLASS),
                 (1, 1) if in_b || roof_t >= gr.c_from => (false, gr.pillar),
                 (1, 1) => (true, GLASS),
@@ -590,6 +593,42 @@ fn eye_pod(m: &mut MeshBuilder, head: &mut MeshBuilder, c: Vec3, r: f32, paint: 
     round_lamp(m, head, c - Vec3::Z * 0.03, Vec3::NEG_Z, r * 0.78, CHROME, HEAD_OFF);
 }
 
+/// Racing slick: smooth low-profile tyre (rim radius = `rim_frac` of the wheel radius),
+/// multi-spoke rim with a centre-lock nut. Same origin/axis convention as `wheel_mesh`.
+pub fn slick_wheel(spec: &CarSpec, rim: [f32; 3], accent: [f32; 3], spokes: usize, rim_frac: f32) -> MeshBuilder {
+    let mut w = MeshBuilder::new();
+    let r = spec.wheel_radius;
+    let hw = spec.wheel_width * 0.5;
+    let rf = rim_frac;
+    let tire = [0.15, 0.14, 0.17];
+    let wall = [0.2, 0.19, 0.22];
+    let prof = [(-hw, rf * r), (-hw, (rf + (1.0 - rf) * 0.55) * r), (-hw * 0.9, 0.975 * r), (-hw * 0.7, r), (hw * 0.7, r), (hw * 0.9, 0.975 * r), (hw, (rf + (1.0 - rf) * 0.55) * r), (hw, rf * r)];
+    let segs = 16;
+    w.lathe_x(Mat4::IDENTITY, &prof, segs, |s, _| rgb(match s {
+        0 | 6 => wall,
+        _ => tire,
+    }));
+    // a coloured sidewall stripe (cozy compound marking)
+    for sx in [-1.0f32, 1.0] {
+        let x = sx * (hw + 0.014);
+        w.lathe_x(Mat4::IDENTITY, &[(x, (rf + (1.0 - rf) * 0.25) * r), (x, (rf + (1.0 - rf) * 0.4) * r)], segs, |_, _| rgb(accent));
+    }
+    let rot = Quat::from_rotation_z(FRAC_PI_2);
+    w.cylinder(trs(Vec3::ZERO, rot, Vec3::ONE), rf * r, hw * 0.85, segs, rgb(shade(rim, 0.55)), rgb(shade(rim, 0.45)));
+    for sx in [-1.0f32, 1.0] {
+        let face = sx * hw * 0.85;
+        w.lathe_x(Mat4::IDENTITY, &[(face, (rf - 0.1) * r), (face + sx * 0.014, (rf - 0.05) * r), (face, rf * r)], segs, |_, _| rgb(rim));
+        for k in 0..spokes {
+            let a = k as f32 / spokes as f32 * std::f32::consts::TAU;
+            let d = Vec3::new(0.0, a.cos(), a.sin());
+            let t = Vec3::new(0.0, -a.sin(), a.cos());
+            w.beam(Vec3::new(face, 0.0, 0.0) + d * 0.14 * r, Vec3::new(face, 0.0, 0.0) + d * (rf - 0.06) * r + t * 0.04 * r, 0.07 * r, rgb(rim));
+        }
+        w.cylinder(trs(Vec3::new(face + sx * 0.015, 0.0, 0.0), rot, Vec3::ONE), 0.16 * r, 0.025, 6, rgb(accent), rgb(accent));
+    }
+    w
+}
+
 struct Look {
     number: u8,
     helmet: [f32; 3],
@@ -620,6 +659,7 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
     let flare;
     // wheel-arch flare size: (outer radius above the tyre, extra width beyond the tyre)
     let mut arch_size = (0.13f32, 0.03f32);
+    let mut arches = true;
     match spec.id {
         0 => {
             // ---------------- Pip: tiny round FWD hatch, frog-eye lamps, cream roof
@@ -641,7 +681,7 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
                 &mut m,
                 &mut glass,
                 &secs,
-                &Green { z0: -0.5, zr0: -0.02, zr1: 1.25, z1: 1.6, wr: 0.6, yr: 0.67, roof: CREAM, pillar: paint, b_pillar: Some(0.44), c_from: 0.86, stripe: None },
+                &Green { z0: -0.5, zr0: -0.02, zr1: 1.25, z1: 1.6, wr: 0.6, yr: 0.67, roof: CREAM, pillar: paint, b_pillar: Some(0.44), c_from: 0.86, stripe: None, rear_solid: false },
             );
             roundel(&mut m, Vec3::new(0.0, 0.735, 0.62), Vec3::Y, Vec3::X, 0.25, look.number, paint, INK);
             antenna(&mut m, Vec3::new(-0.45, 0.67, 1.05), 0.45, accent);
@@ -704,7 +744,7 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
                 &mut m,
                 &mut glass,
                 &secs,
-                &Green { z0: -0.12, zr0: 0.4, zr1: 0.92, z1: 1.78, wr: 0.6, yr: 0.54, roof: paint, pillar: paint, b_pillar: None, c_from: 0.9, stripe: Some(stripe) },
+                &Green { z0: -0.12, zr0: 0.4, zr1: 0.92, z1: 1.78, wr: 0.6, yr: 0.54, roof: paint, pillar: paint, b_pillar: None, c_from: 0.9, stripe: Some(stripe), rear_solid: false },
             );
             driver(&mut m, Vec3::new(-0.3, -0.17, 0.58), look.suit, look.helmet, paint, 0.95);
             m.bevel_box(trs(Vec3::new(0.3, -0.04, 0.74), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.19, 0.19, 0.05), 0.04, rgb(SEAT));
@@ -771,7 +811,7 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
                 &mut m,
                 &mut glass,
                 &secs,
-                &Green { z0: -0.43, zr0: 0.1, zr1: 0.88, z1: 1.25, wr: 0.62, yr: 0.73, roof: paint, pillar: paint, b_pillar: Some(0.5), c_from: 0.9, stripe: None },
+                &Green { z0: -0.43, zr0: 0.1, zr1: 0.88, z1: 1.25, wr: 0.62, yr: 0.73, roof: paint, pillar: paint, b_pillar: Some(0.5), c_from: 0.9, stripe: None, rear_solid: false },
             );
             // roof: number roundel + air scoop
             roundel(&mut m, Vec3::new(0.0, 0.795, 0.55), Vec3::Y, Vec3::X, 0.22, look.number, WHITE, INK);
@@ -870,7 +910,7 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
                 &mut m,
                 &mut glass,
                 &secs,
-                &Green { z0: -0.5 * kz, zr0: 0.0, zr1: 1.12 * kz, z1: 1.42 * kz, wr: 0.62 * kx, yr: 0.67, roof: paint, pillar: paint, b_pillar: Some(0.45), c_from: 0.85, stripe: Some(white) },
+                &Green { z0: -0.5 * kz, zr0: 0.0, zr1: 1.12 * kz, z1: 1.42 * kz, wr: 0.62 * kx, yr: 0.67, roof: paint, pillar: paint, b_pillar: Some(0.45), c_from: 0.85, stripe: Some(white), rear_solid: false },
             );
             // big hot-hatch roof spoiler with end plates + high-mounted brake light
             let sp_z = 1.12 * kz + 0.12;
@@ -946,6 +986,266 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
             wheel = wheel_mesh(spec, WHITE, paint, 6, false);
             flare = paint;
             arch_size = (0.16, 0.06);
+        }
+        5 => {
+            // ---------------- GT racer: rear-engine road racer, swan-neck wing, wide arches,
+            // louvred engine deck, number boards, roll cage
+            let look = Look { number: 24, helmet: WHITE, suit: [0.3, 0.45, 0.8] };
+            let (kz, kx) = (he.z / 2.25, he.x / 0.98);
+            let sc = |z: f32, yb: f32, yt: f32, w: f32, wt: f32, cb: f32, ct: f32| sec(z * kz, yb, yt, w * kx, wt * kx, cb, ct);
+            let secs = round_ends(
+                &[
+                    sc(-2.08, -0.45, -0.1, 0.9, 0.84, 0.12, 0.1).crown(0.06),
+                    sc(-1.5, -0.47, 0.0, 0.95, 0.89, 0.13, 0.15).crown(0.08),
+                    sc(-0.75, -0.47, 0.06, 0.96, 0.9, 0.13, 0.15).crown(0.03),
+                    sc(0.55, -0.47, 0.09, 0.96, 0.9, 0.13, 0.15).crown(0.02),
+                    sc(1.25, -0.47, 0.1, 0.96, 0.9, 0.13, 0.15).crown(0.02),
+                    sc(2.08, -0.45, 0.12, 0.93, 0.86, 0.12, 0.11),
+                ],
+                0.12,
+                0.08,
+            );
+            let (front, rear) = (secs[0].z, secs.last().unwrap().z);
+            let stripe = accent;
+            let bands = Bands { side: (0.2, 0.36), top: (0.1, 0.24) };
+            body_loft(&mut m, &secs, &bands, &BodyPaint { paint, lower: DARK, side_band: stripe, top_band: stripe, top: paint, cabin: (-0.75 * kz, 0.55 * kz), hidden_top: None });
+            greenhouse(
+                &mut m,
+                &mut glass,
+                &secs,
+                &Green { z0: -0.75 * kz, zr0: -0.2 * kz, zr1: 0.5 * kz, z1: 1.95 * kz, wr: 0.64 * kx, yr: 0.5, roof: paint, pillar: paint, b_pillar: None, c_from: 0.8, stripe: Some(stripe), rear_solid: true },
+            );
+            // engine-deck louvres + roof scoop
+            for k in 0..6 {
+                let z = (0.95 + k as f32 * 0.13) * kz;
+                let s2 = sec_at(&secs, z);
+                let y = 0.47 - (z / kz - 0.5) * 0.24;
+                let _ = s2;
+                m.beam(Vec3::new(-0.38, y.max(s2.yt + 0.06), z), Vec3::new(0.38, y.max(s2.yt + 0.06), z), 0.035, rgb(DARK));
+            }
+            m.bevel_box(trs(Vec3::new(0.0, 0.56, 0.25 * kz), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.16, 0.06, 0.2), 0.04, rgb(paint));
+            m.quad(Vec3::new(-0.12, 0.53, 0.04 * kz), Vec3::new(0.12, 0.53, 0.04 * kz), Vec3::new(0.12, 0.6, 0.04 * kz), Vec3::new(-0.12, 0.6, 0.04 * kz), rgb(DARK));
+            // swan-neck wing: stalks rise from the deck and hook over onto the wing's top surface
+            let (wz, wyy) = (rear - 0.12, 0.78);
+            for sx in [-0.45f32, 0.45] {
+                let a = Vec3::new(sx, 0.2, rear - 0.55);
+                let b = Vec3::new(sx, 0.72, rear - 0.35);
+                let c = Vec3::new(sx, wyy + 0.07, wz - 0.05);
+                m.plank(a, b, 0.12, 0.04, Vec3::X, rgb(DARK));
+                m.plank(b, c, 0.12, 0.04, Vec3::X, rgb(DARK));
+            }
+            m.bevel_box(trs(Vec3::new(0.0, wyy, wz), Quat::from_rotation_x(0.14), Vec3::ONE), Vec3::new(0.95 * kx, 0.025, 0.2), 0.02, rgb(paint));
+            m.cube(trs(Vec3::new(0.0, wyy - 0.05, wz + 0.17), Quat::from_rotation_x(0.5), Vec3::ONE), Vec3::new(0.9 * kx, 0.012, 0.06), rgb(stripe));
+            for sx in [-1.0f32, 1.0] {
+                m.bevel_box(trs(Vec3::new(sx * 0.97 * kx, wyy, wz), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.02, 0.13, 0.26), 0.012, rgb(DARK));
+            }
+            // splitter + canards, diffuser fins
+            m.plank(Vec3::new(-0.86 * kx, -0.47, front + 0.03), Vec3::new(0.86 * kx, -0.47, front + 0.03), 0.12, 0.025, Vec3::Y, rgb(DARK));
+            for sx in [-1.0f32, 1.0] {
+                m.plank(Vec3::new(sx * 0.78 * kx, -0.28, front + 0.08), Vec3::new(sx * 0.93 * kx, -0.24, front + 0.12), 0.1, 0.02, Vec3::new(0.0, 1.0, -0.2), rgb(DARK));
+            }
+            for k in 0..5 {
+                let x = (k as f32 - 2.0) * 0.16;
+                m.cube(trs(Vec3::new(x, -0.4, rear - 0.03), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.012, 0.035, 0.06), rgb([0.3, 0.3, 0.34]));
+            }
+            // roll cage + driver
+            let cage = rgb([0.92, 0.92, 0.92]);
+            m.beam(Vec3::new(-0.55, 0.08, 0.45 * kz), Vec3::new(-0.55, 0.42, 0.35 * kz), 0.045, cage);
+            m.beam(Vec3::new(0.55, 0.08, 0.45 * kz), Vec3::new(0.55, 0.42, 0.35 * kz), 0.045, cage);
+            m.beam(Vec3::new(-0.55, 0.42, 0.35 * kz), Vec3::new(0.55, 0.42, 0.35 * kz), 0.045, cage);
+            m.beam(Vec3::new(-0.55, 0.42, 0.35 * kz), Vec3::new(0.55, 0.08, 0.45 * kz), 0.04, cage);
+            driver(&mut m, Vec3::new(-0.3, -0.25, 0.1 * kz), look.suit, look.helmet, paint, 0.95);
+            for sx in [-1.0f32, 1.0] {
+                // faired twin lamps + light strip tail
+                let n = Vec3::new(sx * 0.2, 0.45, -1.0).normalize();
+                for k in 0..2 {
+                    round_lamp(&mut m, &mut head, Vec3::new(sx * (0.5 + k as f32 * 0.17) * kx, -0.16 + k as f32 * 0.02, front + 0.06 + k as f32 * 0.03) + n * 0.03, n, 0.075, DARK, HEAD_OFF);
+                }
+                rect_lamp(&mut m, &mut brake, Vec3::new(sx * 0.55 * kx, -0.02, rear), Vec3::Z, Vec3::X * sx, 0.24, 0.035, TAIL_OFF, LENS);
+                rect_lamp(&mut m, &mut rev, Vec3::new(sx * 0.2, -0.02, rear), Vec3::Z, Vec3::X * sx, 0.06, 0.03, REV_OFF, LENS);
+                mirror(&mut m, sx, Vec3::new(sx * 0.82 * kx, 0.08, -0.55 * kz), paint);
+                // white number board on the door
+                let (c, nn, _, up) = on_flank(&secs, sx, -0.15 * kz, 0.55, 0.022);
+                let up = (up - nn * up.dot(nn)).normalize();
+                let right = up.cross(nn).normalize();
+                let q = |m: &mut MeshBuilder, hw: f32, hh: f32, lift: f32, col: [f32; 3]| {
+                    let o = c + nn * lift;
+                    m.quad(o - right * hw - up * hh, o + right * hw - up * hh, o + right * hw + up * hh, o - right * hw + up * hh, rgb(col));
+                };
+                q(&mut m, 0.3, 0.17, 0.0, WHITE);
+                super::parts::digit(&mut m, c + nn * 0.015 - right * 0.1, right, up, 0.26, look.number / 10, rgb(INK));
+                super::parts::digit(&mut m, c + nn * 0.015 + right * 0.1, right, up, 0.26, look.number % 10, rgb(INK));
+                seam(&mut m, &secs, sx, -0.75 * kz, 0.0, 1.0);
+                seam(&mut m, &secs, sx, 0.5 * kz, 0.0, 1.0);
+                // side intake ahead of the rear arch
+                let (p, nn) = flank(&secs, sx, 0.75 * kz, 0.6);
+                m.bevel_box(trs(p + nn * 0.01, Quat::IDENTITY, Vec3::ONE), Vec3::new(0.04, 0.09, 0.22), 0.03, rgb(DARK));
+            }
+            roundel(&mut m, Vec3::new(0.0, 0.565, -0.05 * kz), Vec3::Y, Vec3::X, 0.17, look.number, WHITE, INK);
+            plate(&mut m, Vec3::new(0.0, -0.2, rear), Vec3::Z);
+            exhaust(&mut m, Vec3::new(0.0, -0.3, rear + 0.02), 0.06, 0.18);
+            tow_hook(&mut m, Vec3::new(0.5, -0.36, front - 0.05), -1.0);
+            wheel = slick_wheel(spec, [0.85, 0.86, 0.9], accent, 10, 0.72);
+            flare = paint;
+            arch_size = (0.15, 0.06);
+        }
+        6 => {
+            // ---------------- Hypercar: cab-forward bubble, long finned tail, active wing,
+            // aero channels, LED light bars
+            let look = Look { number: 77, helmet: WHITE, suit: [0.25, 0.25, 0.3] };
+            let (kz, kx) = (he.z / 2.35, he.x / 1.0);
+            let sc = |z: f32, yb: f32, yt: f32, w: f32, wt: f32, cb: f32, ct: f32| sec(z * kz, yb, yt, w * kx, wt * kx, cb, ct);
+            let secs = round_ends(
+                &[
+                    sc(-2.2, -0.45, -0.16, 0.9, 0.82, 0.12, 0.1).crown(0.06),
+                    sc(-1.6, -0.47, -0.06, 0.98, 0.9, 0.13, 0.15).crown(0.09),
+                    sc(-1.0, -0.47, 0.0, 1.0, 0.92, 0.13, 0.15).crown(0.03),
+                    sc(0.9, -0.47, 0.04, 1.0, 0.92, 0.13, 0.16),
+                    sc(2.22, -0.43, 0.04, 0.96, 0.86, 0.12, 0.1),
+                ],
+                0.14,
+                0.06,
+            );
+            let (front, rear) = (secs[0].z, secs.last().unwrap().z);
+            let dark2 = [0.16, 0.16, 0.2];
+            let bands = Bands { side: (0.55, 0.75), top: (0.08, 0.14) };
+            body_loft(&mut m, &secs, &bands, &BodyPaint { paint, lower: dark2, side_band: dark2, top_band: accent, top: paint, cabin: (-1.25 * kz, -0.2 * kz), hidden_top: None });
+            greenhouse(
+                &mut m,
+                &mut glass,
+                &secs,
+                &Green { z0: -1.25 * kz, zr0: -0.7 * kz, zr1: 0.05 * kz, z1: 1.3 * kz, wr: 0.58 * kx, yr: 0.42, roof: [0.2, 0.22, 0.3], pillar: paint, b_pillar: None, c_from: 0.75, stripe: None, rear_solid: true },
+            );
+            // dorsal fin + twin tail fins
+            m.poly(&[Vec3::new(0.0, 0.43, 0.15 * kz), Vec3::new(0.0, 0.5, 2.0 * kz), Vec3::new(0.0, 0.1, 2.15 * kz), Vec3::new(0.0, 0.1, 1.2 * kz)], rgb(paint));
+            m.beam(Vec3::new(0.0, 0.43, 0.15 * kz), Vec3::new(0.0, 0.5, 2.0 * kz), 0.03, rgb(accent));
+            for sx in [-1.0f32, 1.0] {
+                let x = sx * 0.78 * kx;
+                m.plank(Vec3::new(x, 0.08, 1.35 * kz), Vec3::new(x, 0.34, 2.15 * kz), 0.16, 0.03, Vec3::X, rgb(paint));
+                // aero channel along the flank (dark inset) and a big side intake
+                for t in [0.62f32, 0.8] {
+                    let (a, n) = flank(&secs, sx, -1.4 * kz, t);
+                    let (b, _) = flank(&secs, sx, 1.6 * kz, t);
+                    m.quad(a + n * 0.022, b + n * 0.022, b + n * 0.022 + Vec3::Y * 0.03, a + n * 0.022 + Vec3::Y * 0.03, rgb(accent));
+                }
+                let (p, n) = flank(&secs, sx, 0.55 * kz, 0.45);
+                m.bevel_box(trs(p + n * 0.012, Quat::from_rotation_y(sx * 0.12), Vec3::ONE), Vec3::new(0.04, 0.12, 0.42), 0.035, rgb(DARK));
+                mirror(&mut m, sx, Vec3::new(sx * 0.7 * kx, 0.02, -1.05 * kz), paint);
+                // LED light bars: a thin wraparound front bar and a full-width tail bar
+                rect_lamp(&mut m, &mut head, Vec3::new(sx * 0.48 * kx, -0.12, front + 0.05), Vec3::new(sx * 0.25, 0.25, -1.0).normalize(), Vec3::X * sx, 0.3, 0.025, DARK, HEAD_LENS);
+                rect_lamp(&mut m, &mut brake, Vec3::new(sx * 0.47 * kx, -0.02, rear), Vec3::Z, Vec3::X * sx, 0.4, 0.022, TAIL_OFF, LENS);
+                door_roundel(&mut m, &secs, sx, -0.45 * kz, 0.35, 0.18, look.number, WHITE, INK);
+            }
+            rect_lamp(&mut m, &mut rev, Vec3::new(0.0, -0.12, rear), Vec3::Z, Vec3::X, 0.08, 0.02, REV_OFF, LENS);
+            // active wing on slim struts, lifted for braking
+            let (wz, wyy) = (rear - 0.18, 0.42);
+            for sx in [-0.5f32, 0.5] {
+                m.plank(Vec3::new(sx, 0.08, wz - 0.1), Vec3::new(sx, wyy, wz), 0.08, 0.025, Vec3::X, rgb(DARK));
+            }
+            m.bevel_box(trs(Vec3::new(0.0, wyy + 0.03, wz), Quat::from_rotation_x(0.22), Vec3::ONE), Vec3::new(0.85 * kx, 0.02, 0.17), 0.015, rgb(paint));
+            m.cube(trs(Vec3::new(0.0, wyy + 0.06, wz), Quat::from_rotation_x(0.22), Vec3::ONE), Vec3::new(0.85 * kx, 0.006, 0.03), rgb(accent));
+            // front splitter, nose ducts, diffuser
+            m.plank(Vec3::new(-0.88 * kx, -0.46, front + 0.04), Vec3::new(0.88 * kx, -0.46, front + 0.04), 0.12, 0.025, Vec3::Y, rgb(DARK));
+            for sx in [-1.0f32, 1.0] {
+                m.bevel_box(trs(Vec3::new(sx * 0.2, 0.0, -1.5 * kz), Quat::from_rotation_x(0.08), Vec3::ONE), Vec3::new(0.12, 0.03, 0.3), 0.025, rgb(DARK));
+            }
+            for k in 0..7 {
+                let x = (k as f32 - 3.0) * 0.13;
+                m.cube(trs(Vec3::new(x, -0.38, rear - 0.02), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.012, 0.035, 0.05), rgb([0.3, 0.3, 0.34]));
+            }
+            driver(&mut m, Vec3::new(0.0, -0.24, -0.45 * kz), look.suit, look.helmet, accent, 0.95);
+            roundel(&mut m, Vec3::new(0.0, 0.49, -0.3 * kz), Vec3::Y, Vec3::X, 0.13, look.number, WHITE, INK);
+            for sx in [-0.12f32, 0.12] {
+                exhaust(&mut m, Vec3::new(sx, 0.16, rear - 0.02), 0.045, 0.12);
+            }
+            wheel = slick_wheel(spec, [0.25, 0.26, 0.3], accent, 12, 0.74);
+            flare = paint;
+            arch_size = (0.13, 0.04);
+        }
+        7 => {
+            // ---------------- Open-wheel formula car: needle nose + front wing, halo,
+            // sidepods, airbox, rear wing, exposed slicks, rain light
+            let look = Look { number: 9, helmet: [0.98, 0.85, 0.35], suit: [0.95, 0.95, 0.92] };
+            let kz = he.z / 2.5;
+            let s7 = |z: f32, yb: f32, yt: f32, w: f32, wt: f32, cb: f32, ct: f32| sec(z * kz, yb, yt, w, wt, cb, ct);
+            let secs = round_ends(
+                &[
+                    s7(-2.35, -0.3, -0.18, 0.11, 0.09, 0.04, 0.04).crown(0.01),
+                    s7(-1.6, -0.32, -0.08, 0.2, 0.17, 0.06, 0.07).crown(0.03),
+                    s7(-0.8, -0.34, 0.04, 0.3, 0.26, 0.08, 0.1).crown(0.03),
+                    s7(-0.5, -0.36, 0.06, 0.58, 0.48, 0.1, 0.12),
+                    s7(0.55, -0.36, 0.06, 0.6, 0.5, 0.1, 0.12),
+                    s7(1.2, -0.34, 0.0, 0.32, 0.26, 0.08, 0.09),
+                    s7(1.8, -0.3, -0.08, 0.17, 0.13, 0.05, 0.05),
+                ],
+                0.05,
+                0.04,
+            );
+            let (front, rear) = (secs[0].z, secs.last().unwrap().z);
+            let bands = Bands { side: (0.3, 0.5), top: (0.04, 0.09) };
+            body_loft(&mut m, &secs, &bands, &BodyPaint { paint, lower: DARK, side_band: accent, top_band: accent, top: paint, cabin: (-0.8 * kz, -0.5 * kz), hidden_top: None });
+            // cockpit tub around the driver
+            m.bevel_box(trs(Vec3::new(0.0, 0.07, -0.62 * kz), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.27, 0.07, 0.28), 0.05, rgb(DARK));
+            driver(&mut m, Vec3::new(0.0, -0.24, -0.6 * kz), look.suit, look.helmet, paint, 0.95);
+            // airbox above/behind the driver + engine-cover fin
+            m.bevel_box(trs(Vec3::new(0.0, 0.3, -0.18 * kz), Quat::from_rotation_x(-0.15), Vec3::ONE), Vec3::new(0.13, 0.16, 0.3), 0.08, rgb(paint));
+            m.disc(Vec3::new(0.0, 0.36, -0.49 * kz), Vec3::NEG_Z, 0.08, 8, rgb(DARK));
+            m.poly(&[Vec3::new(0.0, 0.42, -0.1 * kz), Vec3::new(0.0, 0.5, 1.6 * kz), Vec3::new(0.0, 0.0, 1.7 * kz), Vec3::new(0.0, 0.04, 0.4 * kz)], rgb(paint));
+            // halo
+            let halo = rgb([0.2, 0.2, 0.24]);
+            let hy = 0.32;
+            let ring: Vec<Vec3> = (0..=8).map(|k| {
+                let a = -PI * 0.5 + k as f32 / 8.0 * PI;
+                Vec3::new(a.sin() * 0.27, hy - (k as f32 - 4.0).abs() * 0.008, -0.62 * kz + a.cos() * -0.3 + 0.12)
+            }).collect();
+            for w2 in ring.windows(2) {
+                m.beam(w2[0], w2[1], 0.045, halo);
+            }
+            m.beam(Vec3::new(0.0, 0.08, -0.98 * kz), ring[4], 0.05, halo);
+            for sx in [-1.0f32, 1.0] {
+                let end = if sx < 0.0 { ring[0] } else { ring[8] };
+                m.beam(end, Vec3::new(sx * 0.27, 0.08, end.z + 0.05), 0.045, halo);
+            }
+            // small aero screen
+            glass.quad(Vec3::new(-0.16, 0.12, -0.95 * kz), Vec3::new(0.16, 0.12, -0.95 * kz), Vec3::new(0.12, 0.2, -0.9 * kz), Vec3::new(-0.12, 0.2, -0.9 * kz), glass_c(GLASS, 0.5));
+            // front wing with endplates and a flap
+            let fwz = front - 0.08;
+            m.plank(Vec3::new(-0.95, -0.44, fwz), Vec3::new(0.95, -0.44, fwz), 0.32, 0.03, Vec3::new(0.0, 1.0, 0.1), rgb(paint));
+            m.plank(Vec3::new(-0.95, -0.37, fwz + 0.14), Vec3::new(0.95, -0.37, fwz + 0.14), 0.12, 0.025, Vec3::new(0.0, 1.0, 0.5), rgb(accent));
+            for sx in [-1.0f32, 1.0] {
+                m.bevel_box(trs(Vec3::new(sx * 0.97, -0.37, fwz + 0.02), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.02, 0.1, 0.22), 0.012, rgb(DARK));
+                m.beam(Vec3::new(sx * 0.06, -0.24, fwz + 0.2), Vec3::new(sx * 0.1, -0.42, fwz + 0.05), 0.04, rgb(DARK));
+            }
+            // rear wing: two elements, endplates, central pylon
+            let (rwz, rwy) = (rear + 0.02, 0.5);
+            m.plank(Vec3::new(-0.62, rwy, rwz), Vec3::new(0.62, rwy, rwz), 0.3, 0.03, Vec3::new(0.0, 1.0, 0.15), rgb(paint));
+            m.plank(Vec3::new(-0.62, rwy + 0.12, rwz + 0.14), Vec3::new(0.62, rwy + 0.12, rwz + 0.14), 0.14, 0.025, Vec3::new(0.0, 1.0, 0.6), rgb(accent));
+            for sx in [-1.0f32, 1.0] {
+                m.bevel_box(trs(Vec3::new(sx * 0.64, rwy - 0.02, rwz + 0.05), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.02, 0.22, 0.26), 0.012, rgb(DARK));
+            }
+            m.plank(Vec3::new(0.0, 0.0, rear - 0.2), Vec3::new(0.0, rwy, rwz), 0.12, 0.03, Vec3::X, rgb(DARK));
+            // rain light (glows with the brake lights) + numbers
+            rect_lamp(&mut m, &mut brake, Vec3::new(0.0, -0.2, rear + 0.04), Vec3::Z, Vec3::X, 0.05, 0.04, TAIL_OFF, LENS);
+            roundel(&mut m, Vec3::new(0.0, -0.035, -1.7 * kz), Vec3::new(0.0, 1.0, 0.1).normalize(), Vec3::NEG_Z, 0.1, look.number, WHITE, INK);
+            for sx in [-1.0f32, 1.0] {
+                door_roundel(&mut m, &secs, sx, 0.1 * kz, 0.5, 0.16, look.number, WHITE, INK);
+                // wishbones to the exposed wheels
+                for (z, sw) in [(fz, 0.16f32), (rz, 0.2)] {
+                    let hub = Vec3::new(sx * (spec.half_track - spec.wheel_width * 0.5), wy, z);
+                    for dz in [-sw, sw] {
+                        let body_x = sx * if z < 0.0 { 0.16 } else { 0.25 };
+                        m.beam(Vec3::new(body_x, wy + 0.06, z + dz), hub + Vec3::Y * 0.06, 0.035, rgb(DARK));
+                        m.beam(Vec3::new(body_x, wy - 0.06, z + dz), hub - Vec3::Y * 0.06, 0.035, rgb(DARK));
+                    }
+                }
+                // sidepod mirrors on stalks
+                mirror(&mut m, sx, Vec3::new(sx * 0.45, 0.1, -0.5 * kz), paint);
+            }
+            // floor
+            m.plank(Vec3::new(0.0, -0.37, -0.6 * kz), Vec3::new(0.0, -0.37, 1.6 * kz), 1.25, 0.02, Vec3::Y, rgb(DARK));
+            wheel = slick_wheel(spec, [0.92, 0.92, 0.95], accent, 6, 0.6);
+            flare = paint;
+            arches = false;
         }
         _ => {
             // ---------------- Burrow: chunky 4x4 camper van, two-tone, rack, spare wheel, dog
@@ -1105,15 +1405,20 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
         }
     }
 
-    // wheel-arch flares over every wheel
+    // wheel-arch flares over every wheel (not on the open-wheel formula car)
     for sx in [-1.0f32, 1.0] {
+        if !arches {
+            break;
+        }
         for z in [fz, rz] {
             let body_w = he.x.min(spec.half_track) - 0.12;
             arch(&mut m, sx * body_w, sx * (wheel_out + arch_size.1), z, wy, r + 0.04, r + arch_size.0, flare);
         }
     }
     // underbody tray so the road never shows through
-    m.cube(trs(Vec3::new(0.0, wy + 0.02, 0.0), Quat::IDENTITY, Vec3::ONE), Vec3::new(spec.half_track - spec.wheel_width * 0.5 - 0.06, 0.04, he.z * 0.8), rgb(DARK));
+    if arches {
+        m.cube(trs(Vec3::new(0.0, wy + 0.02, 0.0), Quat::IDENTITY, Vec3::ONE), Vec3::new(spec.half_track - spec.wheel_width * 0.5 - 0.06, 0.04, he.z * 0.8), rgb(DARK));
+    }
     let _ = mix;
     CarModel { body: m, wheel, head_lights: head, brake_lights: brake, reverse_lights: rev, glass }
 }

@@ -31,23 +31,36 @@ fn spec_of(car: usize) -> rally_core::vehicle::CarSpec {
     if let Some(s) = specs.iter().find(|s| s.id as usize == car) {
         return s.clone();
     }
+    // provisional specs until the gameplay branch adds the real ones
     let mut s = specs[2].clone();
-    s.id = 4;
-    s.name = "Blossom";
-    s.half_extents = Vec3::new(0.88, 0.58, 1.9);
-    s.cg_to_front = 1.18;
-    s.cg_to_rear = 1.18;
-    s.half_track = 0.80;
-    s.mount_height = -0.03;
-    s.wheel_radius = 0.32;
-    s.wheel_width = 0.24;
-    s.susp_rest = 0.38;
-    s.susp_travel = 0.26;
+    s.id = car as u8;
+    // (name, half extents, cg front/rear, half track, mount, wheel r/w, susp rest)
+    let (name, he, cf, cr, ht, mh, wr, ww, sr) = match car {
+        4 => ("Blossom", Vec3::new(0.88, 0.58, 1.9), 1.18, 1.18, 0.80, -0.03, 0.32, 0.24, 0.38),
+        5 => ("GT", Vec3::new(0.98, 0.6, 2.25), 1.35, 1.35, 0.86, -0.05, 0.34, 0.30, 0.30),
+        6 => ("Hyper", Vec3::new(1.0, 0.55, 2.35), 1.42, 1.42, 0.88, -0.06, 0.35, 0.32, 0.28),
+        _ => ("Formula", Vec3::new(0.95, 0.5, 2.5), 1.65, 1.3, 0.80, -0.02, 0.33, 0.34, 0.26),
+    };
+    s.name = name;
+    s.half_extents = he;
+    s.cg_to_front = cf;
+    s.cg_to_rear = cr;
+    s.half_track = ht;
+    s.mount_height = mh;
+    s.wheel_radius = wr;
+    s.wheel_width = ww;
+    s.susp_rest = sr;
     s
 }
 
 fn paint_of(car: usize) -> usize {
-    if car == 4 { models::PAINT_PINK } else { car % 4 }
+    match car {
+        4 => models::PAINT_PINK,
+        5 => 1,
+        6 => 6,
+        7 => 0,
+        _ => car % 4,
+    }
 }
 
 fn draw_car(gpu: &mut Gpu, v: &View, car: usize, paint: usize, model: Mat4, lights: bool) {
@@ -206,6 +219,7 @@ async fn main() {
                 let only: Option<usize> = std::env::var("CAR").ok().and_then(|s| s.parse().ok());
                 let cars: Vec<usize> = match only {
                     Some(c) => vec![c],
+                    None if std::env::var("CIRCUIT").is_ok() => vec![5, 6, 7],
                     None => (0..5).collect(),
                 };
                 let n = cars.len() as f32;
@@ -237,7 +251,8 @@ async fn main() {
                 let what = std::env::var("KIND").unwrap_or_else(|_| "ArrowSign".into());
                 let layout = if std::env::var("LAYOUT").map_or(false, |v| v == "p2p") { LayoutKind::PointToPoint { length_m: 1500.0 } } else { LayoutKind::Loop };
                 let len: u8 = std::env::var("LEN").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
-                let t = Track::generate(&TrackParams { seed: 3, biome: Some(Biome::from_index(b.max(1) - 1)), length_class: len, layout, ..Default::default() });
+                let discipline = if std::env::var("DISC").map_or(false, |v| v == "circuit") { rally_core::track::Discipline::Circuit } else { rally_core::track::Discipline::Rally };
+                let t = Track::generate(&TrackParams { seed: 3, biome: Some(Biome::from_index(b.max(1) - 1)), length_class: len, layout, discipline, ..Default::default() });
                 let st = &t.style;
                 let target = t.props.iter().filter(|p| format!("{:?}", p.kind) == what).nth(k).cloned();
                 let Some(sign) = target else {
@@ -306,7 +321,7 @@ async fn main() {
                             }
                         }
                     }
-                    for i in 0..5 {
+                    for i in 0..8 {
                         let s = &spec_of(i);
                         let cm = models::car_model(s, models::PAINTS[paint_of(i)]);
                         for (name, mesh) in [("body", &cm.body), ("wheel", &cm.wheel)] {
@@ -389,7 +404,7 @@ async fn main() {
             }
             _ => {
                 if frame == 0 {
-                    for i in 0..5 {
+                    for i in 0..8 {
                         let s = &spec_of(i);
                         let m = models::car_model(s, models::PAINTS[paint_of(i)]);
                         println!(
@@ -408,7 +423,8 @@ async fn main() {
                     for b in 0..5 {
                         for len in [1u8, 2] {
                             let layout = if std::env::var("LAYOUT").map_or(false, |v| v == "p2p") { LayoutKind::PointToPoint { length_m: 2000.0 } } else { LayoutKind::Loop };
-                            let t = Track::generate(&TrackParams { seed: 3, biome: Some(Biome::from_index(b)), length_class: len, layout, ..Default::default() });
+                            let discipline = if std::env::var("DISC").map_or(false, |v| v == "circuit") { rally_core::track::Discipline::Circuit } else { rally_core::track::Discipline::Rally };
+                            let t = Track::generate(&TrackParams { seed: 3, biome: Some(Biome::from_index(b)), length_class: len, layout, discipline, ..Default::default() });
                             let mut m = MeshBuilder::new();
                             for p in &t.props {
                                 models::add_prop(&mut m, p, &t.style);

@@ -208,6 +208,25 @@ pub enum PropKind {
     WarningSign,
     /// Bridge parapet segment along local X (4 m * scale)
     BridgeRail,
+    // --- circuit furniture (Discipline::Circuit). Segments run along local X, fronts (-Z) face the track.
+    /// Pit garage block, 12 m along X, with a tarmac apron in front (-Z)
+    PitBuilding,
+    /// Pit wall + debris fence, 4 m along X
+    PitWall,
+    /// Grandstand with crowd, 12 m along X
+    Grandstand,
+    /// Armco barrier, 4 m along X
+    Armco,
+    /// Tyre wall, 4 m along X
+    TyreWall,
+    /// Brake marker board; variant = hundreds of metres (1..3)
+    BrakeBoard,
+    /// Sponsor banner (made-up cozy brands), 6 m along X; variant picks the brand
+    AdBanner,
+    /// Footbridge over the track; legs at local x = ±5 m * scale
+    TrackBridge,
+    /// Striped gravel-trap marker post
+    MarkerPost,
 }
 
 impl PropKind {
@@ -1935,6 +1954,12 @@ struct PropPlacer<'a> {
 impl<'a> PropPlacer<'a> {
     fn run(t: &'a Track, rng: &mut Rng, noise_seed: u32) -> Vec<Prop> {
         let mut pp = PropPlacer { t, props: Vec::new(), keep_out: Vec::new() };
+        if pp.circuit() {
+            pp.circuit_furniture(rng);
+            pp.set_pieces(rng);
+            pp.scatter(rng, noise_seed);
+            return pp.props;
+        }
         if pp.open() {
             pp.stage_start(rng);
             pp.stage_finish(rng);
@@ -1969,6 +1994,186 @@ impl<'a> PropPlacer<'a> {
 
     fn open(&self) -> bool {
         matches!(self.t.params.layout, LayoutKind::PointToPoint { .. })
+    }
+
+    fn circuit(&self) -> bool {
+        self.t.params.discipline == Discipline::Circuit
+    }
+
+    /// Run-off width (road edge -> barrier) on `side` at sample i. Wider on the outside of
+    /// fast/tight corners. Hook for the circuit generator's real run-off data.
+    fn runoff(&self, i: isize, side: f32) -> f32 {
+        let c = self.smp(i).curvature;
+        let outside = (side > 0.0 && c > 0.0) || (side < 0.0 && c < 0.0);
+        if outside {
+            6.0 + 10.0 * smoothstep(1.0 / 90.0, 1.0 / 30.0, c.abs())
+        } else {
+            6.0
+        }
+    }
+
+    /// Segment prop along the road at sample i (local X along travel), scaled to the chord.
+    fn along(&mut self, kind: PropKind, i: isize, lat: f32, variant: u8, seg: f32) -> bool {
+        let a = self.beside(i, lat, 0.0);
+        let b = self.beside(i + (seg / SAMPLE_SPACING) as isize, lat, 0.0);
+        let d = (b - a) * Vec3::new(1.0, 0.0, 1.0);
+        let len = d.length();
+        if len < 0.5 || self.under_water(a.y, 0.2) {
+            return false;
+        }
+        let mid = (a + b) * 0.5;
+        let mid = Vec3::new(mid.x, self.ground(mid.x, mid.z), mid.z);
+        if self.clearance(mid) < lat.abs() - self.edge(i) - 1.0 {
+            return false;
+        }
+        // fronts (-Z) must face the road: local X runs with travel on the left, against it on the right
+        let dir = if lat < 0.0 { -d / len } else { d / len };
+        self.push(kind, mid, yaw_along(dir), len / seg, 0.0, variant);
+        true
+    }
+
+    fn circuit_furniture(&mut self, rng: &mut Rng) {
+        let n = self.n() as isize;
+        let calm = |pp: &Self, i: isize| pp.smp(i).curvature.abs() < 1.0 / 200.0;
+        let mut back = 0;
+        while back < 120 && calm(self, -back) {
+            back += 1;
+        }
+        let mut fwd = 0;
+        while fwd < 120 && calm(self, fwd) {
+            fwd += 1;
+        }
+        let (a, b) = (-back.max(20), fwd.max(20));
+        let pit = -1.0f32;
+        // start/finish gantry with start lights over the grid
+        {
+            let s = self.smp(0);
+            let half = self.edge(0) + 1.5;
+            let p = Vec3::new(s.pos.x, self.ground(s.pos.x, s.pos.z), s.pos.z);
+            self.push(PropKind::Gantry, p, yaw_along(-Self::flat_right(&s)), half / 5.0, 0.0, 2);
+        }
+        // pit wall + garages on the pit side, grandstands opposite
+        let mut i = a + 2;
+        while i < b - 2 {
+            if i.abs() > 2 {
+                self.along(PropKind::PitWall, i, pit * (self.edge(i) + 1.8), ((i / 2).rem_euclid(3)) as u8, 4.0);
+            }
+            i += 2;
+        }
+        let mut i = a + 6;
+        let mut k = 0u8;
+        while i < b - 6 {
+            if self.along(PropKind::PitBuilding, i, pit * (self.edge(i) + 16.0), k, 12.0) {
+                let p = self.beside(i + 3, pit * (self.edge(i) + 16.0), 0.0);
+                self.keep_out.push((Vec2::new(p.x, p.z), 10.0));
+            }
+            k = k.wrapping_add(1);
+            i += 6;
+        }
+        let mut i = a / 2;
+        let mut k = 0u8;
+        while i < b / 2 {
+            if self.along(PropKind::Grandstand, i, -pit * (self.edge(i) + 8.0), k % 4, 12.0) {
+                let p = self.beside(i + 3, -pit * (self.edge(i) + 10.0), 0.0);
+                self.keep_out.push((Vec2::new(p.x, p.z), 9.0));
+            }
+            k += 1;
+            i += 6;
+        }
+        let on_main = |i: isize| i >= a && i <= b;
+        // barriers all the way round: tyre walls on the outside of tight corners, armco elsewhere
+        let mut i = 0;
+        while i < n {
+            for side in [-1.0f32, 1.0] {
+                if on_main(i) || on_main(i - n) {
+                    continue;
+                }
+                let c = self.smp(i).curvature;
+                let outside = (side > 0.0 && c > 0.0) || (side < 0.0 && c < 0.0);
+                let ro = self.runoff(i, side);
+                let kind = if outside && c.abs() > 1.0 / 45.0 { PropKind::TyreWall } else { PropKind::Armco };
+                self.along(kind, i, side * (self.edge(i) + ro), (i / 2 % 4) as u8, 4.0);
+                if outside && c.abs() > 1.0 / 60.0 && i % 6 == 0 {
+                    let p = self.beside(i, side * (self.edge(i) + 1.5), 0.0);
+                    if self.clearance(p) > 1.0 {
+                        self.push(PropKind::MarkerPost, p, 0.0, 1.0, 0.0, 0);
+                    }
+                }
+                // sponsor banners just behind the barrier on calm stretches
+                if c.abs() < 1.0 / 150.0 && i % 14 == if side > 0.0 { 0 } else { 7 } {
+                    let brand = (rng.range_i(0, 8)) as u8;
+                    self.along(PropKind::AdBanner, i, side * (self.edge(i) + ro + 1.0), brand, 6.0);
+                }
+            }
+            i += 2;
+        }
+        // brake marker boards before corners that follow a long straight
+        let mut run = 0;
+        for i in 0..n {
+            let c = self.smp(i).curvature.abs();
+            if c < 1.0 / 110.0 {
+                run += 1;
+                continue;
+            }
+            if c > 1.0 / 80.0 && run >= 35 {
+                let side = if self.smp(i + 10).curvature > 0.0 { 1.0 } else { -1.0 };
+                // boards at 300/200/100 m when the straight allows, else compressed
+                let scale = ((run as f32 - 5.0) / 150.0).min(1.0);
+                for (k, back) in [(3u8, 150.0f32), (2, 100.0), (1, 50.0)] {
+                    let back = (back * scale) as isize;
+                    if back > 8 {
+                        self.board(PropKind::BrakeBoard, i - back, side, 2.2, k);
+                    }
+                }
+            }
+            run = 0;
+        }
+        // marshal posts every ~250 m behind the barriers
+        let mut i = 40isize;
+        let mut side = 1.0f32;
+        while i < n - 20 {
+            let ro = self.runoff(i, side);
+            self.beside_facing(PropKind::MarshalPost, i, side * (self.edge(i) + ro + 2.0), 0.0, 0.0, rng.range_i(0, 3) as u8);
+            side = -side;
+            i += 125;
+        }
+        // grandstands + crowds at hairpins, behind the run-off
+        for i in 30..n - 30 {
+            let c = self.smp(i).curvature;
+            if c.abs() > 1.0 / 30.0 && (-10..=10).all(|k| self.smp(i + k).curvature.abs() <= c.abs()) {
+                let outside = if c > 0.0 { 1.0 } else { -1.0 };
+                let ro = self.runoff(i, outside);
+                for j in [i - 8, i + 2] {
+                    self.along(PropKind::Grandstand, j, outside * (self.edge(j) + ro + 4.0), (j % 4) as u8, 12.0);
+                }
+                let cnt = rng.range_i(4, 8);
+                self.crowd(rng, i + 12, outside, ro + 3.0, cnt, 1.4);
+            }
+        }
+        // a footbridge over a long straight on bigger circuits
+        if self.t.length > 2000.0 {
+            let mut best = (0isize, 0isize);
+            let mut run = 0isize;
+            for i in 0..n {
+                if self.smp(i).curvature.abs() < 1.0 / 200.0 {
+                    run += 1;
+                    if run > best.1 && (i - run / 2) > b + 60 && (i - run / 2) < n + a - 60 {
+                        best = (i - run / 2, run);
+                    }
+                } else {
+                    run = 0;
+                }
+            }
+            if best.1 > 40 {
+                let i = best.0;
+                let s = self.smp(i);
+                let half = self.edge(i) + 7.0;
+                let p = Vec3::new(s.pos.x, self.ground(s.pos.x, s.pos.z), s.pos.z);
+                self.push(PropKind::TrackBridge, p, yaw_along(-Self::flat_right(&s)), half / 5.0, 0.0, rng.range_i(0, 4) as u8);
+            }
+        }
+        let s0 = self.smp(0).pos;
+        self.keep_out.push((Vec2::new(s0.x, s0.z), 30.0));
     }
 
     /// Finish line sample on a stage: at `length_m` when the road runs on past it (the run-out
@@ -2730,6 +2935,9 @@ impl<'a> PropPlacer<'a> {
                 let q = t.query(Vec3::new(x, 0.0, z), None);
                 let hw = t.samples[q.index].half_width;
                 // thinner far from the road, where only fog sees it; long open stages keep a band
+                if self.circuit() {
+                    density *= 0.55;
+                }
                 if self.open() {
                     if q.dist > 60.0 {
                         continue;
@@ -2741,7 +2949,7 @@ impl<'a> PropPlacer<'a> {
                 if !rng.chance(density) {
                     continue;
                 }
-                if q.dist < hw + SHOULDER + 3.5 {
+                if q.dist < hw + SHOULDER + if self.circuit() { 20.0 } else { 3.5 } {
                     continue;
                 }
                 let p = Vec3::new(x, 0.0, z);

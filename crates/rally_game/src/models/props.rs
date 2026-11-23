@@ -1190,8 +1190,9 @@ fn text_on(m: &mut MeshBuilder, f: &Frame, x: f32, y: f32, z: f32, h: f32, t: &s
 fn gantry(m: &mut MeshBuilder, p: &Prop) {
     let hspan = 5.0 * p.scale;
     let f = Frame { base: Mat4::from_rotation_translation(Quat::from_rotation_y(p.rot_y), p.pos), pos: p.pos, s: 1.0, seed: p.pos.x };
-    let finish = p.variant % 2 == 1;
-    let (main, trim) = if finish { ([0.95, 0.35, 0.35], WHITE) } else { ([0.35, 0.72, 0.62], WHITE) };
+    let circuit = p.variant == 2;
+    let finish = p.variant % 2 == 1 || circuit;
+    let (main, trim) = if circuit { ([0.25, 0.3, 0.42], WHITE) } else if finish { ([0.95, 0.35, 0.35], WHITE) } else { ([0.35, 0.72, 0.62], WHITE) };
     let top = 5.0;
     // truss legs
     for sx in [-1.0f32, 1.0] {
@@ -1222,10 +1223,20 @@ fn gantry(m: &mut MeshBuilder, p: &Prop) {
             m.quad(f.p(-hspan, top + 0.78, z), f.p(hspan, top + 0.78, z), f.p(hspan, top + 0.86, z), f.p(-hspan, top + 0.86, z), rgb(trim));
             m.quad(f.p(-hspan, top + 0.04, z), f.p(hspan, top + 0.04, z), f.p(hspan, top + 0.12, z), f.p(-hspan, top + 0.12, z), rgb(trim));
         }
-        let word = if finish { "FINISH" } else { "START" };
+        let word = if circuit { "" } else if finish { "FINISH" } else { "START" };
         // readable from the side this face looks at
         let (dir, zt) = (if sz < 0.0 { Vec3::NEG_X } else { Vec3::X }, sz * 0.31);
         block_text(m, f.p(0.0, top + 0.45, zt), f.base.transform_vector3(dir), Vec3::Y, 0.42, word, rgb(WHITE));
+    }
+    if circuit {
+        // start lights: five pods with two rows of red lamps
+        for k in 0..5 {
+            let x = (k as f32 - 2.0) * 0.7;
+            m.bevel_box(f.at(x, top - 0.55, 0.0), Vec3::new(0.25, 0.42, 0.15), 0.05, rgb(DARK));
+            for row in 0..2 {
+                m.disc(f.p(x, top - 0.35 - row as f32 * 0.4, -0.2), f.base.transform_vector3(Vec3::NEG_Z), 0.15, 10, rgb([0.95, 0.25, 0.22]));
+            }
+        }
     }
     if !finish {
         // countdown light box under the beam: five big round lamps
@@ -1456,6 +1467,248 @@ fn bridge_rail(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
     m.blob(f.at(-2.0, 1.4, 0.0), Vec3::splat(0.14), 2, 6, rgb(shade(stone, 1.15)));
 }
 
+
+// ------------------------------------------------------------------ circuit furniture
+// Segments run along local X; fronts (local -Z) face the track.
+
+const BRANDS: [(&str, [f32; 3], [f32; 3]); 8] = [
+    ("SNUG TEA", [0.98, 0.94, 0.84], [0.75, 0.35, 0.3]),
+    ("BUNNY OIL", [0.35, 0.55, 0.85], [0.98, 0.97, 0.94]),
+    ("PIE & CO", [0.98, 0.82, 0.35], [0.45, 0.28, 0.2]),
+    ("COCOA", [0.5, 0.32, 0.25], [0.98, 0.9, 0.75]),
+    ("MOSSY TYRES", [0.4, 0.65, 0.4], [0.98, 0.97, 0.94]),
+    ("HONEYBEE", [0.2, 0.2, 0.24], [0.98, 0.82, 0.3]),
+    ("WOOLY", [0.95, 0.6, 0.7], [0.98, 0.97, 0.94]),
+    ("PUFFIN AIR", [0.3, 0.7, 0.78], [0.98, 0.97, 0.94]),
+];
+
+/// Little logo next to a brand name: heart, sun, leaf, cup...
+fn logo(m: &mut MeshBuilder, f: &Frame, x: f32, y: f32, z: f32, s: f32, kind: usize, col: [f32; 3]) {
+    let n = f.base.transform_vector3(Vec3::NEG_Z).normalize();
+    let c = f.p(x, y, z);
+    let up = Vec3::Y;
+    let right = up.cross(n).normalize();
+    match kind % 4 {
+        0 => {
+            m.disc(c + (right * -0.5 + up * 0.35) * s, n, s * 0.55, 8, rgb(col));
+            m.disc(c + (right * 0.5 + up * 0.35) * s, n, s * 0.55, 8, rgb(col));
+            m.tri(c + (right * -1.02 + up * 0.25) * s, c + (right * 1.02 + up * 0.25) * s, c - up * 1.1 * s, rgb(col));
+        }
+        1 => {
+            m.disc(c, n, s * 0.55, 10, rgb(col));
+            for k in 0..8 {
+                let a = k as f32 / 8.0 * TAU;
+                let d = right * a.cos() + up * a.sin();
+                let t = right * -a.sin() + up * a.cos();
+                m.tri(c + d * s * 0.62 + t * s * 0.13, c + d * s * 0.62 - t * s * 0.13, c + d * s, rgb(col));
+            }
+        }
+        2 => {
+            let pts = [c - up * s, c + right * s * 0.55 - up * 0.2 * s, c + right * s * 0.4 + up * 0.5 * s, c + up * s, c - right * s * 0.4 + up * 0.5 * s, c - right * s * 0.55 - up * 0.2 * s];
+            m.poly(&pts, rgb(col));
+        }
+        _ => {
+            let q = |m: &mut MeshBuilder, x0: f32, y0: f32, x1: f32, y1: f32| m.quad(c + right * x0 + up * y0, c + right * x1 + up * y0, c + right * x1 + up * y1, c + right * x0 + up * y1, rgb(col));
+            q(m, -0.5 * s, -0.6 * s, 0.4 * s, 0.4 * s);
+            q(m, 0.4 * s, -0.1 * s, 0.75 * s, 0.25 * s);
+            q(m, -0.7 * s, -0.75 * s, 0.6 * s, -0.62 * s);
+        }
+    }
+}
+
+fn ad_board(m: &mut MeshBuilder, f: &Frame, x: f32, y: f32, w: f32, h: f32, brand: usize) {
+    let (name, bg, fg) = BRANDS[brand % BRANDS.len()];
+    m.cube(f.at(x, y, 0.0), Vec3::new(w * 0.5, h * 0.5, 0.04), rgb(shade(bg, 0.85)));
+    m.cube(f.at(x, y, -0.045), Vec3::new(w * 0.5 - 0.05, h * 0.5 - 0.05, 0.02), rgb(bg));
+    let th = (h * 0.5).min(w / (name.len() as f32 * 1.2 + 2.5));
+    let tw = name.len() as f32 * th * 1.2;
+    text_on(m, f, x - th * 0.9, y, -0.1, th, name, fg);
+    logo(m, f, x + tw * 0.5 + th * 0.4, y, -0.1, th * 0.55, brand, fg);
+}
+
+fn pit_building(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
+    let (hx, hz, h) = (6.0, 4.0, 3.4);
+    // tarmac apron towards the pit lane
+    m.cube(f.at(0.0, 0.0, -hz - 4.15), Vec3::new(hx - 0.03, 0.05, 4.0), rgb([0.42, 0.42, 0.46]));
+    m.cube(f.at(0.0, 0.06, -hz - 7.5), Vec3::new(hx, 0.02, 0.08), rgb(WHITE));
+    plinth(m, f, hx, hz);
+    m.cube(f.at(0.0, h * 0.5, 0.0), Vec3::new(hx, h * 0.5, hz), rgb([0.92, 0.92, 0.9]));
+    let doors = [[0.35, 0.55, 0.85], [0.95, 0.45, 0.42], [0.45, 0.72, 0.5], [0.98, 0.8, 0.35]];
+    for k in 0..3 {
+        // front is -Z: the viewer's left is local +X, so number the bays from +X
+        let x = 4.0 - k as f32 * 4.0;
+        let c = doors[(p.variant as usize + k) % 4];
+        m.cube(f.at(x, 1.35, -hz - 0.04), Vec3::new(1.6, 1.35, 0.04), rgb(c));
+        for r in 0..5 {
+            m.cube(f.at(x, 0.3 + r as f32 * 0.5, -hz - 0.1), Vec3::new(1.6, 0.02, 0.02), rgb(shade(c, 0.8)));
+        }
+        text_on(m, f, x, 2.95, -hz - 0.04, 0.35, &format!("{}", (p.variant as usize * 3 + k) % 9 + 1), [0.25, 0.25, 0.3]);
+    }
+    // upper hospitality floor with glass + roof terrace
+    m.cube(f.at(0.0, h + 1.3, 0.5), Vec3::new(hx, 1.3, hz - 0.5), rgb([0.85, 0.87, 0.9]));
+    m.cube(f.at(0.0, h + 1.3, -hz + 0.45), Vec3::new(hx - 0.1, 1.0, 0.04), rgb([0.55, 0.72, 0.85]));
+    m.cube(f.at(0.0, h + 2.65, 0.0), Vec3::new(hx + 0.3, 0.08, hz + 0.3), rgb([0.3, 0.32, 0.38]));
+    for k in 0..7 {
+        m.beam(f.p(-hx + k as f32 * 2.0, h + 2.7, -hz - 0.2), f.p(-hx + k as f32 * 2.0, h + 3.5, -hz - 0.2), 0.05, rgb(WHITE));
+    }
+    m.beam(f.p(-hx, h + 3.5, -hz - 0.2), f.p(hx, h + 3.5, -hz - 0.2), 0.06, rgb(WHITE));
+    for k in 0..3 {
+        let x = -3.5 + k as f32 * 3.2 + f.r(k as f32);
+        m.blob(f.at(x, h + 3.2, -hz + 0.4), Vec3::new(0.25, 0.32, 0.2), 2, 6, rgb(PASTELS[(k + p.variant as usize) % 6]));
+        m.blob(f.at(x, h + 3.65, -hz + 0.4), Vec3::splat(0.18), 2, 6, rgb([0.96, 0.78, 0.62]));
+    }
+    ad_board(m, f, 0.0, h + 0.4, 9.0, 0.6, p.variant as usize);
+}
+
+fn pit_wall(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
+    m.cube(f.at(0.0, 0.5, 0.0), Vec3::new(2.0, 0.5, 0.2), rgb([0.88, 0.88, 0.86]));
+    for k in 0..4 {
+        let c = if k % 2 == 0 { [0.9, 0.25, 0.22] } else { WHITE };
+        m.cube(f.at(-1.5 + k as f32, 1.04, 0.0), Vec3::new(0.5, 0.04, 0.22), rgb(c));
+    }
+    // debris fence
+    for x in [-2.0f32, 0.0] {
+        m.beam(f.p(x, 1.1, 0.1), f.p(x, 2.8, 0.1), 0.06, rgb([0.6, 0.62, 0.66]));
+    }
+    for y in [1.6f32, 2.2, 2.8] {
+        m.beam(f.p(-2.0, y, 0.1), f.p(2.0, y, 0.1), 0.025, rgb([0.6, 0.62, 0.66]));
+    }
+    if p.variant % 3 == 0 {
+        // pit-wall stand with a little awning and a crew member
+        m.cube(f.at(0.5, 1.3, 0.8), Vec3::new(0.8, 0.04, 0.5), rgb([0.3, 0.32, 0.38]));
+        m.box_tapered(f.at(0.5, 2.6, 0.8), Vec3::new(1.0, 0.06, 0.7), 0.9, rgb(PASTELS[(p.variant as usize / 3) % 6]));
+        person(m, f, 0.5, 1.1, PASTELS[(p.variant as usize + 2) % 6], Some(WHITE), true);
+    }
+}
+
+fn grandstand(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
+    let hx = 6.0;
+    let seats = [[0.35, 0.55, 0.85], [0.95, 0.45, 0.42], [0.98, 0.8, 0.35], [0.45, 0.72, 0.5]][p.variant as usize % 4];
+    for row in 0..5 {
+        let z = row as f32 * 1.0;
+        let y = row as f32 * 0.6;
+        m.cube(f.at(0.0, y * 0.5, z), Vec3::new(hx, y * 0.5 + 0.25, 0.5), rgb([0.78, 0.78, 0.76]));
+        m.cube(f.at(0.0, y + 0.35, z + 0.2), Vec3::new(hx - 0.1, 0.1, 0.25), rgb(seats));
+        // crowd: bodies + heads in mixed colours, some flags
+        for k in 0..10 {
+            if h01(f.seed + row as f32 * 3.1, k as f32) < 0.2 {
+                continue;
+            }
+            let x = -hx + 0.6 + k as f32 * 1.2 + (h01(f.seed, k as f32 + row as f32) - 0.5) * 0.3;
+            let c = PASTELS[(k * 7 + row * 3 + p.variant as usize) % 6];
+            m.blob(f.at(x, y + 0.75, z - 0.05), Vec3::new(0.25, 0.3, 0.18), 2, 5, rgb(c));
+            m.blob(f.at(x, y + 1.2, z - 0.05), Vec3::splat(0.17), 2, 5, rgb([[0.98, 0.82, 0.68], [0.85, 0.65, 0.48], [0.6, 0.42, 0.3]][(k + row) % 3]));
+            if (k + row) % 5 == 0 {
+                m.beam(f.p(x + 0.2, y + 1.0, z - 0.1), f.p(x + 0.25, y + 1.9, z - 0.1), 0.03, rgb(WOOD_D));
+                let mk = m.mark();
+                let px = f.p(x + 0.25, 0.0, z - 0.1);
+                m.quad(f.p(x + 0.25, y + 1.9, z - 0.1), f.p(x + 0.8, y + 1.85, z - 0.1), f.p(x + 0.8, y + 1.55, z - 0.1), f.p(x + 0.25, y + 1.55, z - 0.1), rgb(PASTELS[(k + 3) % 6]));
+                m.sway_since(mk, move |q| (Vec3::new(q.x - px.x, 0.0, q.z - px.z).length() / 0.55).clamp(0.0, 1.0) * 0.8);
+            }
+        }
+    }
+    // roof on pillars with a banner strip
+    for x in [-hx, 0.0, hx] {
+        m.beam(f.p(x, 0.0, 4.8), f.p(x, 5.2, 4.8), 0.18, rgb(WHITE));
+    }
+    m.box_tapered(f.at(0.0, 5.3, 2.4), Vec3::new(hx + 0.4, 0.12, 2.9), 0.97, rgb(seats));
+    ad_board(m, f, 0.0, 4.7, 8.0, 0.55, p.variant as usize + 3);
+    m.cube(f.at(0.0, 1.5, 5.0), Vec3::new(hx, 1.5, 0.1), rgb([0.7, 0.7, 0.68]));
+}
+
+fn armco(m: &mut MeshBuilder, f: &Frame) {
+    for x in [-2.0f32, 0.0] {
+        m.cube(f.at(x, 0.4, 0.08), Vec3::new(0.05, 0.4, 0.05), rgb([0.55, 0.57, 0.6]));
+    }
+    let steel = rgb([0.82, 0.84, 0.88]);
+    m.cube(f.at(0.0, 0.62, -0.02), Vec3::new(2.0, 0.14, 0.03), steel);
+    m.cube(f.at(0.0, 0.62, -0.075), Vec3::new(1.97, 0.04, 0.02), rgb([0.7, 0.72, 0.76]));
+}
+
+fn tyre_wall(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
+    let bands = [[0.92, 0.25, 0.22], WHITE, [0.35, 0.55, 0.85], [0.98, 0.8, 0.3]];
+    let band = bands[p.variant as usize % 4];
+    for k in 0..5 {
+        let x = -1.6 + k as f32 * 0.8;
+        for row in 0..2 {
+            let y = 0.15 + row as f32 * 0.3;
+            let c = if (k + row) % 2 == 0 { [0.17, 0.16, 0.19] } else { band };
+            m.cylinder(f.at(x, y, 0.0), 0.38, 0.14, 8, rgb([0.17, 0.16, 0.19]), rgb([0.12, 0.12, 0.14]));
+            m.cylinder(f.at(x, y, 0.0), 0.395, 0.05, 8, rgb(c), rgb(c));
+        }
+    }
+    // belt across the front
+    m.cube(f.at(0.0, 0.3, -0.42), Vec3::new(2.0, 0.28, 0.02), rgb([0.25, 0.27, 0.32]));
+}
+
+fn brake_board(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
+    m.cube(f.at(0.0, 0.8, 0.06), Vec3::new(0.06, 0.8, 0.05), rgb(WHITE));
+    m.bevel_box(f.at(0.0, 1.55, 0.0), Vec3::new(0.55, 0.42, 0.03), 0.03, rgb([0.15, 0.15, 0.18]));
+    m.cube(f.at(0.0, 1.55, -0.035), Vec3::new(0.5, 0.37, 0.02), rgb(WHITE));
+    let n = p.variant.clamp(1, 3);
+    text_on(m, f, 0.0, 1.55, -0.085, 0.36, &format!("{}00", n), [0.15, 0.15, 0.18]);
+    for k in 0..n {
+        let y = 1.02 - k as f32 * 0.14;
+        m.cube(f.at(0.0, y, -0.03), Vec3::new(0.45, 0.04, 0.02), rgb([0.15, 0.15, 0.18]));
+    }
+}
+
+fn ad_banner(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
+    for x in [-2.9f32, 2.9] {
+        m.cube(f.at(x, 0.55, 0.08), Vec3::new(0.05, 0.55, 0.05), rgb([0.55, 0.57, 0.6]));
+    }
+    ad_board(m, f, 0.0, 0.75, 6.0, 0.9, p.variant as usize);
+}
+
+fn track_bridge(m: &mut MeshBuilder, p: &Prop) {
+    let hspan = 5.0 * p.scale;
+    let f = Frame { base: Mat4::from_rotation_translation(Quat::from_rotation_y(p.rot_y), p.pos), pos: p.pos, s: 1.0, seed: p.pos.x };
+    let deck = 6.5;
+    for sx in [-1.0f32, 1.0] {
+        let x = sx * (hspan + 1.2);
+        m.cube(f.at(x, deck * 0.5, 0.0), Vec3::new(1.2, deck * 0.5, 1.4), rgb([0.85, 0.86, 0.88]));
+        // stair flights
+        for k in 0..8 {
+            let y = k as f32 * deck / 8.0;
+            m.cube(f.at(x + sx * 1.9, y + 0.2, -1.0 + k as f32 * 0.3), Vec3::new(0.7, 0.1, 0.18), rgb([0.7, 0.7, 0.72]));
+        }
+    }
+    // arched deck: segments following a gentle arch
+    let segs = 10;
+    let w = hspan + 1.2;
+    for k in 0..segs {
+        let t0 = k as f32 / segs as f32;
+        let t1 = (k + 1) as f32 / segs as f32;
+        let y = |t: f32| deck + 0.8 * (t * PI).sin();
+        let (a, b) = (f.p(-w + 2.0 * w * t0, y(t0), 0.0), f.p(-w + 2.0 * w * t1, y(t1), 0.0));
+        m.plank(a, b, 2.4, 0.3, Vec3::Y, rgb([0.95, 0.94, 0.9]));
+        for sz in [-1.0f32, 1.0] {
+            let (ra, rb) = (f.p(-w + 2.0 * w * t0, y(t0) + 1.0, sz * 1.15), f.p(-w + 2.0 * w * t1, y(t1) + 1.0, sz * 1.15));
+            m.beam(ra, rb, 0.06, rgb([0.35, 0.55, 0.85]));
+            m.beam(ra, ra - Vec3::Y * 0.85, 0.05, rgb([0.35, 0.55, 0.85]));
+        }
+    }
+    // sponsor panels on both faces
+    for sz in [-1.0f32, 1.0] {
+        // each face gets its own board hung on that side of the deck
+        let g = Frame { base: f.base * Mat4::from_rotation_y(if sz < 0.0 { 0.0 } else { PI }) * Mat4::from_translation(Vec3::new(0.0, 0.0, -1.3)), pos: f.pos, s: 1.0, seed: f.seed };
+        ad_board(m, &g, 0.0, deck - 0.8, 2.0 * w * 0.8, 0.7, (p.variant as usize) + if sz < 0.0 { 0 } else { 4 });
+    }
+    // a few people waving from the bridge
+    for k in 0..4 {
+        let x = -w * 0.6 + k as f32 * w * 0.4;
+        m.blob(f.at(x, deck + 1.2 + 0.8 * ((x / (2.0 * w) + 0.5) * PI).sin(), 0.3), Vec3::new(0.25, 0.32, 0.2), 2, 6, rgb(PASTELS[k % 6]));
+        m.blob(f.at(x, deck + 1.7 + 0.8 * ((x / (2.0 * w) + 0.5) * PI).sin(), 0.3), Vec3::splat(0.18), 2, 6, rgb([0.96, 0.78, 0.62]));
+    }
+}
+
+fn marker_post(m: &mut MeshBuilder, f: &Frame) {
+    for k in 0..4 {
+        let c = if k % 2 == 0 { [0.98, 0.55, 0.2] } else { WHITE };
+        m.cube(f.at(0.0, 0.15 + k as f32 * 0.3, 0.0), Vec3::new(0.07, 0.15, 0.07), rgb(c));
+    }
+}
+
 /// Append a prop (world space) to `m`
 pub fn add_prop(m: &mut MeshBuilder, p: &Prop, style: &BiomeStyle) {
     let base = Mat4::from_scale_rotation_translation(Vec3::splat(p.scale), Quat::from_rotation_y(p.rot_y), p.pos);
@@ -1511,6 +1764,15 @@ pub fn add_prop(m: &mut MeshBuilder, p: &Prop, style: &BiomeStyle) {
         SafetyTape => safety_tape(m, p),
         WarningSign => warning_sign(m, &f, p),
         BridgeRail => bridge_rail(m, &f, p),
+        PitBuilding => pit_building(m, &f, p),
+        PitWall => pit_wall(m, &f, p),
+        Grandstand => grandstand(m, &f, p),
+        Armco => armco(m, &f),
+        TyreWall => tyre_wall(m, &f, p),
+        BrakeBoard => brake_board(m, &f, p),
+        AdBanner => ad_banner(m, &f, p),
+        TrackBridge => track_bridge(m, p),
+        MarkerPost => marker_post(m, &f),
     }
 }
 
@@ -1525,6 +1787,7 @@ pub fn catalogue_kinds(b: Biome) -> Vec<(PropKind, u8)> {
         v.push((Spectator, k));
     }
     v.extend_from_slice(&[(Tent, 0), (Camper, 1), (Picnic, 2), (FlagPole, 0), (Bunting, 0), (Cone, 0)]);
+    v.extend_from_slice(&[(Gantry, 2), (PitBuilding, 0), (PitWall, 0), (Grandstand, 0), (Armco, 0), (TyreWall, 0), (BrakeBoard, 3), (BrakeBoard, 1), (AdBanner, 0), (AdBanner, 4), (TrackBridge, 0), (MarkerPost, 0)]);
     v.extend_from_slice(&[(Gantry, 0), (Gantry, 1), (StageBoard, 0), (StageBoard, 1), (StageBoard, 2 | (2 << 3)), (StageBoard, 3), (TimingHut, 0), (MarshalPost, 0), (SafetyTape, 0), (WarningSign, 0), (WarningSign, 1), (WarningSign, 2), (WarningSign, 3), (WarningSign, 4), (BridgeRail, 0)]);
     let special: &[(PropKind, u8)] = match b {
         Biome::Meadow => &[(Birch, 0), (Blossom, 0), (Pine, 0), (Mushroom, 0), (Cottage, 0), (Barn, 0), (Windmill, 0), (Sheep, 0), (Sheep, 1), (Cow, 0), (Cow, 1), (Beehive, 0), (FlowerField, 0), (FlowerField, 1)],
