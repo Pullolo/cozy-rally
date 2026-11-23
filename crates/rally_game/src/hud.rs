@@ -413,6 +413,17 @@ pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
     let cx = vp.x + vp.w - sr - pad - 6.0 * k;
     let cy = vp.y + vp.h - sr - pad;
     draw_speedo(car, h, cx, cy, sr, k, t);
+    // circuits: gentle "track limits" reminder when all four wheels are beyond the white lines
+    if s.track().params.discipline == rally_core::track::Discipline::Circuit && race.is_racing() && !r.finished {
+        let track = s.track();
+        let out = car.wheels.iter().all(|w| w.contact && track.ground_at(w.contact_point, Some(r.track_index)).beyond_limits);
+        if out {
+            // sits above the on-screen pause button (bottom centre) so they never overlap
+            let ty = vp.y + vp.h - 40.0 * k - if crate::pause_button_visible() { 70.0 * k } else { 0.0 };
+            let w = pill("Track limits", vp.x + vp.w * 0.5, ty, 18.0 * k, BUTTER, INK);
+            let _ = w;
+        }
+    }
     if crate::settings::get().show_traction {
         draw_traction(car, h, cx - sr - 64.0 * k, cy - 4.0 * k, k);
     }
@@ -571,6 +582,11 @@ fn draw_speedo(car: &Car, h: &PlayerHud, cx: f32, cy: f32, r: f32, k: f32, t: f3
     let rpm_frac = (car.rpm / car.spec.redline).clamp(0.0, 1.05);
     let a0 = PI * 0.75;
     let sweep = PI * 1.5;
+    // thin outer speed ring: 0..220 km/h for rally cars, 0..360 for circuit cars
+    let vmax = if car.spec.class == rally_core::vehicle::CarClass::Circuit { 360.0 } else { 220.0 };
+    let vf = (car.vel.length() * 3.6 / vmax).clamp(0.0, 1.0);
+    arc(cx, cy, r * 0.93, r * 0.975, a0, a0 + sweep, with_alpha(INK, 0.06));
+    arc(cx, cy, r * 0.93, r * 0.975, a0, a0 + sweep * vf, shade(SKY, 0.85));
     let r0 = r * 0.74;
     let r1 = r * 0.91;
     let red = 0.86;
@@ -593,7 +609,7 @@ fn draw_speedo(car: &Car, h: &PlayerHud, cx: f32, cy: f32, r: f32, k: f32, t: f3
     circle(cx + a.cos() * (r0 + r1) * 0.5, cy + a.sin() * (r0 + r1) * 0.5, (r1 - r0) * 0.75, if flash { BERRY } else { INK });
     circle(cx + a.cos() * (r0 + r1) * 0.5, cy + a.sin() * (r0 + r1) * 0.5, (r1 - r0) * 0.35, CREAM);
     let kmh = (car.vel.length() * 3.6).round() as i32;
-    text_mid(&format!("{kmh}"), cx, cy - 2.0 * k, 46.0 * k, INK);
+    text_mid(&format!("{kmh}"), cx, cy - 2.0 * k, if kmh >= 100 { 41.0 } else { 46.0 } * k, INK);
     text_mid("km/h", cx, cy + 24.0 * k, 14.0 * k, INK_SOFT);
     // gear chip at the bottom of the dial
     let gear = match car.gear {
@@ -677,7 +693,7 @@ fn draw_countdown(s: &RaceSession, ct: f32, mx: f32, my: f32, k: f32, stage: boo
     if ct > 3.0 {
         let age = 4.0 - ct;
         let sc = ease_back((age / 0.5).min(1.0));
-        let name = s.track().style.name.to_string();
+        let name = race_title(s.track());
         let w = (text_size(&name, 44.0 * k).x + 80.0 * k) * sc;
         let hh = 110.0 * k * sc.min(1.0);
         if sc > 0.05 {
@@ -977,4 +993,85 @@ fn draw_stage_progress(s: &RaceSession, player: usize, vp: &Viewport, k: f32, t:
             circle(gx, y, 5.0 * k, with_alpha(LAVENDER, 0.9));
         }
     }
+}
+
+// ---------------------------------------------------------------- names, car classes
+
+/// Display name for a race: circuit / campaign stage name, else the scenery name
+pub fn race_title(track: &rally_core::track::Track) -> String {
+    let p = &track.params;
+    if p.discipline == rally_core::track::Discipline::Circuit {
+        if let Some(c) = rally_core::circuits::circuits().into_iter().find(|c| c.params.seed == p.seed && c.params.length_class == p.length_class) {
+            return c.name;
+        }
+        return format!("{} Raceway", track.style.name);
+    }
+    if !track.is_loop() {
+        if let Some(st) = rally_core::campaign::campaign().into_iter().flat_map(|c| c.stages).find(|st| st.params.seed == p.seed) {
+            return st.name;
+        }
+    }
+    track.style.name.to_string()
+}
+
+/// Class badge: RALLY / GT / HYPER / FORMULA
+pub fn class_label(spec: &rally_core::vehicle::CarSpec) -> &'static str {
+    use rally_core::vehicle::CarClass;
+    match spec.class {
+        CarClass::Rally => "RALLY",
+        CarClass::Circuit => {
+            if spec.downforce > 3.0 || spec.mass < 1000.0 {
+                "FORMULA"
+            } else if power_kw(spec) > 500.0 {
+                "HYPER"
+            } else {
+                "GT"
+            }
+        }
+    }
+}
+
+pub fn class_color(spec: &rally_core::vehicle::CarSpec) -> Color {
+    match class_label(spec) {
+        "RALLY" => MINT,
+        "GT" => SKY,
+        "HYPER" => LAVENDER,
+        _ => PEACH,
+    }
+}
+
+pub fn tyre_label(spec: &rally_core::vehicle::CarSpec) -> &'static str {
+    match spec.tyre {
+        rally_core::vehicle::TyreType::Rally => "Rally tyres",
+        rally_core::vehicle::TyreType::Slick => "Slicks",
+    }
+}
+
+fn power_kw(spec: &rally_core::vehicle::CarSpec) -> f32 {
+    spec.peak_torque * spec.peak_rpm * std::f32::consts::TAU / 60.0 / 1000.0
+}
+
+/// Gearing-limited top speed (km/h)
+fn top_speed(spec: &rally_core::vehicle::CarSpec) -> f32 {
+    let top = spec.gears.last().copied().unwrap_or(1.0) * spec.final_drive;
+    spec.redline * std::f32::consts::TAU / 60.0 / top.max(0.1) * spec.wheel_radius * 3.6
+}
+
+/// Stat bars for the car picker, scaled so all classes stay distinguishable:
+/// (label, 0..1, value text). Top speed and grip are measured with the real sim
+/// (`car_perf`); until that finishes, rough estimates are shown.
+pub fn car_stats(spec: &rally_core::vehicle::CarSpec) -> [(&'static str, f32, String); 4] {
+    let kw = power_kw(spec);
+    let pw = kw / (spec.mass / 1000.0);
+    let slick = spec.tyre == rally_core::vehicle::TyreType::Slick;
+    let perf = crate::car_perf::get(spec.id as usize);
+    let v = perf.map(|p| p.vmax_kmh).unwrap_or_else(|| top_speed(spec).min(330.0));
+    let g = perf.map(|p| p.lat_g).unwrap_or(spec.tire_grip * (1.0 + spec.downforce * 0.06) * 0.85);
+    let surf = if slick { "tarmac" } else { "all roads" };
+    [
+        ("Power", (pw / 900.0).sqrt().clamp(0.05, 1.0), format!("{:.0} hp", kw * 1.341)),
+        ("Top speed", ((v - 120.0) / 240.0).clamp(0.05, 1.0), format!("{:.0} km/h", v)),
+        ("Grip", ((g - 0.6) / 1.9).clamp(0.05, 1.0), format!("{g:.1} g {surf}")),
+        ("Weight", (spec.mass / 1700.0).clamp(0.05, 1.0), format!("{:.0} kg", spec.mass)),
+    ]
 }

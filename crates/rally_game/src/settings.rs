@@ -46,10 +46,21 @@ pub struct Settings {
     pub pace_notes: bool,
     /// Racing-line assist (index into RACING_LINE_NAMES; key L cycles in race)
     pub racing_line: usize,
+    /// Pace notes on circuits (separate from rally stages; default off)
+    pub pace_notes_circuit: bool,
+    /// Last race setup choices: 0 = Rally, 1 = Circuit
+    pub discipline: usize,
+    /// Circuit picker: 0 = Random, 1.. = index+1 into rally_core::circuits::circuits()
+    pub circuit: usize,
+    /// Random circuit size: 0 Sprint, 1 Grand Prix, 2 Ring
+    pub circuit_size: usize,
+    /// Last car per discipline
+    pub car_rally: usize,
+    pub car_circuit: usize,
 }
 
 impl Settings {
-    pub const DEFAULT: Settings = Settings { master: 0.8, music: 0.7, sfx: 0.9, assists: 1, camera: 0, fullscreen: false, show_fps: false, quality: Quality::High, show_traction: true, pace_notes: true, racing_line: 0 };
+    pub const DEFAULT: Settings = Settings { master: 0.8, music: 0.7, sfx: 0.9, assists: 1, camera: 0, fullscreen: false, show_fps: false, quality: Quality::High, show_traction: true, pace_notes: true, racing_line: 0, pace_notes_circuit: false, discipline: 0, circuit: 1, circuit_size: 1, car_rally: 2, car_circuit: 5 };
 }
 
 impl Default for Settings {
@@ -133,6 +144,12 @@ fn parse(text: &str) -> Settings {
             "show_fps" => s.show_fps = b(),
             "show_traction" => s.show_traction = b(),
             "pace_notes" => s.pace_notes = b(),
+            "pace_notes_circuit" => s.pace_notes_circuit = b(),
+            "discipline" => s.discipline = v.parse::<usize>().unwrap_or(0).min(1),
+            "circuit" => s.circuit = v.parse::<usize>().unwrap_or(s.circuit),
+            "circuit_size" => s.circuit_size = v.parse::<usize>().unwrap_or(1).min(2),
+            "car_rally" => s.car_rally = v.parse::<usize>().unwrap_or(s.car_rally),
+            "car_circuit" => s.car_circuit = v.parse::<usize>().unwrap_or(s.car_circuit),
             "racing_line" => s.racing_line = v.parse::<usize>().unwrap_or(s.racing_line).min(RACING_LINE_NAMES.len() - 1),
             "quality" => s.quality = if v.eq_ignore_ascii_case("low") { Quality::Low } else { Quality::High },
             _ => {}
@@ -143,7 +160,7 @@ fn parse(text: &str) -> Settings {
 
 fn serialize(s: &Settings) -> String {
     format!(
-        "# Cozy Rally settings\nmaster={:.2}\nmusic={:.2}\nsfx={:.2}\nassists={}\ncamera={}\nfullscreen={}\nshow_fps={}\nshow_traction={}\npace_notes={}\nracing_line={}\nquality={}\n",
+        "# Cozy Rally settings\nmaster={:.2}\nmusic={:.2}\nsfx={:.2}\nassists={}\ncamera={}\nfullscreen={}\nshow_fps={}\nshow_traction={}\npace_notes={}\nracing_line={}\npace_notes_circuit={}\ndiscipline={}\ncircuit={}\ncircuit_size={}\ncar_rally={}\ncar_circuit={}\nquality={}\n",
         s.master,
         s.music,
         s.sfx,
@@ -154,6 +171,12 @@ fn serialize(s: &Settings) -> String {
         s.show_traction,
         s.pace_notes,
         s.racing_line,
+        s.pace_notes_circuit,
+        s.discipline,
+        s.circuit,
+        s.circuit_size,
+        s.car_rally,
+        s.car_circuit,
         s.quality.name().to_lowercase()
     )
 }
@@ -185,7 +208,7 @@ mod tests {
     use super::*;
     #[test]
     fn roundtrip() {
-        let s = Settings { master: 0.3, music: 0.0, sfx: 1.0, assists: 3, camera: 2, fullscreen: true, show_fps: true, quality: Quality::Low, show_traction: false, pace_notes: false, racing_line: 2 };
+        let s = Settings { master: 0.3, music: 0.0, sfx: 1.0, assists: 3, camera: 2, fullscreen: true, show_fps: true, quality: Quality::Low, show_traction: false, pace_notes: false, racing_line: 2, pace_notes_circuit: true, discipline: 1, circuit: 3, circuit_size: 2, car_rally: 1, car_circuit: 7 };
         assert_eq!(parse(&serialize(&s)), s);
         assert_eq!(parse("garbage\nmaster=nan\nassists=99"), Settings { assists: 3, ..Settings::DEFAULT });
     }

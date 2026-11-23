@@ -25,6 +25,13 @@ pub fn init_font() {
     match load_ttf_font_from_bytes(FONT_BYTES) {
         Ok(mut f) => {
             f.set_filter(FilterMode::Linear);
+            // pre-rasterise the big sizes so the glyph atlas doesn't grow during a race
+            let chars = Font::ascii_character_list();
+            let digits: Vec<char> = "0123456789GO!".chars().collect();
+            let dpi = screen_dpi_scale();
+            for b in BIG_SIZES {
+                f.populate_font_cache(if b <= 96 { &chars } else { &digits }, (b as f32 * dpi).ceil() as u16);
+            }
             set_default_font(f);
         }
         Err(e) => eprintln!("font load failed, using default: {e:?}"),
@@ -255,11 +262,19 @@ fn quantize(size: f32) -> (u16, f32) {
         let b = size.round().max(1.0);
         return (b as u16, size / b);
     }
+    if size > 44.0 {
+        // big animated text (countdown, banners): a few large buckets, always downscaled,
+        // so popping text never rasterises a new size mid-race (that glitched the atlas)
+        let b = BIG_SIZES.iter().copied().find(|b| *b as f32 >= size).unwrap_or(BIG_SIZES[BIG_SIZES.len() - 1]);
+        return (b, size / b as f32);
+    }
     let step = 1.06f32.ln();
     let b = (size.ln() / step).round() * step;
     let b = b.exp().round().max(1.0);
     (b as u16, size / b)
 }
+
+const BIG_SIZES: [u16; 4] = [64, 96, 144, 216];
 
 fn params(size: f32, color: Color) -> TextParams<'static> {
     let (fs, sc) = quantize(size);

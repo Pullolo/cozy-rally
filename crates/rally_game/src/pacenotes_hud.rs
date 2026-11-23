@@ -29,6 +29,16 @@ pub fn sync_from_settings() {
     set_enabled(crate::settings::get().pace_notes);
 }
 
+/// [ui] Circuits keep their own pace-notes preference (default off)
+fn sync_for(session: &RaceSession) {
+    let st = crate::settings::get();
+    set_enabled(if is_circuit(session) { st.pace_notes_circuit } else { st.pace_notes });
+}
+
+fn is_circuit(session: &RaceSession) -> bool {
+    session.track().params.discipline == rally_core::track::Discipline::Circuit
+}
+
 #[derive(Default, Clone)]
 struct PlayerAnim {
     head: Option<usize>,
@@ -79,12 +89,13 @@ fn with_alpha(c: Color, a: f32) -> Color {
 /// Draw the pace notes for one local player. Also handles the N toggle (once per frame).
 pub fn draw_pace_notes(session: &RaceSession, player: usize, vp: &Viewport) {
     if player == 0 {
-        sync_from_settings();
+        sync_for(session);
     }
     if player == 0 && is_key_pressed(KeyCode::N) {
         let on = !enabled();
         set_enabled(on);
-        crate::settings::update(|st| st.pace_notes = on);
+        let circuit = is_circuit(session);
+        crate::settings::update(|st| if circuit { st.pace_notes_circuit = on } else { st.pace_notes = on });
         crate::settings::save();
         STATE.with(|st| {
             if let Some(s) = st.borrow_mut().as_mut() {
