@@ -813,6 +813,12 @@ impl App {
         }
         let d = selector(&mut self.focus, "Assists", ASSISTS[self.setup.assists].0, ax, ay, cw, rh, LAVENDER);
         self.setup.assists = wrap(self.setup.assists, d, ASSISTS.len());
+        if d != 0 {
+            // keep the Settings screen's Assists in sync with the setup choice
+            let a = self.setup.assists;
+            settings::update(|s| s.assists = a);
+            settings::save();
+        }
         // --- column B: track options
         let mut by = top;
         section("Track", bx, by);
@@ -1103,6 +1109,22 @@ impl App {
             let to = self.settings_from;
             if over_race {
                 settings::save();
+                // apply changes made from the pause menu to the race in progress
+                if let Some(sess) = self.session.as_mut() {
+                    let st = settings::get();
+                    let cam = cam_mode(st.camera);
+                    for p in sess.players.iter_mut() {
+                        p.cam.mode = cam;
+                    }
+                    // campaign runs keep the assists they started with (times are tagged with them)
+                    if sess.config.mode != gameplay::GameMode::Campaign {
+                        let lvl = ASSISTS[st.assists].1;
+                        sess.config.assist_level = lvl;
+                        for p in sess.players.iter() {
+                            sess.world.cars[p.car].assist_level = lvl;
+                        }
+                    }
+                }
                 self.screen = Screen::Race;
                 self.pause_focus = Focus::default();
                 self.pause_focus.index = 2;
