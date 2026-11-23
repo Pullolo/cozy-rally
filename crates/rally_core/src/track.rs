@@ -2003,6 +2003,14 @@ impl<'a> PropPlacer<'a> {
     /// Run-off width (road edge -> barrier) on `side` at sample i. Wider on the outside of
     /// fast/tight corners. Hook for the circuit generator's real run-off data.
     fn runoff(&self, i: isize, side: f32) -> f32 {
+        if !self.t.circuit_edges.is_empty() {
+            // real run-off from the circuit generator (starts at the shoulder edge); barrier
+            // sits just beyond it
+            let n = self.t.circuit_edges.len() as isize;
+            let e = self.t.circuit_edges[i.rem_euclid(n) as usize];
+            let ro = if side < 0.0 { e.runoff_left.width } else { e.runoff_right.width };
+            return ro + 1.0;
+        }
         let c = self.smp(i).curvature;
         let outside = (side > 0.0 && c > 0.0) || (side < 0.0 && c < 0.0);
         if outside {

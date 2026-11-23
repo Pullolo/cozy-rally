@@ -1467,6 +1467,12 @@ async fn main() {
     if let Ok(seed) = std::env::var("COZY_SEED") {
         app.setup.seed = seed.parse().unwrap_or(1);
     }
+    // test hook: COZY_CAR=<car id> picks player 1's car
+    if let Some(c) = std::env::var("COZY_CAR").ok().and_then(|v| v.parse::<usize>().ok()) {
+        if c < rally_core::vehicle::car_specs().len() {
+            app.setup.cars[0] = c;
+        }
+    }
     // [gameplay] test hook: COZY_STAGE=<stage id> starts a campaign stage directly
     if let Ok(id) = std::env::var("COZY_STAGE") {
         if campaign_mode::start_stage(&id, app.setup.cars[0], app.setup.paints[0], (ASSISTS[app.setup.assists].0, ASSISTS[app.setup.assists].1)).is_some() {

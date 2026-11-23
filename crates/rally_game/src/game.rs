@@ -99,7 +99,14 @@ impl RaceSession {
             // [gameplay] AI cars of the track's discipline (circuit cars on circuits, rally cars elsewhere)
             let want_circuit = config.track.discipline == rally_core::track::Discipline::Circuit;
             let pool: Vec<usize> = rally_core::vehicle::car_specs().iter().enumerate().filter(|(_, s)| (s.class == rally_core::vehicle::CarClass::Circuit) == want_circuit).map(|(i, _)| i).collect();
-            let spec = pool[rng.range_i(0, pool.len() as i32) as usize];
+            let mut spec = pool[rng.range_i(0, pool.len() as i32) as usize];
+            // circuits are one-make races: the circuit cars differ by ~20% in pace, so a mixed
+            // field would never be close. Rivals drive the player's car when it suits the track.
+            if want_circuit {
+                if let Some(p0) = config.players.first().filter(|p| pool.contains(&p.car)) {
+                    spec = p0.car;
+                }
+            }
             racers.push(RacerSetup { car_spec: spec, controller: Controller::Ai });
             names.push(AI_NAMES[k % AI_NAMES.len()].to_string());
             paints.push((k + 3) % PAINTS.len());
