@@ -1,5 +1,6 @@
 //! Procedural low-poly models (cars, wheels, props). Everything is built from code.
 mod car;
+pub mod hull;
 pub mod parts;
 mod props;
 

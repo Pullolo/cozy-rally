@@ -177,8 +177,8 @@ fn coplanar_fights(m: &MeshBuilder, eps: f32) -> (usize, Vec<String>) {
             if !sep {
                 count += 1;
                 if ex.len() < std::env::var("EX").ok().and_then(|s| s.parse().ok()).unwrap_or(3) {
-                    let (cA, cB) = ((a[0] + a[1] + a[2]) / 3.0, (b[0] + b[1] + b[2]) / 3.0);
-                    ex.push(format!("A({:.2},{:.2},{:.2}) B({:.2},{:.2},{:.2}) n({:.1},{:.1},{:.1}) gap {:.4} {:?}/{:?}", cA.x, cA.y, cA.z, cB.x, cB.y, cB.z, na.x, na.y, na.z, (da - dbb).abs(), ca, cb));
+                    let (ca_, cb_) = ((a[0] + a[1] + a[2]) / 3.0, (b[0] + b[1] + b[2]) / 3.0);
+                    ex.push(format!("A({:.2},{:.2},{:.2}) B({:.2},{:.2},{:.2}) n({:.1},{:.1},{:.1}) gap {:.4} {:?}/{:?}", ca_.x, ca_.y, ca_.z, cb_.x, cb_.y, cb_.z, na.x, na.y, na.z, (da - dbb).abs(), ca, cb));
                 }
             }
         }
@@ -234,7 +234,8 @@ async fn main() {
                         let dist: f32 = std::env::var("DIST").ok().and_then(|s| s.parse().ok()).unwrap_or(if close { 5.6 } else { 6.6 });
                         let eye = vec3(ang.sin() * dist, if row == 0 { 1.6 } else { 2.3 }, -ang.cos() * dist);
                         let eye = if sides { eye } else if row == 0 { vec3(eye.x, eye.y, -eye.z.abs()) } else { vec3(eye.x, eye.y, eye.z.abs()) };
-                        let view = Mat4::look_at_rh(eye, vec3(0.0, 0.0, 0.0), Vec3::Y);
+                        let eye = if std::env::var("TOP").is_ok() { vec3(0.0, dist * 1.25, if row == 0 { -0.01 } else { 0.01 }) } else { eye };
+                        let view = Mat4::look_at_rh(eye, vec3(0.0, 0.0, 0.0), if std::env::var("TOP").is_ok() { Vec3::NEG_Z } else { Vec3::Y });
                         let proj = Mat4::perspective_rh_gl(38f32.to_radians(), w / h, 0.1, 100.0);
                         let v = View::new(view, proj, eye);
                         let spec = spec_of(car);
