@@ -1364,6 +1364,20 @@ impl Car {
         // asks for, never flip its sign or add steering: centred input = straight wheels, and
         // full opposite lock in a slide reaches peak slip beyond the direction of travel
         // (the angle that catches it).
+        if self.assist_level > 0.2 && self.assist_level < 0.8 {
+            // Sport: the wheels follow the input exactly (no dependence on the slide, so they
+            // never straighten or counter by themselves). Full input is capped by a fixed,
+            // speed-only angle: the geometric angle for the car's peak cornering at this
+            // speed plus the tyres' peak slip angle.
+            let k = steer_limit_factor(self.assist_level).unwrap_or(1.1);
+            let v = v_long_body.abs().max(1.0);
+            let wb = spec.cg_to_front + spec.cg_to_rear;
+            let a_max = GRAVITY * spec.tire_grip * (1.0 + spec.downforce * v * v / (spec.mass * GRAVITY));
+            let cap = (wb * a_max / (v * v) + k * spec.peak_slip_angle).min(spec.max_steer);
+            let w = ((speed - 3.0) / 5.0).clamp(0.0, 1.0);
+            let low = steer_in * spec.max_steer;
+            return (low + (steer_in * cap - low) * w).clamp(-spec.max_steer, spec.max_steer);
+        }
         if let Some(k) = steer_limit_factor(self.assist_level) {
             if v_long_body > 1.0 {
                 let v_f = self.vel + self.ang_vel.cross(fwd * spec.cg_to_front);

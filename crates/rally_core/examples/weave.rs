@@ -108,7 +108,60 @@ fn exit(spec: usize, track: &Track, assist: f32, kmh: f32, steer_hold: f32) -> (
     (drift, spin_end, spun)
 }
 
+/// Pendulum test: start in a slide of `beta0` deg (velocity rotated off the nose, plus yaw rate
+/// into the slide), hands off the wheel (steer 0), throttle holding speed. A stable car settles;
+/// a "self counter-drift" shows as the drift angle swinging to the other side.
+/// Returns (max opposite-side drift deg, number of side changes > 3 deg, settled after s)
+fn pendulum(spec: usize, track: &Track, assist: f32, kmh: f32, beta0: f32) -> (f32, u32, f32) {
+    let mut c = fresh(spec, track, assist, kmh);
+    let b = beta0.to_radians();
+    let v = kmh / 3.6;
+    c.vel = (c.forward() * b.cos() + c.right() * b.sin()) * v;
+    c.ang_vel = c.up() * (-b.signum() * 0.6);
+    let (mut opp, mut flips, mut settled) = (0.0f32, 0u32, -1.0f32);
+    let mut side = b.signum();
+    let mut t = 0.0;
+    while t < 6.0 {
+        let sp = c.vel.length() * 3.6;
+        let thr = if sp < kmh { ((kmh - sp) * 0.3).clamp(0.0, 1.0) } else { 0.0 };
+        c.input = CarInput { throttle: thr, steer: 0.0, ..Default::default() };
+        c.step(DT, track);
+        t += DT;
+        let d = c.telemetry.drift_angle.to_degrees();
+        let dd = if b > 0.0 { d } else { -d };
+        // drift_angle sign convention may be opposite: track both
+        if d.abs() > 3.0 && d.signum() != side {
+            flips += 1;
+            side = d.signum();
+        }
+        opp = opp.max(d.abs() * if flips > 0 { 1.0 } else { 0.0 });
+        let _ = dd;
+        if settled < 0.0 && d.abs() < 2.0 && c.ang_vel.dot(c.up()).abs() < 0.05 {
+            settled = t;
+        }
+        if d.abs() > 3.0 {
+            settled = -1.0;
+        }
+    }
+    (opp, flips, settled)
+}
+
 fn main() {
+    if std::env::var("PEND").is_ok() {
+        let track = Track::flat_for_tests(Surface::Asphalt);
+        println!("=== PENDULUM: start sliding, hands off. opp = biggest swing to the other side (deg), flips, settled time");
+        for spec in [2usize, 1, 5, 6, 7] {
+            for (an, a) in [("Normal", 1.0f32), ("Sport", 0.55), ("Sim", 0.0)] {
+                let mut line = format!("{:9} {an:6}", car_specs()[spec].name);
+                for (kmh, b) in [(80.0f32, 20.0f32), (140.0, 15.0)] {
+                    let (o, f, st) = pendulum(spec, &track, a, kmh, b);
+                    line += &format!(" | {kmh:3.0} {b:2.0}deg: opp {o:5.1} flips {f} settle {st:4.1}");
+                }
+                println!("{line}");
+            }
+        }
+        return;
+    }
     if std::env::var("EXIT").is_ok() {
         let track = Track::flat_for_tests(Surface::Asphalt);
         println!("=== CORNER EXIT: full throttle from a steady corner (max drift deg, speed where wheelspin ended, spun)");
