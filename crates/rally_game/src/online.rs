@@ -361,23 +361,18 @@ impl Online {
         let cx = ix + iw * 0.5;
         text_mid("Online race", cx, y + 50.0 * s, 40.0 * s, INK);
         text_mid("Race friends on a server one of you hosts (rally_server)", cx, y + 88.0 * s, 18.0 * s, INK_SOFT);
-        focus.begin(6);
+        // car and paint are chosen in the lobby, once the race (rally or circuit) is known
+        let _ = allowed;
+        focus.begin(4);
         let mut fy = y + 118.0 * s;
         let mut ed = self.editing;
         text_field(focus, &mut ed, 0, "Server", &mut self.address, 64, ix, fy, iw, rh);
         fy += rh + 12.0 * s;
         text_field(focus, &mut ed, 1, "Your name", &mut self.name, 16, ix, fy, iw, rh);
         self.editing = ed;
-        fy += rh + 12.0 * s;
-        let pos = allowed.iter().position(|c| c == car).unwrap_or(0);
-        let d = selector(focus, "Car", car_name(*car as u8), ix, fy, iw, rh, PEACH);
-        if d != 0 && !allowed.is_empty() {
-            *car = allowed[(pos as i32 + d).rem_euclid(allowed.len() as i32) as usize];
-        }
-        fy += rh + 12.0 * s;
-        let d = selector_swatch(focus, "Paint", "", Some(rgb3(PAINTS[*paint % PAINTS.len()])), ix, fy, iw, rh, PEACH);
-        *paint = (*paint as i32 + d).rem_euclid(PAINTS.len() as i32) as usize;
         fy += rh + 18.0 * s;
+        text_mid("You'll pick your car in the lobby, once you know the race.", cx, fy + 10.0 * s, 17.0 * s, INK_SOFT);
+        fy += 34.0 * s;
         if let Some(m) = &self.message {
             text_mid(m, cx, fy + 10.0 * s, 18.0 * s, BERRY);
         }
@@ -421,7 +416,7 @@ impl Online {
             circle(ix + 22.0 * s, py + (row - 6.0 * s) * 0.5, 10.0 * s, rgb3(PAINTS[p.paint as usize % PAINTS.len()]));
             let name = if p.id == c.leader { format!("{}  (leader)", p.name) } else { p.name.clone() };
             text(&name, ix + 44.0 * s, mid_baseline(py + (row - 6.0 * s) * 0.5, 20.0 * s), 20.0 * s, INK);
-            text(car_name(p.car), ix + iw * 0.45, mid_baseline(py + (row - 6.0 * s) * 0.5, 18.0 * s), 18.0 * s, INK_SOFT);
+            text(if c.settings.is_some() { car_name(p.car) } else { "-" }, ix + iw * 0.45, mid_baseline(py + (row - 6.0 * s) * 0.5, 18.0 * s), 18.0 * s, INK_SOFT);
             let tag = if p.racing { "racing".to_string() } else if p.ready { "ready!".to_string() } else { format!("{} ms  {}", p.ping_ms, if p.udp { "UDP" } else { "TCP" }) };
             text_right(&tag, ix + iw - 16.0 * s, mid_baseline(py + (row - 6.0 * s) * 0.5, 18.0 * s), 18.0 * s, if p.ready { MINT } else { INK_SOFT });
             py += row;
@@ -441,15 +436,22 @@ impl Online {
             text_mid("A race is running - you'll join the next one", cx, fy + 32.0 * s, 17.0 * s, BERRY);
         }
         fy += 46.0 * s;
-        focus.begin(if leader { 6 } else { 4 });
+        // the car list depends on the race (rally cars or circuit cars): only once it is picked
+        let has_race = settings.is_some();
+        focus.begin(if has_race { 2 } else { 0 } + if leader { 2 } else { 0 } + if leader || has_race { 2 } else { 1 });
         let half = (iw - 16.0 * s) * 0.5;
-        let pos = allowed.iter().position(|x| x == car).unwrap_or(0);
-        let d = selector(focus, "Car", car_name(*car as u8), ix, fy, half, rh, PEACH);
-        if d != 0 && !allowed.is_empty() {
-            *car = allowed[(pos as i32 + d).rem_euclid(allowed.len() as i32) as usize];
+        if has_race {
+            let pos = allowed.iter().position(|x| x == car).unwrap_or(0);
+            let d = selector(focus, "Car", car_name(*car as u8), ix, fy, half, rh, PEACH);
+            if d != 0 && !allowed.is_empty() {
+                *car = allowed[(pos as i32 + d).rem_euclid(allowed.len() as i32) as usize];
+            }
+            let d = selector_swatch(focus, "Paint", "", Some(rgb3(PAINTS[*paint % PAINTS.len()])), ix + half + 16.0 * s, fy, half, rh, PEACH);
+            *paint = (*paint as i32 + d).rem_euclid(PAINTS.len() as i32) as usize;
+        } else {
+            rounded_rect(ix, fy, iw, rh, 12.0 * s, with_alpha(CREAM_DEEP, 0.6));
+            text_mid("Car & paint: once the race is picked", cx, fy + rh * 0.5, 18.0 * s, INK_SOFT);
         }
-        let d = selector_swatch(focus, "Paint", "", Some(rgb3(PAINTS[*paint % PAINTS.len()])), ix + half + 16.0 * s, fy, half, rh, PEACH);
-        *paint = (*paint as i32 + d).rem_euclid(PAINTS.len() as i32) as usize;
         fy += rh + 12.0 * s;
         let mut action = LobbyAction::None;
         if leader {
@@ -473,8 +475,13 @@ impl Online {
             if button(focus, label, ix + half + 16.0 * s, by, half, rh, PEACH) && settings.is_some() && !race_running {
                 self.send(&ClientMsg::StartRace);
             }
-        } else if button(focus, if my_ready { "Ready! (undo)" } else { "I'm ready" }, ix + half + 16.0 * s, by, half, rh, MINT) {
-            self.send(&ClientMsg::SetReady(!my_ready));
+        } else if has_race {
+            if button(focus, if my_ready { "Ready! (undo)" } else { "I'm ready" }, ix + half + 16.0 * s, by, half, rh, MINT) {
+                self.send(&ClientMsg::SetReady(!my_ready));
+            }
+        } else {
+            rounded_rect(ix + half + 16.0 * s, by, half, rh, 14.0 * s, with_alpha(CREAM_DEEP, 0.6));
+            text_mid("Waiting for the race...", ix + half + 16.0 * s + half * 0.5, by + rh * 0.5, 20.0 * s, INK_SOFT);
         }
         if leave || focus.back {
             self.disconnect();

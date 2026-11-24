@@ -1806,6 +1806,7 @@ async fn main() {
         app.screen = match scr.as_str() {
             "setup" => Screen::Setup,
             "help" => Screen::Help,
+            "online" => Screen::Online,
             "settings" => Screen::Settings,
             "race" | "loading" => Screen::Loading,
             "campaign" => Screen::Campaign,
@@ -1844,7 +1845,10 @@ async fn main() {
                 online_lead_done = true;
                 let rs = rally_net::RaceSettings { track: app.setup.track_params(), laps: 1, contact: false };
                 app.online.send(&rally_net::ClientMsg::SetSettings(rs));
-                app.online.send(&rally_net::ClientMsg::StartRace);
+                // COZY_ONLINE_PICK=1: only pick the race (lobby screenshots), don't start it
+                if std::env::var("COZY_ONLINE_PICK").is_err() {
+                    app.online.send(&rally_net::ClientMsg::StartRace);
+                }
             }
         }
         input::poll(); // [gameplay] gamepads

@@ -145,7 +145,7 @@ impl Night {
         }
         // a cloud of fireflies lives around the camera; ones left behind respawn ahead/around
         let mut n = self.seed.wrapping_add((time * 60.0) as u32);
-        let mut spawn = |n: &mut u32| -> Firefly {
+        let spawn = |n: &mut u32| -> Firefly {
             *n = n.wrapping_add(0x9e37_79b9);
             let a = hash(*n) * std::f32::consts::TAU;
             let r = 6.0 + hash(*n ^ 0x55) * 38.0;

@@ -190,6 +190,12 @@ impl Server {
             }
             ClientMsg::SetSettings(s) => {
                 if self.leader == Some(id) && self.race.is_none() {
+                    // switching rally <-> circuit changes everyone's car: ask them to ready up again
+                    if self.settings.as_ref().is_some_and(|o| o.track.discipline != s.track.discipline) {
+                        for i in self.clients.iter_mut().filter_map(|c| c.info.as_mut()) {
+                            i.ready = false;
+                        }
+                    }
                     self.settings = Some(s);
                     self.lobby_dirty = true;
                 }
