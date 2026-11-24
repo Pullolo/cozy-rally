@@ -21,7 +21,7 @@ fn window_conf() -> Conf {
 }
 
 fn env() -> Environment {
-    Environment { sun_dir: vec3(-0.45, 0.75, -0.35).normalize(), sun_color: [1.05, 0.97, 0.85], ambient: [0.45, 0.48, 0.56], fog_color: [0.8, 0.89, 0.95], fog_density: 0.0, time: 0.0 }
+    Environment { sun_dir: vec3(-0.45, 0.75, -0.35).normalize(), sun_color: [1.05, 0.97, 0.85], ambient: [0.45, 0.48, 0.56], fog_color: [0.8, 0.89, 0.95], fog_density: 0.0, time: 0.0, night: 0.0 }
 }
 
 /// Car spec by id; id 4 (Blossom) falls back to a provisional hot-hatch spec until the
@@ -302,7 +302,7 @@ async fn main() {
                 let view = Mat4::look_at_rh(eye, look, Vec3::Y);
                 let proj = Mat4::perspective_rh_gl(55f32.to_radians(), sw / sh, 0.3, 600.0);
                 let v = View::new(view, proj, eye);
-                let e = Environment { sun_dir: Vec3::from(st.sun_dir).normalize(), sun_color: st.sun_color, ambient: st.ambient, fog_color: st.fog, fog_density: st.fog_density, time: 0.0 };
+                let e = Environment { sun_dir: Vec3::from(st.sun_dir).normalize(), sun_color: st.sun_color, ambient: st.ambient, fog_color: st.fog, fog_density: st.fog_density, time: 0.0, night: 0.0 };
                 gpu.draw_builder(&m, &v, &e, Mat4::IDENTITY, &DrawParams { rim: 0.4, fog: true, ..Default::default() }, 0);
                 gpu.end_3d();
             }
@@ -398,7 +398,7 @@ async fn main() {
                 let v = View::new(view, proj, eye);
                 let mut g = MeshBuilder::new();
                 g.cube(Mat4::from_translation(vec3(-4.5, -0.05, rows * 5.0)), vec3(80.0, 0.05, rows * 6.0 + 10.0), render::mesh::rgb(style.ground_a));
-                let e = Environment { sun_dir: Vec3::from(style.sun_dir).normalize(), sun_color: style.sun_color, ambient: style.ambient, fog_color: style.fog, fog_density: 0.0, time: 0.0 };
+                let e = Environment { sun_dir: Vec3::from(style.sun_dir).normalize(), sun_color: style.sun_color, ambient: style.ambient, fog_color: style.fog, fog_density: 0.0, time: 0.0, night: 0.0 };
                 gpu.draw_builder(&g, &v, &e, Mat4::IDENTITY, &DrawParams::default(), 0);
                 gpu.draw_builder(&m, &v, &e, Mat4::IDENTITY, &DrawParams { rim: 0.4, ..Default::default() }, 0);
                 gpu.end_3d();

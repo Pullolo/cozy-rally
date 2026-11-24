@@ -1,0 +1,11 @@
+[package]
+name = "rally_net"
+version = "0.1.0"
+edition = "2024"
+description = "Cozy Rally online multiplayer: protocol, client connection and the self-hostable rally_server"
+
+[dependencies]
+rally_core = { version = "0.1.0", path = "../rally_core" }
+serde = { version = "1.0.229", features = ["derive"] }
+bincode = "1.3"
+glam = "0.27"

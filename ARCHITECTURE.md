@@ -27,6 +27,16 @@ crates/rally_core/   headless simulation (no graphics). glam 0.27 shared with ma
   ai.rs        AI driver
   examples/    sim.rs (AI races, stats), dyno.rs (physics characterisation), trace.rs,
                stagesim.rs (stats per track difficulty), pacenotes.rs, surfaces.rs, trackstats.rs
+crates/rally_net/    online multiplayer (no graphics; depends on rally_core)
+  protocol.rs  ClientMsg / ServerMsg, PROTOCOL_VERSION (bump on any layout change), DEFAULT_PORT 27420
+  conn.rs      non-blocking framed TCP (u32 LE length + bincode); UdpMsg datagrams carry the
+               30 Hz snapshots on the same port (token-authenticated, TCP fallback)
+  server.rs    lobby, leader, synchronised start (Loaded -> Go), snapshot relay, official results
+  client.rs    NetClient used by the game (background connect, poll per frame)
+  sync.rs      remote cars: simulated locally with the owner's inputs, softly corrected toward
+               the owner's snapshot extrapolated by latency (snap beyond 8 m)
+  bin/rally_server.rs  the self-hostable server
+  tests/       lobby_race.rs (real sockets, full flow), remote_sync.rs (correction error vs latency)
 crates/rally_game/   macroquad app
   render/gpu.rs    miniquad pipelines (opaque / alpha / overlay), lit+fogged vertex-colour shader,
                    static GpuMesh with frustum culling, stream buffer for dynamic geometry
@@ -43,6 +53,14 @@ crates/rally_game/   macroquad app
   ui.rs            immediate-mode cozy UI widgets
   audio.rs         audio facade (API used by the game)
   fx.rs            particle/effects system (owned by RaceSession)
+  online.rs        Online screen (connect form + lobby), OnlineRace: feeds NetEvents into the
+                   RaceSession (pre_update / post_update around RaceSession::update)
+  (circuits)       floodlit zones: PropKind::LampPost placed by track.rs `lamp_zones` (pit straight +
+                   slow corners), lit by night.rs (nearest masts become spot lights, faded by rank)
+  night.rs         night races: per-car headlamps -> gpu.set_lights (MAX_LIGHTS spot lights,
+                   viewer gets both lamps), beams, lamp damage, fireflies. TrackParams::night,
+                   scene.rs TimeOfDay::Night palette + grade, Environment::night (sky stars,
+                   darker weather/clouds/fx). COZY_NIGHT=1 / COZY_HIGHBEAM=1 test hooks
   main.rs          app state machine: Title / Setup / Loading / Race / Results / Help
 ```
 
@@ -73,6 +91,10 @@ Visual playtest (headless, virtual display, autopilot drives player 1):
 COZY_AUTOPLAY=1 COZY_SEED=3 COZY_SHOTS=5,12,20 COZY_SHOT_DIR=/some/dir COZY_EXIT_AFTER=21 \
   xvfb-run -a -s "-screen 0 1280x720x24" ./target/release/rally_game
 ```
+Online test: run `rally_server --port 27999`, then two game instances with
+`COZY_ONLINE=127.0.0.1:27999 COZY_NAME=Alice COZY_ONLINE_LEAD=2` (leader: picks a 1-lap race and
+starts once 2 are in) and `COZY_ONLINE=127.0.0.1:27999 COZY_NAME=Bob`, plus `COZY_AUTOPLAY=1`
+and separate `COZY_SETTINGS` files.
 Other env hooks: `COZY_SPLIT=1` (2 players), `COZY_BIOME=0..5` (0 random, 1 Meadow, 2 Autumn,
 3 Snow, 4 Desert, 5 Coast), `COZY_SCREEN=title|setup|help|race`, `COZY_MSAA=1`.
 Software GL (llvmpipe) is slow — a few FPS is normal under Xvfb. **Look at your screenshots**

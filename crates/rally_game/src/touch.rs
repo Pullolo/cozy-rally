@@ -27,6 +27,8 @@ struct Touch {
     slider: Option<(u64, f32)>,
     slider_x: f32,
     camera: bool,
+    /// Night races: the beam pill was tapped (main.rs) -> `Input::beam_pressed`
+    beam: bool,
     /// What is held this frame (for drawing)
     held: Held,
 }
@@ -59,6 +61,20 @@ pub fn visible() -> bool {
 /// Camera button tapped this frame
 pub fn take_camera() -> bool {
     TOUCH.with(|t| std::mem::take(&mut t.borrow_mut().camera))
+}
+
+/// The high / low beam pill was tapped (night races)
+pub fn request_beam() {
+    TOUCH.with(|t| t.borrow_mut().beam = true);
+}
+
+pub fn take_beam() -> bool {
+    TOUCH.with(|t| std::mem::take(&mut t.borrow_mut().beam))
+}
+
+/// A touch started inside `r` this frame
+pub fn tapped(r: Rect) -> bool {
+    touches().iter().any(|t| t.phase == TouchPhase::Started && r.contains(t.position))
 }
 
 struct Layout {

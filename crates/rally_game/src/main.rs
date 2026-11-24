@@ -14,6 +14,8 @@ mod campaign_screens;
 mod hud;
 mod input;
 mod models;
+mod night;
+mod online;
 mod pacenotes_hud;
 mod platform;
 mod touch;
@@ -72,11 +74,12 @@ enum Screen {
     StageIntro,
     StageResults,
     Leaderboard,
+    Online,
 }
 
 impl Screen {
     fn is_menu(self) -> bool {
-        matches!(self, Screen::Title | Screen::Setup | Screen::Help | Screen::Settings | Screen::Campaign | Screen::StageIntro | Screen::Leaderboard)
+        matches!(self, Screen::Title | Screen::Setup | Screen::Help | Screen::Settings | Screen::Campaign | Screen::StageIntro | Screen::Leaderboard | Screen::Online)
     }
 }
 
@@ -101,17 +104,19 @@ struct Setup {
     discipline: usize,
     /// Circuit picker: 0 = Random, i = circuits()[i - 1]
     circuit: usize,
-    /// Random circuit size: 0 Sprint, 1 Grand Prix, 2 Ring
+    /// Random circuit size: 0 Sprint, 1 Grand Prix, 2 Ring, 3 Nordring
     circuit_size: usize,
+    /// Night race (headlights)
+    night: bool,
 }
 
 const DIFFICULTY: [(&str, f32); 3] = [("Chill", 0.35), ("Normal", 0.7), ("Spicy", 1.0)];
 const ASSISTS: [(&str, f32); 4] = [("Cozy", 1.3), ("Normal", 1.0), ("Sport", 0.55), ("Sim", 0.0)];
 const LENGTHS: [&str; 3] = ["Short", "Medium", "Long"];
-const CIRCUIT_SIZES: [&str; 3] = ["Sprint", "Grand Prix", "Ring"];
+const CIRCUIT_SIZES: [&str; 4] = ["Sprint", "Grand Prix", "Ring", "Nordring"];
 const DISCIPLINES: [&str; 2] = ["Rally", "Circuit"];
 /// Sensible lap counts per circuit size
-const CIRCUIT_LAPS: [u32; 3] = [5, 3, 1];
+const CIRCUIT_LAPS: [u32; 4] = [5, 3, 1, 1];
 const SURFACES: [&str; 5] = ["Biome default", "Gravel", "Tarmac", "Snow", "Mixed"];
 const TRACK_DIFFICULTY: [&str; 3] = ["Relaxed", "Rally", "Expert"];
 const PAINT_NAMES: [&str; 9] = ["Strawberry", "Blueberry", "Honey", "Pistachio", "Lilac", "Tangerine", "Coconut", "Lagoon", "Sakura"];
@@ -145,7 +150,7 @@ impl Setup {
     }
 
     fn circuit_size_now(&self) -> usize {
-        self.named_circuit().map(|c| c.params.length_class as usize).unwrap_or(self.circuit_size).min(2)
+        self.named_circuit().map(|c| c.params.length_class as usize).unwrap_or(self.circuit_size).min(3)
     }
 
     /// Cars offered for the discipline (rally cars for rally, circuit cars for circuits)
@@ -168,10 +173,16 @@ impl Setup {
     }
 
     fn track_params(&self) -> TrackParams {
+        let mut p = self.track_params_base();
+        p.night |= self.night;
+        p
+    }
+
+    fn track_params_base(&self) -> TrackParams {
         if self.is_circuit() {
             return match self.named_circuit() {
                 Some(c) => c.params,
-                None => rally_core::circuits::circuit_params(self.seed, if self.biome == 0 { None } else { Some(ALL_BIOMES[self.biome - 1]) }, self.circuit_size.min(2) as u8, self.track_difficulty.min(2) as u8),
+                None => rally_core::circuits::circuit_params(self.seed, if self.biome == 0 { None } else { Some(ALL_BIOMES[self.biome - 1]) }, self.circuit_size.min(3) as u8, self.track_difficulty.min(2) as u8),
             }
             .with_env_overrides();
         }
@@ -191,6 +202,7 @@ impl Setup {
             ai_skill: DIFFICULTY[self.difficulty].1,
             assist_level: ASSISTS[self.assists].1,
             mode: self.mode(),
+            online: None,
         }
     }
 }
@@ -305,6 +317,8 @@ struct App {
     pointer_seen: f32,
     /// Campaign screens state (chapter/stage selection, local progress, active stage)
     camp: campaign_screens::CampState,
+    /// Online races (connection, lobby, the running online race)
+    online: online::Online,
 }
 
 impl App {
@@ -337,7 +351,9 @@ impl App {
             settings::save();
         }
         // Settings/Help can be opened over a paused race: only the title/setup end a race
-        if matches!(s, Screen::Title | Screen::Setup | Screen::Campaign | Screen::StageIntro | Screen::Leaderboard) {
+        if matches!(s, Screen::Title | Screen::Setup | Screen::Campaign | Screen::StageIntro | Screen::Leaderboard | Screen::Online) {
+            // leaving an online race for a menu: tell the server
+            self.online.leave_race();
             self.end_session();
         }
         if matches!(s, Screen::Title | Screen::Setup) {
@@ -404,11 +420,16 @@ impl App {
             a.free(&mut self.gpu);
         }
         // [gameplay] a campaign stage queued by campaign_mode::start_stage wins
-        let mut cfg = campaign_mode::take_pending_config().unwrap_or_else(|| self.setup.config());
+        let assist = ASSISTS[self.setup.assists].1;
+        let mut cfg = match self.online.take_config(assist) {
+            Some(c) => c,
+            None => campaign_mode::take_pending_config().unwrap_or_else(|| self.setup.config()),
+        };
         if self.hooks.after_load.as_deref() == Some("results") {
             cfg.laps = 1;
         }
         let mut s = RaceSession::new(cfg, &mut self.gpu);
+        self.online.session_ready(&mut s);
         let cam = cam_mode(settings::get().camera);
         for p in s.players.iter_mut() {
             p.cam.mode = cam;
@@ -478,6 +499,7 @@ impl App {
                     ai_skill: 0.65,
                     assist_level: 1.0,
                     mode: gameplay::GameMode::Race,
+                    online: None,
                 };
                 let mut s = RaceSession::new(cfg, &mut self.gpu);
                 if let rally_core::race::RacePhase::Countdown(_) = s.world.race.phase {
@@ -547,7 +569,7 @@ impl App {
         let view = Mat4::look_at_rh(eye, target, Vec3::Y);
         let proj = Mat4::perspective_rh_gl(fov, aspect, 0.1, 100.0);
         let v = View::new(view, proj, eye);
-        let env = Environment { sun_dir: vec3(-0.4, 0.8, 0.5).normalize(), sun_color: [1.0, 0.95, 0.88], ambient: [0.48, 0.5, 0.56], fog_color: [1.0, 1.0, 1.0], fog_density: 0.0, time: 0.0 };
+        let env = Environment { sun_dir: vec3(-0.4, 0.8, 0.5).normalize(), sun_color: [1.0, 0.95, 0.88], ambient: [0.48, 0.5, 0.56], fog_color: [1.0, 1.0, 1.0], fog_density: 0.0, time: 0.0, night: 0.0 };
         let rot = Mat4::from_rotation_y(self.preview_angle);
         let ride = -spec.mount_height + spec.susp_rest * 0.8 + spec.wheel_radius - 0.6;
         let m = rot * Mat4::from_translation(vec3(0.0, ride, 0.0));
@@ -628,13 +650,24 @@ impl App {
         draw_logo(x, logo_y, 100.0 * s, t, self.screen_t);
         
         let bw = 330.0 * s;
-        let bh = 50.0 * s;
-        let gap = 11.0 * s;
-        let mut y = (sh * 0.38).max(logo_y + 84.0 * s);
-        let all: [(&str, Color); 6] = [("Campaign", BUTTER), ("Quick race", PEACH), ("Split-screen", SKY), ("Settings", LAVENDER), ("How to play", MINT), ("Quit", CREAM)];
+        let all: [(&str, Color); 7] = [("Campaign", BUTTER), ("Quick race", PEACH), ("Split-screen", SKY), ("Online", BERRY), ("Settings", LAVENDER), ("How to play", MINT), ("Quit", CREAM)];
         // phones: no split-screen (one screen, one touch layout) and no Quit (Android apps
         // are left with Home / Back); ids stay those of `all`
-        let items: Vec<(usize, &str, Color)> = all.iter().enumerate().filter(|(i, _)| !(platform::MOBILE && (*i == 2 || *i == 5))).map(|(i, (l, c))| (i, *l, *c)).collect();
+        let items: Vec<(usize, &str, Color)> = all.iter().enumerate().filter(|(i, _)| !(platform::MOBILE && (*i == 2 || *i == 6))).map(|(i, (l, c))| (i, *l, *c)).collect();
+        let items_n = items.len() as f32;
+        let mut y = (sh * 0.38).max(logo_y + 84.0 * s);
+        // fit the column between the tagline and the footer hint (short / tall windows):
+        // shrink buttons and gaps together, and start higher when even that isn't enough
+        let bottom = sh - 54.0 * s;
+        let (mut bh, mut gap) = (50.0 * s, 11.0 * s);
+        let need = items_n * bh + (items_n - 1.0) * gap;
+        if y + need > bottom {
+            let k = ((bottom - y) / need).max(0.72);
+            bh *= k;
+            gap *= k;
+            let need = items_n * bh + (items_n - 1.0) * gap;
+            y = (bottom - need).max(logo_y + 70.0 * s);
+        }
         self.focus.begin(items.len());
         let mut chosen = None;
         for (i, (id, label, col)) in items.iter().enumerate() {
@@ -657,14 +690,18 @@ impl App {
                 self.goto(Screen::Setup);
             }
             Some(3) => {
+                self.setup.split = false;
+                self.goto(Screen::Online);
+            }
+            Some(4) => {
                 self.settings_from = Screen::Title;
                 self.goto(Screen::Settings);
             }
-            Some(4) => {
+            Some(5) => {
                 self.help_from = Screen::Title;
                 self.goto(Screen::Help);
             }
-            Some(5) => std::process::exit(0),
+            Some(6) => std::process::exit(0),
             _ => {}
         }
         // footer: now showing + hint
@@ -768,7 +805,7 @@ impl App {
         let named = self.setup.named_circuit();
         // track column: Discipline + (rally: 5 rows | random circuit: 5 rows | named circuit: 1 row)
         let track_rows = 1 + if circuit && named.is_some() { 1 } else { 5 };
-        let rows = players * 2 + 4 + track_rows + 2 + 1 - if tt { 2 } else { 0 };
+        let rows = players * 2 + 5 + track_rows + 2 + 1 - if tt { 2 } else { 0 };
         self.focus.begin(rows);
         let gap = 22.0 * s;
         let cw = (w - 2.0 * 26.0 * s - gap) * 0.5;
@@ -778,7 +815,7 @@ impl App {
         let top = y + 72.0 * s;
         let button_h = 54.0 * s;
         // tallest column: car rows + race rows, plus two section headers
-        let col_rows = (players * 2 + 5) as f32;
+        let col_rows = (players * 2 + 6) as f32;
         let avail = h - (top - y) - 2.0 * head_h - button_h - 34.0 * s;
         let rh = (avail / col_rows - 8.0 * s).clamp(30.0 * s, 48.0 * s);
         let step = rh + 8.0 * s;
@@ -833,6 +870,11 @@ impl App {
             settings::update(|s| s.assists = a);
             settings::save();
         }
+        ay += step;
+        let d = selector(&mut self.focus, "Time", if self.setup.night { "Night" } else { "Day" }, ax, ay, cw, rh, LAVENDER);
+        if d != 0 {
+            self.setup.night = !self.setup.night;
+        }
         // --- column B: track options
         let mut by = top;
         section("Track", bx, by);
@@ -856,9 +898,9 @@ impl App {
             }
             by += step;
             if named.is_none() {
-                let d = selector(&mut self.focus, "Size", CIRCUIT_SIZES[self.setup.circuit_size.min(2)], bx, by, cw, rh, MINT);
+                let d = selector(&mut self.focus, "Size", CIRCUIT_SIZES[self.setup.circuit_size.min(3)], bx, by, cw, rh, MINT);
                 if d != 0 {
-                    self.setup.circuit_size = wrap(self.setup.circuit_size, d, 3);
+                    self.setup.circuit_size = wrap(self.setup.circuit_size, d, 4);
                     self.setup.laps = CIRCUIT_LAPS[self.setup.circuit_size];
                 }
                 by += step;
@@ -899,8 +941,8 @@ impl App {
             rounded_rect(bx, by + 4.0 * s, cw, card_h - 8.0 * s, 14.0 * s, with_alpha(CREAM_DEEP, 0.7));
             let opp = if tt { "time trial".to_string() } else { format!("{} opponents", self.setup.opponents) };
             let (title, line, blurb) = match (circuit, &named) {
-                (true, Some(c)) => (c.name.clone(), format!("{} - {} laps - {}", CIRCUIT_SIZES[c.params.length_class.min(2) as usize], self.setup.laps, opp), Some(c.blurb.clone())),
-                (true, None) => ("A brand-new circuit".to_string(), format!("{} - {} laps - {}", CIRCUIT_SIZES[self.setup.circuit_size.min(2)], self.setup.laps, opp), None),
+                (true, Some(c)) => (c.name.clone(), format!("{} - {} laps - {}", CIRCUIT_SIZES[c.params.length_class.min(3) as usize], self.setup.laps, opp), Some(c.blurb.clone())),
+                (true, None) => ("A brand-new circuit".to_string(), format!("{} - {} laps - {}", CIRCUIT_SIZES[self.setup.circuit_size.min(3)], self.setup.laps, opp), None),
                 _ => (if self.setup.biome == 0 { "A surprise biome".to_string() } else { ALL_BIOMES[self.setup.biome - 1].style().name.to_string() }, format!("{} laps  -  {} track  -  {}", self.setup.laps, LENGTHS[self.setup.length as usize].to_lowercase(), opp), None),
             };
             let tfs = (21.0 * s).min((cw - 32.0 * s) / text_size(&title, 21.0 * s).x.max(1.0) * 21.0 * s);
@@ -932,7 +974,17 @@ impl App {
             if self.focus.back {
                 audio::ui_sound(audio::UiSound::Back);
             }
-            self.goto(Screen::Title);
+            self.goto(if self.online.setup_for_online { Screen::Online } else { Screen::Title });
+            self.online.setup_for_online = false;
+            return;
+        }
+        if go && self.online.setup_for_online {
+            // leader picked the online race: send it to the lobby instead of starting
+            self.online.setup_for_online = false;
+            let laps = if self.setup.mode() == gameplay::GameMode::TimeTrial { 1 } else { self.setup.laps };
+            let rs = rally_net::RaceSettings { track: self.setup.track_params(), laps, contact: self.online.contact };
+            self.online.send(&rally_net::ClientMsg::SetSettings(rs));
+            self.goto(Screen::Online);
             return;
         }
         if go {
@@ -1234,7 +1286,9 @@ impl App {
                 sess.world.set_input(j, inp);
             }
         }
+        self.online.pre_update(sess, dt);
         sess.update(dt, touch);
+        self.online.post_update(sess, dt);
         // [gameplay] campaign instant restart (T)
         if campaign_mode::take_restart(&sess.config) {
             self.start_race();
@@ -1268,13 +1322,52 @@ impl App {
         if !sess.paused && vps.len() == 1 {
             touch::draw(settings::get().touch_steer);
         }
-        // small on-screen pause button for mouse / touch players
-        PAUSE_BUTTON.store(!sess.paused && self.pointer_seen > 0.0, std::sync::atomic::Ordering::Relaxed);
-        if !sess.paused && self.pointer_seen > 0.0 {
+        if let Some(n) = &sess.night {
             let s = scale();
-            let r = 22.0 * s;
-            let (bx, by) = (screen_width() * 0.5, screen_height() - r - 14.0 * s);
-            let a = self.pointer_seen.min(1.0) * 0.85;
+            for (i, vp) in vps.iter().enumerate() {
+                let Some(p) = sess.players.get(i) else { continue };
+                let cx = vp.x + vp.w * 0.5;
+                // stages: above the progress bar along the bottom
+                let y = vp.y + vp.h - 34.0 * s - if sess.track().is_loop() { 0.0 } else { 48.0 * s };
+                if n.lamp_msg[p.car] < 3.0 {
+                    pill("Headlight smashed! It'll flicker back...", cx, vp.y + vp.h * 0.36, 20.0 * s, with_alpha(BERRY, 0.92), CREAM);
+                }
+                let on_touch = touch::visible() && vps.len() == 1;
+                let beam = match (n.high_beam(p.car), on_touch) {
+                    (true, false) => "High beam (H)",
+                    (false, false) => "Low beam (H)",
+                    (true, true) => "High beam (tap)",
+                    (false, true) => "Low beam (tap)",
+                };
+                let size = if on_touch { 20.0 * s } else { 16.0 * s };
+                let bx = cx - vp.w * 0.17;
+                let w = pill(beam, bx, y, size, with_alpha(if n.high_beam(p.car) { SKY } else { CREAM }, 0.85), INK);
+                // phones: the pill is the beam switch (generous hit box)
+                if on_touch && !sess.paused && touch::tapped(Rect::new(bx - w * 0.5 - 12.0 * s, y - size * 1.6, w + 24.0 * s, size * 3.2)) {
+                    touch::request_beam();
+                }
+            }
+        }
+        if let Some(line) = self.online.status_line(sess) {
+            let s = scale();
+            pill(&line, screen_width() * 0.5, screen_height() * 0.30, 22.0 * s, with_alpha(CREAM, 0.92), INK);
+        }
+        // small on-screen pause button: always there with touch controls (top row, next to the
+        // speedo), else bottom centre while a mouse / touch was used recently
+        let touch_row = (touch::visible() && vps.len() == 1).then(|| hud::touch_top_row(&vps[0]));
+        let show_pause = !sess.paused && (touch_row.is_some() || self.pointer_seen > 0.0);
+        // (bottom-centre widgets only need to dodge the bottom-centre button)
+        PAUSE_BUTTON.store(show_pause && touch_row.is_none(), std::sync::atomic::Ordering::Relaxed);
+        if show_pause {
+            let s = scale();
+            let (r, bx, by, a) = match &touch_row {
+                Some(l) => (l.pause_r, l.pause.x, l.pause.y, 0.9),
+                None => {
+                    let r = 22.0 * s;
+                    (r, screen_width() * 0.5, screen_height() - r - 14.0 * s, self.pointer_seen.min(1.0) * 0.85)
+                }
+            };
+            let s = r / 22.0; // icon scales with the button
             circle(bx, by + 2.0 * s, r, with_alpha(SHADOW, a * 0.5));
             circle(bx, by, r, with_alpha(CREAM, a));
             rounded_rect(bx - 7.0 * s, by - 8.0 * s, 5.0 * s, 16.0 * s, 2.0 * s, with_alpha(INK, a));
@@ -1298,6 +1391,35 @@ impl App {
             self.results_cine.frame = vec2(-0.45, 0.42);
             self.switch_now(Screen::Results);
             self.set_music(audio::Music::Results);
+        }
+    }
+
+    fn online_screen(&mut self) {
+        self.menu_backdrop();
+        // the lobby offers the cars of the race's discipline (rally cars until a race is picked)
+        let circuit = self.online.client.as_ref().and_then(|c| c.settings.as_ref()).map(|st| st.track.discipline == rally_core::track::Discipline::Circuit).unwrap_or(self.setup.is_circuit());
+        let want = if circuit { rally_core::vehicle::CarClass::Circuit } else { rally_core::vehicle::CarClass::Rally };
+        let allowed: Vec<usize> = car_specs().iter().enumerate().filter(|(_, c)| c.class == want).map(|(i, _)| i).collect();
+        let (mut car, mut paint) = (self.setup.cars[0], self.setup.paints[0]);
+        if !allowed.contains(&car) && !allowed.is_empty() {
+            car = allowed[0];
+        }
+        let mut f = std::mem::take(&mut self.focus);
+        let action = self.online.screen(&mut f, &mut car, &mut paint, &allowed);
+        self.focus = f;
+        self.setup.cars[0] = car;
+        self.setup.paints[0] = paint;
+        match action {
+            online::LobbyAction::Back => {
+                audio::ui_sound(audio::UiSound::Back);
+                self.goto(Screen::Title);
+            }
+            online::LobbyAction::PickRace => {
+                self.online.setup_for_online = true;
+                self.setup.split = false;
+                self.goto(Screen::Setup);
+            }
+            online::LobbyAction::None => {}
         }
     }
 
@@ -1327,9 +1449,10 @@ impl App {
         let bh = 54.0 * s;
         let bx = x + 30.0 * s;
         let resume = button_back(&mut f, "Resume", bx, y + 112.0 * s, bw, bh, MINT);
-        let restart = button(&mut f, "Restart", bx, y + 180.0 * s, bw, bh, BUTTER);
+        let online = self.online.in_race();
+        let restart = button(&mut f, if online { "Racing online" } else { "Restart" }, bx, y + 180.0 * s, bw, bh, BUTTER) && !online;
         let sett = button(&mut f, "Settings", bx, y + 248.0 * s, bw, bh, SKY);
-        let quit = button_back(&mut f, "Quit to menu", bx, y + 316.0 * s, bw, bh, PEACH);
+        let quit = button_back(&mut f, if online { "Leave race" } else { "Quit to menu" }, bx, y + 316.0 * s, bw, bh, PEACH);
         self.pause_focus = f;
         if resume {
             if let Some(sess) = self.session.as_mut() {
@@ -1344,7 +1467,7 @@ impl App {
             self.switch_now(Screen::Settings);
         }
         if quit {
-            self.goto(if self.camp.active.is_some() { Screen::Campaign } else { Screen::Title });
+            self.goto(if online { Screen::Online } else if self.camp.active.is_some() { Screen::Campaign } else { Screen::Title });
         }
     }
 
@@ -1355,7 +1478,9 @@ impl App {
         };
         // keep the world alive in the background (cars coast on autopilot), orbit the player
         let dt = get_frame_time().min(0.05);
+        self.online.pre_update(sess, dt);
         sess.update(dt, None);
+        self.online.post_update(sess, dt);
         self.results_cine.update(sess, dt);
         let horizon = sess.scene.sky_horizon;
         clear_background(Color::new(horizon[0], horizon[1], horizon[2], 1.0));
@@ -1486,6 +1611,15 @@ impl App {
         let by = (ty0 + th + 20.0 * s).min(sh - 76.0 * s);
         let bw = (tw - 32.0 * s) / 3.0;
         let bh = 52.0 * s;
+        if self.online.in_race() || self.online.connected() {
+            let official = self.online.race.as_ref().is_some_and(|r| r.official.is_some());
+            text(if official { "Official times from the server" } else { "Waiting for everyone to finish..." }, tx, by - 8.0 * s, 16.0 * s, INK_SOFT);
+            self.focus.begin(1);
+            if button(&mut self.focus, "Back to lobby", tx, by, tw, bh, MINT) || self.focus.back {
+                self.goto(Screen::Online);
+            }
+            return;
+        }
         self.focus.begin(3);
         let again = button(&mut self.focus, "Race again", tx, by, bw, bh, MINT);
         let new_track = button(&mut self.focus, "New track", tx + bw + 16.0 * s, by, bw, bh, BUTTER);
@@ -1514,7 +1648,7 @@ impl App {
         text_outlined_centered("Building your track...", cx, cy + 10.0 * s, 46.0 * s, CREAM);
         let what = match (self.setup.is_circuit(), self.setup.named_circuit()) {
             (true, Some(c)) => c.name,
-            (true, None) => format!("{} {}", biome_reveal(self.setup.biome, self.setup.seed), CIRCUIT_SIZES[self.setup.circuit_size.min(2)]),
+            (true, None) => format!("{} {}", biome_reveal(self.setup.biome, self.setup.seed), CIRCUIT_SIZES[self.setup.circuit_size.min(3)]),
             _ => biome_reveal(self.setup.biome, self.setup.seed),
         };
         text_mid(&what, cx, cy + 46.0 * s, 26.0 * s, INK);
@@ -1649,7 +1783,7 @@ async fn main() {
     let mut app = App {
         gpu: Gpu::new(),
         screen: Screen::Title,
-        setup: Setup { split: hooks.split, cars: [2, 1], paints: [0, 1], biome: 0, length: 1, seed: random_seed(), laps: 3, opponents: 3, difficulty: 1, assists: st.assists.min(ASSISTS.len() - 1), surface_mode: 0, track_difficulty: 1, mode: 0, discipline: st.discipline.min(1), circuit: st.circuit.min(rally_core::circuits::circuits().len()), circuit_size: st.circuit_size.min(2) },
+        setup: Setup { split: hooks.split, cars: [2, 1], paints: [0, 1], biome: 0, length: 1, seed: random_seed(), laps: 3, opponents: 3, difficulty: 1, assists: st.assists.min(ASSISTS.len() - 1), surface_mode: 0, track_difficulty: 1, mode: 0, discipline: st.discipline.min(1), circuit: st.circuit.min(rally_core::circuits::circuits().len()), circuit_size: st.circuit_size.min(3), night: false },
         session: None,
         hud: None,
         focus: Focus::default(),
@@ -1672,6 +1806,7 @@ async fn main() {
         fps: 60.0,
         pointer_seen: 0.0,
         camp: campaign_screens::CampState::new(),
+        online: online::Online::new(),
         hooks,
     };
     app.set_music(audio::Music::Menu);
@@ -1725,6 +1860,7 @@ async fn main() {
         app.screen = match scr.as_str() {
             "setup" => Screen::Setup,
             "help" => Screen::Help,
+            "online" => Screen::Online,
             "settings" => Screen::Settings,
             "race" | "loading" => Screen::Loading,
             "campaign" => Screen::Campaign,
@@ -1747,10 +1883,36 @@ async fn main() {
         app.screen = Screen::Loading;
     }
     let start = get_time();
+    // test hooks: COZY_ONLINE=<address> joins a server at startup (COZY_NAME sets the name);
+    // COZY_ONLINE_LEAD=<n> makes this client pick a 1-lap race and start once n players are in
+    let online_lead: Option<usize> = std::env::var("COZY_ONLINE_LEAD").ok().and_then(|v| v.parse().ok());
+    let mut online_lead_done = false;
+    if let Ok(addr) = std::env::var("COZY_ONLINE") {
+        let name = std::env::var("COZY_NAME").unwrap_or_else(|_| "Tester".into());
+        app.online.client = Some(rally_net::NetClient::connect(&addr, &name, app.setup.cars[0] as u8, app.setup.paints[0] as u8));
+        app.screen = Screen::Online;
+    }
     let mut shot_idx = 0;
     loop {
+        if let (Some(n), false) = (online_lead, online_lead_done) {
+            if app.online.client.as_ref().is_some_and(|c| c.is_leader() && c.players.len() >= n) {
+                online_lead_done = true;
+                let rs = rally_net::RaceSettings { track: app.setup.track_params(), laps: 1, contact: false };
+                app.online.send(&rally_net::ClientMsg::SetSettings(rs));
+                // COZY_ONLINE_PICK=1: only pick the race (lobby screenshots), don't start it
+                if std::env::var("COZY_ONLINE_PICK").is_err() {
+                    app.online.send(&rally_net::ClientMsg::StartRace);
+                }
+            }
+        }
         input::poll(); // [gameplay] gamepads
         app.screen_t += get_frame_time().min(0.05);
+        app.online.poll();
+        // the leader started a race: everyone in the lobby (or on results) goes to the line.
+        // Retried every frame: `goto` is ignored while a fade is still playing.
+        if app.online.pending_start.is_some() && app.screen != Screen::Loading && app.trans.target != Some(Screen::Loading) && app.trans.phase == 0 {
+            app.start_race();
+        }
         match app.screen {
             Screen::Title => app.title(),
             Screen::Help => app.help(),
@@ -1763,6 +1925,7 @@ async fn main() {
             Screen::StageIntro => app.stage_intro(),
             Screen::StageResults => app.stage_results(),
             Screen::Leaderboard => app.leaderboard_screen(),
+            Screen::Online => app.online_screen(),
         }
         app.draw_overlays();
         app.update_transition();

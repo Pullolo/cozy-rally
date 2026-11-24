@@ -52,7 +52,7 @@ pub struct Settings {
     pub discipline: usize,
     /// Circuit picker: 0 = Random, 1.. = index+1 into rally_core::circuits::circuits()
     pub circuit: usize,
-    /// Random circuit size: 0 Sprint, 1 Grand Prix, 2 Ring
+    /// Random circuit size: 0 Sprint, 1 Grand Prix, 2 Ring, 3 Nordring
     pub circuit_size: usize,
     /// Last car per discipline
     pub car_rally: usize,
@@ -149,7 +149,7 @@ fn parse(text: &str) -> Settings {
             "pace_notes_circuit" => s.pace_notes_circuit = b(),
             "discipline" => s.discipline = v.parse::<usize>().unwrap_or(0).min(1),
             "circuit" => s.circuit = v.parse::<usize>().unwrap_or(s.circuit),
-            "circuit_size" => s.circuit_size = v.parse::<usize>().unwrap_or(1).min(2),
+            "circuit_size" => s.circuit_size = v.parse::<usize>().unwrap_or(1).min(3),
             "car_rally" => s.car_rally = v.parse::<usize>().unwrap_or(s.car_rally),
             "car_circuit" => s.car_circuit = v.parse::<usize>().unwrap_or(s.car_circuit),
             "racing_line" => s.racing_line = v.parse::<usize>().unwrap_or(s.racing_line).min(RACING_LINE_NAMES.len() - 1),
@@ -212,8 +212,37 @@ mod tests {
     use super::*;
     #[test]
     fn roundtrip() {
-        let s = Settings { master: 0.3, music: 0.0, sfx: 1.0, assists: 3, camera: 2, fullscreen: true, show_fps: true, quality: Quality::Low, show_traction: false, pace_notes: false, racing_line: 2, pace_notes_circuit: true, discipline: 1, circuit: 3, circuit_size: 2, car_rally: 1, car_circuit: 7 };
+        let s = Settings { master: 0.3, music: 0.0, sfx: 1.0, assists: 3, camera: 2, fullscreen: true, show_fps: true, quality: Quality::Low, show_traction: false, pace_notes: false, racing_line: 2, pace_notes_circuit: true, discipline: 1, circuit: 3, circuit_size: 2, car_rally: 1, car_circuit: 7, touch_steer: 1 };
         assert_eq!(parse(&serialize(&s)), s);
         assert_eq!(parse("garbage\nmaster=nan\nassists=99"), Settings { assists: 3, ..Settings::DEFAULT });
+    }
+}
+
+/// Online prefs (last server address + player name), kept in `online.txt` next to settings.txt
+/// because `Settings` is `Copy`. Returns ("", "") when missing.
+pub fn load_online() -> (String, String) {
+    let text = paths().iter().find_map(|p| std::fs::read_to_string(p.with_file_name("online.txt")).ok()).unwrap_or_default();
+    let mut out = (String::new(), String::new());
+    for line in text.lines() {
+        match line.split_once('=') {
+            Some(("address", v)) => out.0 = v.trim().to_string(),
+            Some(("name", v)) => out.1 = v.trim().to_string(),
+            _ => {}
+        }
+    }
+    out
+}
+
+pub fn save_online(address: &str, name: &str) {
+    let clean = |s: &str| s.replace(['\n', '\r'], "");
+    let text = format!("address={}\nname={}\n", clean(address), clean(name));
+    for p in paths() {
+        let p = p.with_file_name("online.txt");
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if std::fs::write(&p, &text).is_ok() {
+            break;
+        }
     }
 }

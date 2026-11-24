@@ -412,6 +412,18 @@ impl PlayerInput {
         touch || p || pressed(&ks.iter().map(|k| k.camera).collect::<Vec<_>>())
     }
 
+    /// High / low beam toggle (night races): H (Right Alt for the arrows player), pad D-pad up,
+    /// tap on the beam pill (touch)
+    pub fn beam_pressed(&self) -> bool {
+        let p = self.pad_state().is_some_and(|p| p.pressed(PadButton::Up));
+        let k = match self.scheme {
+            Scheme::Arrows => is_key_pressed(KeyCode::RightAlt),
+            _ => is_key_pressed(KeyCode::H),
+        };
+        let touch = self.pad == Some(0) && crate::touch::take_beam();
+        touch || p || k
+    }
+
     pub fn sample(&mut self, dt: f32, extra: Option<CarInput>) -> CarInput {
         let ks = self.keys();
         let up = down(&ks.iter().map(|k| k.up).collect::<Vec<_>>());

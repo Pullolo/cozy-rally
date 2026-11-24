@@ -668,8 +668,12 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
                     let (p, n) = hull.point3(*z, sx, *u);
                     round_lamp(&mut m, &mut head, p + n * 0.035, n, 0.07 - k as f32 * 0.01, DARK, HEAD_OFF);
                 }
-                let (p, n) = hull.point3(rear - 0.04, sx, 3.9);
-                rect_lamp(&mut m, &mut brake, p - n * 0.01, n, Vec3::X * sx, 0.2, 0.03, TAIL_OFF, LENS);
+                // slim tail-light bar flat on the rear panel, kept inside the body outline
+                // (the rear-most ring's real width at that height, minus the trim and a margin)
+                let (p, _) = hull.point(rear, sx, 3.9);
+                let hw = 0.17;
+                let cx = (p.x.abs() - 0.07 - 0.025 - hw).max(hw + 0.3);
+                rect_lamp(&mut m, &mut brake, Vec3::new(sx * cx, p.y - 0.02, rear + 0.004), Vec3::Z, Vec3::X * sx, hw, 0.03, TAIL_OFF, LENS);
                 rect_lamp(&mut m, &mut rev, Vec3::new(sx * 0.22, hull.sec(rear).ybot + 0.14, rear + 0.004), Vec3::Z, Vec3::X * sx, 0.06, 0.025, REV_OFF, LENS);
                 // mirror on a stalk from the door top, just behind the A pillar
                 let (p, _) = hull.point(-0.38, sx, 5.0);

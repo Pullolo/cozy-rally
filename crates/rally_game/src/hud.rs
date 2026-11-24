@@ -278,6 +278,25 @@ pub fn hud_scale(vp: &Viewport) -> f32 {
     own.max(full * 0.74).max(0.62).clamp(0.4, 4.0)
 }
 
+/// Touch HUD top-right row, right to left: timer card, speedo, pause button
+pub struct TouchTopRow {
+    pub speedo: Vec2,
+    pub speedo_r: f32,
+    pub pause: Vec2,
+    pub pause_r: f32,
+}
+
+pub fn touch_top_row(vp: &Viewport) -> TouchTopRow {
+    let k = hud_scale(vp);
+    let pad = 16.0 * k;
+    let timer_x = vp.x + vp.w - 230.0 * k - pad; // timer card width, see draw_hud
+    let speedo_r = 62.0 * k;
+    let speedo = vec2(timer_x - 14.0 * k - speedo_r, vp.y + pad + speedo_r - 4.0 * k);
+    let pause_r = 26.0 * k;
+    let pause = vec2(speedo.x - speedo_r - 18.0 * k - pause_r, vp.y + pad + pause_r + 4.0 * k);
+    TouchTopRow { speedo, speedo_r, pause, pause_r }
+}
+
 pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
     let p = &s.players[player];
     let car = &s.world.cars[p.car];
@@ -409,12 +428,17 @@ pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
     }
 
     // ---------------------------------------------------------------- speedo + traction (bottom right)
-    // touch controls own the bottom corners: speedo moves under the timer card, minimap up the
-    // left side (no grip widget)
+    // touch controls own the bottom corners: the speedo moves to the top row, left of the timer
+    // card (the column under the card holds the delta / medal / split chips), then the pause
+    // button; the minimap goes up the left side (no grip widget)
     let touch = crate::touch::visible();
-    let sr = if touch { 66.0 * k } else { 78.0 * k };
-    let cx = vp.x + vp.w - sr - pad - 6.0 * k;
-    let cy = if touch { vp.y + 150.0 * k + sr } else { vp.y + vp.h - sr - pad };
+    let (cx, cy, sr) = if touch {
+        let l = touch_top_row(vp);
+        (l.speedo.x, l.speedo.y, l.speedo_r)
+    } else {
+        let sr = 78.0 * k;
+        (vp.x + vp.w - sr - pad - 6.0 * k, vp.y + vp.h - sr - pad, sr)
+    };
     draw_speedo(car, h, cx, cy, sr, k, t);
     // circuits: gentle "track limits" reminder when all four wheels are beyond the white lines
     if s.track().params.discipline == rally_core::track::Discipline::Circuit && race.is_racing() && !r.finished {

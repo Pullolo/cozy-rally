@@ -4,6 +4,7 @@
 //! until the minimum corner radius is drivable -> self-clearance check -> elevation profile
 //! (smoothed terrain + crests + jumps, slope-limited) -> banking -> heightfield that is
 //! flattened under the road and blended into natural hills -> props.
+use crate::layout::FeatureKind;
 use crate::biome::{Biome, BiomeStyle};
 use crate::noise;
 use crate::rng::Rng;
@@ -40,6 +41,9 @@ pub struct TrackParams {
     /// Rally stage/loop (default) or a tarmac racing circuit for the circuit car class
     #[serde(default)]
     pub discipline: Discipline,
+    /// Night race: moonlight + headlights (visual; the same road and conditions as by day)
+    #[serde(default)]
+    pub night: bool,
 }
 
 /// Track discipline (shared interface).
@@ -71,7 +75,16 @@ pub const DIFFICULTY_NAMES: [&str; 3] = ["Relaxed", "Rally", "Expert"];
 impl TrackParams {
     /// Test hook: `COZY_TRACK_STYLE=0..2` (Relaxed/Rally/Expert) and
     /// `COZY_SURFACE=biome|gravel|tarmac|snow|mixed` (or 0..4) override the params.
-    pub fn with_env_overrides(mut self) -> Self {
+    pub fn with_env_overrides(self) -> Self {
+        let mut p = self.env_overrides_inner();
+        // COZY_NIGHT=1: night race (visual testing; also for named circuits / stages)
+        if std::env::var("COZY_NIGHT").is_ok_and(|v| v == "1") {
+            p.night = true;
+        }
+        p
+    }
+
+    fn env_overrides_inner(mut self) -> Self {
         // COZY_STAGE=<campaign stage id> plays that point-to-point stage instead
         if let Some(st) = std::env::var("COZY_STAGE").ok().and_then(|id| crate::campaign::find_stage(&id)) {
             return st.params;
@@ -115,7 +128,7 @@ impl TrackParams {
 
 impl Default for TrackParams {
     fn default() -> Self {
-        TrackParams { seed: 1, biome: None, length_class: 1, difficulty: default_difficulty(), surface: SurfaceMode::BiomeDefault, layout: LayoutKind::Loop, conditions: crate::weather::ConditionsSpec::BiomeDefault, discipline: Discipline::Rally }
+        TrackParams { seed: 1, biome: None, length_class: 1, difficulty: default_difficulty(), surface: SurfaceMode::BiomeDefault, layout: LayoutKind::Loop, conditions: crate::weather::ConditionsSpec::BiomeDefault, discipline: Discipline::Rally, night: false }
     }
 }
 
@@ -227,6 +240,23 @@ pub enum PropKind {
     TrackBridge,
     /// Striped gravel-trap marker post
     MarkerPost,
+    /// Floodlight mast (circuits, lit zones only): ~10 m pole, lamp head hanging toward -Z
+    /// (the track) at local (0, LAMP_HEAD_Y, LAMP_HEAD_Z) * scale. Lit at night.
+    LampPost,
+}
+
+/// Lamp head position on a `PropKind::LampPost` in prop-local metres (before scale)
+pub const LAMP_HEAD_Y: f32 = 9.6;
+pub const LAMP_HEAD_Z: f32 = -2.1;
+
+impl Prop {
+    /// World position of a lamp post's light (LampPost only)
+    pub fn lamp_head(&self) -> Vec3 {
+        let (s, c) = self.rot_y.sin_cos();
+        // local -> world for a yaw rotation about Y (matches Mat4::from_rotation_y)
+        let lz = LAMP_HEAD_Z * self.scale;
+        self.pos + Vec3::new(s * lz, LAMP_HEAD_Y * self.scale, c * lz)
+    }
 }
 
 impl PropKind {
@@ -1128,10 +1158,12 @@ impl Track {
         let style0 = biome.style();
         let noise_seed = (params.seed as u32).wrapping_mul(2654435761);
         let diff = params.difficulty.min(2);
-        let size = params.length_class.min(2);
-        let ring = size == 2;
+        let size = params.length_class.min(3);
+        let ring = size >= 2;
+        // the Nordring: narrower still, hillier, more blind brows, barriers close to the road
+        let nord = size == 3;
         // 12-16 m wide (the Ring is narrower and rougher), pit straight wider still
-        let (hw_lo, hw_hi) = [(6.2, 7.2), (6.5, 7.8), (5.0, 6.3)][size as usize];
+        let (hw_lo, hw_hi) = [(6.2, 7.2), (6.5, 7.8), (5.0, 6.3), (4.5, 5.6)][size as usize];
         let half_w_base = hw_hi + 1.6;
         let nat = |x: f32, z: f32| natural_height(&style0, biome, noise_seed, x, z);
 
@@ -1155,17 +1187,17 @@ impl Track {
         let grid = SpatialGrid::new(&pts, 16.0, 60.0);
 
         // ---- elevation: gentle parkland circuits, a hilly "Ring"
-        let amp = if ring { 2.2 } else { 0.4 };
+        let amp = if nord { 3.0 } else if ring { 2.2 } else { 0.4 };
         let mut elev: Vec<f32> = pts.iter().map(|p| nat(p.x, p.y) * amp).collect();
         smooth_closed_f32(&mut elev, if ring { 10 } else { 22 }, 3);
-        slope_limit(&mut elev, if ring { 0.11 } else { 0.05 } * SAMPLE_SPACING);
+        slope_limit(&mut elev, if nord { 0.13 } else if ring { 0.11 } else { 0.05 } * SAMPLE_SPACING);
         smooth_closed_f32(&mut elev, 4, 2);
         // the Ring: wide crests (some go light at speed), compressions, blind brows before bends
         let mut jumps = Vec::new();
         if ring {
             let feats = &lay.features;
             let mut bumps: Vec<(f32, f32, f32)> = Vec::new();
-            let count = (length / 650.0) as usize;
+            let count = (length / if nord { 430.0 } else { 650.0 }) as usize;
             let mut tries = 0;
             while bumps.len() < count && tries < 400 {
                 tries += 1;
@@ -1180,7 +1212,8 @@ impl Track {
                 let i = (c / SAMPLE_SPACING) as usize % n;
                 let k = (-15..=15).map(|o: isize| curv[(i as isize + o).rem_euclid(n as isize) as usize].abs()).fold(1e-4, f32::max);
                 let v = circuit_corner_speed(1.0 / k, CIRCUIT_REF_MU).min(78.0);
-                let g = if crest && rng.chance(0.35) { 1.15 } else { 0.8 }; // a few "flying" brows
+                // a few "flying" brows (many more on the Nordring)
+                let g = if crest && rng.chance(if nord { 0.5 } else { 0.35 }) { if nord { 1.25 } else { 1.15 } } else { 0.8 };
                 let a_max = g * 9.81 * 2.0 * w * w / (std::f32::consts::PI.powi(2) * v * v);
                 let a = rng.range(1.2, 3.2).min(a_max);
                 if a < 0.4 {
@@ -1255,7 +1288,18 @@ impl Track {
         }
 
         // ---- kerbs and run-off from the corners
-        let edges = circuit_edges(&samples, &pts, &grid, &mut rng);
+        let mut edges = circuit_edges(&samples, &pts, &grid, &mut rng);
+        if nord {
+            // old-school ring road: hedges and armco right behind a thin verge, few gravel traps
+            for e in edges.iter_mut() {
+                for r in [&mut e.runoff_left, &mut e.runoff_right] {
+                    r.width = (r.width * 0.4).min(9.0);
+                    if r.width < 3.0 {
+                        r.kind = RunoffKind::Grass;
+                    }
+                }
+            }
+        }
 
         // ---- terrain: corridor detail (run-off kept flat), coarse far away
         let mut min = Vec2::splat(f32::MAX);
@@ -1345,7 +1389,7 @@ impl Track {
         } else {
             None
         };
-        let n_cp = if ring { 16 } else { 8 };
+        let n_cp = if nord { 32 } else if ring { 16 } else { 8 };
         let checkpoints = (0..n_cp).map(|k| k * n / n_cp).collect();
         let mut track = Track {
             params: params.clone(),
@@ -1380,6 +1424,10 @@ impl Track {
         props.retain(|p| {
             if matches!(p.kind, PropKind::Chevron | PropKind::ArrowSign | PropKind::HayBale | PropKind::Cone) {
                 return false;
+            }
+            // floodlight masts are placed deliberately just behind the barriers
+            if p.kind == PropKind::LampPost {
+                return true;
             }
             let q = track.query(p.pos, None);
             let e = track.edge(q.index);
@@ -2180,8 +2228,75 @@ impl<'a> PropPlacer<'a> {
                 self.push(PropKind::TrackBridge, p, yaw_along(-Self::flat_right(&s)), half / 5.0, 0.0, rng.range_i(0, 4) as u8);
             }
         }
+        self.lamp_zones(rng, a, b);
         let s0 = self.smp(0).pos;
         self.keep_out.push((Vec2::new(s0.x, s0.z), 30.0));
+    }
+
+    /// Floodlit zones for night racing: the pit straight plus a few slow corners (more on the
+    /// long rings). Everything between them stays dark on purpose.
+    fn lamp_zones(&mut self, rng: &mut Rng, a: isize, b: isize) {
+        let n = self.n() as isize;
+        let len = self.t.length;
+        let extra = if len < 3500.0 { 1 } else if len < 6500.0 { 2 } else if len < 14000.0 { 3 } else { 6 };
+        let mut zones: Vec<(isize, isize, bool)> = vec![(a - 30, b + 30, true)];
+        // slow corners first (that is where a lit marshal area makes sense), random tie-breaks
+        let mut cands: Vec<(f32, isize, isize)> = self
+            .t
+            .features
+            .iter()
+            .filter_map(|f| {
+                let pri = match f.kind {
+                    FeatureKind::Hairpin => 3.0,
+                    FeatureKind::Chicane => 2.4,
+                    FeatureKind::Square => 2.0,
+                    FeatureKind::Tightening => 1.2,
+                    _ => return None,
+                };
+                let i0 = (f.s0 / SAMPLE_SPACING) as isize;
+                let l = (f.len(len) / SAMPLE_SPACING) as isize;
+                Some((pri + rng.range(0.0, 1.5), i0 - 55, i0 + l + 30))
+            })
+            .collect();
+        cands.sort_by(|x, y| y.0.total_cmp(&x.0));
+        let gap = |p: isize, q: isize| {
+            let d = (p - q).rem_euclid(n);
+            d.min(n - d) as f32 * SAMPLE_SPACING
+        };
+        for (_, z0, z1) in cands {
+            if zones.len() > extra {
+                break;
+            }
+            let mid = (z0 + z1) / 2;
+            if zones.iter().all(|z| gap(mid, (z.0 + z.1) / 2) > 450.0) {
+                zones.push((z0, z1, false));
+            }
+        }
+        for (z0, z1, main) in zones {
+            let mut i = z0;
+            let mut k = 0;
+            while i <= z1 {
+                // main straight: both sides, staggered; corners: the outside of the bend
+                let side = if main {
+                    if k % 2 == 0 { 1.0 } else { -1.0 }
+                } else {
+                    let c = (-10..=10).map(|o| self.smp(i + o).curvature).sum::<f32>();
+                    if c.abs() < 1e-4 { 1.0 } else if c > 0.0 { 1.0 } else { -1.0 }
+                };
+                let ro = if main { 1.2 } else { self.runoff(i, side) + 1.5 };
+                let lat = side * (self.edge(i) + ro);
+                let p = self.beside(i, lat, 0.0);
+                if !self.under_water(p.y, 0.2) && self.clearance(p) > lat.abs() - self.edge(i) - 1.5 {
+                    let t = self.smp(i).tangent;
+                    let flat = Vec3::new(t.x, 0.0, t.z).normalize_or_zero();
+                    // fronts (-Z) face the road (see `along`)
+                    let yaw = yaw_along(if side > 0.0 { -flat } else { flat });
+                    self.push(PropKind::LampPost, p, yaw, 1.0, 0.0, 0);
+                }
+                i += if main { 13 } else { 15 };
+                k += 1;
+            }
+        }
     }
 
     /// Finish line sample on a stage: at `length_m` when the road runs on past it (the run-out

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/rally_core", "crates/rally_game"]
+members = ["crates/rally_core", "crates/rally_game", "crates/rally_net"]
 
 [profile.dev]
 opt-level = 1

@@ -1709,6 +1709,28 @@ fn marker_post(m: &mut MeshBuilder, f: &Frame) {
     }
 }
 
+/// Floodlight mast: tapered pole on a concrete foot, a curved arm reaching toward the track
+/// (-Z) and a flat lamp head with a pale lens underneath (lit by night.rs after dark)
+fn lamp_post(m: &mut MeshBuilder, f: &Frame) {
+    use rally_core::track::{LAMP_HEAD_Y, LAMP_HEAD_Z};
+    let steel = rgb([0.52, 0.55, 0.6]);
+    let dark = rgb([0.3, 0.32, 0.36]);
+    m.cube(f.at(0.0, 0.3, 0.0), Vec3::new(0.32, 0.3, 0.32), rgb([0.72, 0.71, 0.68]));
+    m.frustum(f.at(0.0, 0.6 + (LAMP_HEAD_Y - 0.4) * 0.5, 0.0), 0.16, 0.09, (LAMP_HEAD_Y - 0.4) * 0.5, 8, steel, steel);
+    // arm: three short segments bending out over the run-off
+    let top = LAMP_HEAD_Y + 0.35;
+    for k in 0..3 {
+        let t = (k as f32 + 0.5) / 3.0;
+        let z = LAMP_HEAD_Z * t;
+        let y = top - 0.25 * t * t;
+        let tilt = Quat::from_rotation_x(-0.15 - 0.25 * t);
+        m.cube(f.atr(0.0, y, z, tilt), Vec3::new(0.06, 0.06, LAMP_HEAD_Z.abs() / 6.0 + 0.05), steel);
+    }
+    // lamp head and lens
+    m.cube(f.at(0.0, LAMP_HEAD_Y + 0.12, LAMP_HEAD_Z), Vec3::new(0.38, 0.12, 0.3), dark);
+    m.cube(f.at(0.0, LAMP_HEAD_Y - 0.02, LAMP_HEAD_Z), Vec3::new(0.32, 0.03, 0.24), rgb([0.86, 0.86, 0.8]));
+}
+
 /// Append a prop (world space) to `m`
 pub fn add_prop(m: &mut MeshBuilder, p: &Prop, style: &BiomeStyle) {
     let base = Mat4::from_scale_rotation_translation(Vec3::splat(p.scale), Quat::from_rotation_y(p.rot_y), p.pos);
@@ -1773,6 +1795,7 @@ pub fn add_prop(m: &mut MeshBuilder, p: &Prop, style: &BiomeStyle) {
         AdBanner => ad_banner(m, &f, p),
         TrackBridge => track_bridge(m, p),
         MarkerPost => marker_post(m, &f),
+        LampPost => lamp_post(m, &f),
     }
 }
 
@@ -1787,7 +1810,7 @@ pub fn catalogue_kinds(b: Biome) -> Vec<(PropKind, u8)> {
         v.push((Spectator, k));
     }
     v.extend_from_slice(&[(Tent, 0), (Camper, 1), (Picnic, 2), (FlagPole, 0), (Bunting, 0), (Cone, 0)]);
-    v.extend_from_slice(&[(Gantry, 2), (PitBuilding, 0), (PitWall, 0), (Grandstand, 0), (Armco, 0), (TyreWall, 0), (BrakeBoard, 3), (BrakeBoard, 1), (AdBanner, 0), (AdBanner, 4), (TrackBridge, 0), (MarkerPost, 0)]);
+    v.extend_from_slice(&[(Gantry, 2), (PitBuilding, 0), (PitWall, 0), (Grandstand, 0), (Armco, 0), (TyreWall, 0), (BrakeBoard, 3), (BrakeBoard, 1), (AdBanner, 0), (AdBanner, 4), (TrackBridge, 0), (MarkerPost, 0), (LampPost, 0)]);
     v.extend_from_slice(&[(Gantry, 0), (Gantry, 1), (StageBoard, 0), (StageBoard, 1), (StageBoard, 2 | (2 << 3)), (StageBoard, 3), (TimingHut, 0), (MarshalPost, 0), (SafetyTape, 0), (WarningSign, 0), (WarningSign, 1), (WarningSign, 2), (WarningSign, 3), (WarningSign, 4), (BridgeRail, 0)]);
     let special: &[(PropKind, u8)] = match b {
         Biome::Meadow => &[(Birch, 0), (Blossom, 0), (Pine, 0), (Mushroom, 0), (Cottage, 0), (Barn, 0), (Windmill, 0), (Sheep, 0), (Sheep, 1), (Cow, 0), (Cow, 1), (Beehive, 0), (FlowerField, 0), (FlowerField, 1)],

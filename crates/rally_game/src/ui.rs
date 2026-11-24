@@ -43,6 +43,22 @@ pub fn init_font() {
 static INPUT_BLOCKED: AtomicBool = AtomicBool::new(false);
 
 /// While a screen transition runs, widgets ignore input (no double activations).
+/// A text field has keyboard focus: menus ignore key navigation (pointer still works)
+static TYPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Phones: also opens / closes the on-screen keyboard (opening again is fine: the player may have
+/// hidden it with Back while the field stayed active).
+pub fn set_typing(b: bool) {
+    let was = TYPING.swap(b, std::sync::atomic::Ordering::Relaxed);
+    if crate::platform::MOBILE && (b || was) {
+        macroquad::miniquad::window::show_keyboard(b);
+    }
+}
+
+pub fn typing() -> bool {
+    TYPING.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn set_input_blocked(b: bool) {
     INPUT_BLOCKED.store(b, Ordering::Relaxed);
 }
@@ -387,6 +403,12 @@ impl Focus {
             self.anim.resize(self.count, 0.0);
         }
         if input_blocked() {
+            return;
+        }
+        if typing() {
+            if mouse_delta_position().length() > 0.0 {
+                self.pointer_active = true;
+            }
             return;
         }
         if is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::S) || is_key_pressed(KeyCode::Tab) {

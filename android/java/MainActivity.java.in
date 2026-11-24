@@ -29,6 +29,8 @@ import android.content.ClipboardManager;
 import android.graphics.Color;
 import android.graphics.Insets;
 import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.BaseInputConnection;
+import android.text.InputType;
 import android.view.inputmethod.EditorInfo;
 import android.widget.LinearLayout;
 
@@ -190,9 +192,15 @@ class QuadSurface
     public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
         //% QUAD_SURFACE_ON_CREATE_INPUT_CONNECTION
 
-        InputConnection connection = super.onCreateInputConnection(outAttrs);
-        outAttrs.imeOptions |= EditorInfo.IME_FLAG_NO_FULLSCREEN;
-        return connection;
+        // Cozy: a SurfaceView has no InputConnection, so the soft keyboard's text went nowhere.
+        // A non-editor BaseInputConnection turns typed text into key events (onKey ->
+        // surfaceOnCharacter); plain text without suggestions so every letter arrives at once;
+        // the Done key sends Enter.
+        outAttrs.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+            | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
+        outAttrs.imeOptions = EditorInfo.IME_ACTION_DONE | EditorInfo.IME_FLAG_NO_FULLSCREEN
+            | EditorInfo.IME_FLAG_NO_EXTRACT_UI;
+        return new BaseInputConnection(this, false);
     }
 
     public Surface getNativeSurface() {
@@ -233,14 +241,12 @@ class ResizingLayout
         //% RESIZING_LAYOUT_ON_APPLY_WINDOW_INSETS
 
         if (Build.VERSION.SDK_INT >= 30) {
-            Insets imeInsets = insets.getInsets(WindowInsets.Type.ime());
             Insets sysInsets = insets.getInsets(WindowInsets.Type.systemBars());
 
-            // When IME is visible then we dont need bottom inset
+            // Cozy: the on-screen keyboard overlays the game instead of shrinking the surface
+            // (the UI scales with the window height, so a resize made everything tiny); text
+            // fields sit in the upper half, above the keyboard
             int bottomPadding = sysInsets.bottom;
-            if (imeInsets.bottom > 0) {
-                bottomPadding = imeInsets.bottom;
-            }
 
             // The sys insets change when orientation changes and sys bars
             // change position.

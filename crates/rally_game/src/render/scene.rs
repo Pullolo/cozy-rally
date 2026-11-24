@@ -78,9 +78,14 @@ pub fn grade_for(biome: Biome) -> Grade {
 pub enum TimeOfDay {
     Day,
     Golden,
+    /// Night race (TrackParams::night): moonlight, stars, headlights
+    Night,
 }
 
 pub fn time_of_day(track: &Track) -> TimeOfDay {
+    if track.params.night {
+        return TimeOfDay::Night;
+    }
     match std::env::var("COZY_TOD").ok().as_deref() {
         Some("day") => return TimeOfDay::Day,
         Some("golden") => return TimeOfDay::Golden,
@@ -104,6 +109,27 @@ pub fn look_for(track: &Track, tod: TimeOfDay) -> BiomeStyle {
         st.fog = mix(st.fog, [0.98, 0.80, 0.66], 0.6);
         st.ambient = mix(st.ambient, [0.50, 0.44, 0.52], 0.6);
         st.fog_density *= 1.1;
+    }
+    if tod == TimeOfDay::Night {
+        // a clear, cool moonlit night: the moon hangs fairly high opposite the old sun so
+        // trees throw long soft moon shadows; the world beyond the headlights falls into a
+        // deep blue that still shows silhouettes against a starry sky
+        let d = Vec3::from(st.sun_dir).normalize();
+        let flat = Vec3::new(-d.x, 0.0, -d.z).normalize_or_zero();
+        st.sun_dir = (flat * 0.72 + Vec3::Y * 0.69).normalize().to_array();
+        let snow = track.biome == Biome::Snow;
+        // snow and sand reflect the moon: those nights are brighter
+        let bright = match track.biome {
+            Biome::Snow => 1.6,
+            Biome::Desert => 1.25,
+            _ => 1.0,
+        };
+        st.sun_color = [0.12 * bright, 0.15 * bright, 0.27 * bright];
+        st.ambient = [0.030 * bright, 0.038 * bright, 0.075 * bright];
+        st.sky_top = [0.010, 0.016, 0.050];
+        st.sky_horizon = if snow { [0.07, 0.10, 0.19] } else { [0.05, 0.07, 0.16] };
+        st.fog = [0.020, 0.028, 0.065];
+        st.fog_density = st.fog_density.max(0.0045) * 1.6;
     }
     st
 }
@@ -1575,13 +1601,24 @@ impl Scene {
             clouds,
             hills,
             apron,
-            env: Environment { sun_dir: n3(st.sun_dir), sun_color: st.sun_color, ambient: st.ambient, fog_color: st.fog, fog_density: st.fog_density, time: 0.0 },
+            env: Environment { sun_dir: n3(st.sun_dir), sun_color: st.sun_color, ambient: st.ambient, fog_color: st.fog, fog_density: st.fog_density, time: 0.0, night: if tod == TimeOfDay::Night { 1.0 } else { 0.0 } },
             sky_top: st.sky_top,
             sky_horizon: st.sky_horizon,
             water_level: track.water_level,
             water_shallow,
             grade: {
                 let mut g = grade_for(track.biome);
+                if tod == TimeOfDay::Night {
+                    // moonlit blue grade, stronger glow on lamps, darker corners
+                    g.warmth = 0.0;
+                    g.saturation *= 0.9;
+                    g.lift = [0.93, 0.97, 1.10];
+                    g.gain = [1.02, 1.0, 1.0];
+                    g.bloom *= 1.8;
+                    g.softness += 0.25;
+                    g.threshold = (g.threshold * 0.8).min(0.75);
+                    g.vignette += 0.25;
+                }
                 if tod == TimeOfDay::Golden {
                     g.warmth += 0.4;
                     g.bloom *= 1.15;
@@ -1617,12 +1654,13 @@ impl Scene {
             let oc = gpu.weather().overcast;
             if oc < 0.55 {
                 let t = oc / 0.55;
-                let g = 1.0 - 0.12 * t;
-                gpu.draw(&self.clouds, view, &env, drift, &DrawParams { unlit: 0.55 + 0.45 * t, tint: [g, g, g * 1.01, 1.0], ..far }, false);
+                // moonlit puffs at night: dark blue-grey shapes against the stars
+                let g = (1.0 - 0.12 * t) * (1.0 - 0.86 * env.night);
+                gpu.draw(&self.clouds, view, &env, drift, &DrawParams { unlit: 0.55 + 0.45 * t, tint: [g, g * 1.02, g * (1.0 + 0.3 * env.night), 1.0], ..far }, false);
             }
         }
         if !skip("hills") {
-            gpu.draw(&self.hills, view, &env, Mat4::IDENTITY, &DrawParams { unlit: 0.6, fog: true, fog_max: 0.62, ..far }, false);
+            gpu.draw(&self.hills, view, &env, Mat4::IDENTITY, &DrawParams { unlit: 0.6 * (1.0 - 0.85 * env.night), fog: true, fog_max: 0.62, ..far }, false);
         }
         let ground = DrawParams { cast_shadow: false, ..Default::default() };
         if let Some(a) = &self.apron {
