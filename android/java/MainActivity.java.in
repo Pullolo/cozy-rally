@@ -12,6 +12,7 @@ import android.view.View;
 import android.view.Surface;
 import android.view.Window;
 import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.view.WindowManager.LayoutParams;
 import android.view.SurfaceView;
 import android.view.SurfaceHolder;
@@ -400,6 +401,13 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
                         }
                         if (Build.VERSION.SDK_INT >= 30) {
                             getWindow().setDecorFitsSystemWindows(false);
+                            // Cozy: actually hide the status + navigation bars (immersive); a
+                            // swipe from the edge shows them briefly over the game
+                            WindowInsetsController c = decorView.getWindowInsetsController();
+                            if (c != null) {
+                                c.hide(WindowInsets.Type.systemBars());
+                                c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                            }
                         } else {
                             int uiOptions = View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
                             decorView.setSystemUiVisibility(uiOptions);
@@ -408,6 +416,8 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
                     else {
                         if (Build.VERSION.SDK_INT >= 30) {
                             getWindow().setDecorFitsSystemWindows(true);
+                            WindowInsetsController c = decorView.getWindowInsetsController();
+                            if (c != null) c.show(WindowInsets.Type.systemBars());
                         } else {
                           decorView.setSystemUiVisibility(0);
                         }

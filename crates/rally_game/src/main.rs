@@ -51,7 +51,8 @@ fn window_conf() -> Conf {
         window_width: ww,
         window_height: wh,
         high_dpi: true,
-        fullscreen: s.fullscreen,
+        // phones: always immersive (no system bars, drawn under the camera cutout)
+        fullscreen: s.fullscreen || platform::MOBILE,
         sample_count: std::env::var("COZY_MSAA").ok().and_then(|v| v.parse().ok()).unwrap_or(4),
         window_resizable: true,
         ..Default::default()
@@ -673,7 +674,7 @@ impl App {
             rounded_rect(sw - w - 20.0 * s, sh - 50.0 * s, w, 32.0 * s, 16.0 * s, with_alpha(CREAM, 0.85));
             text_mid(&label, sw - w * 0.5 - 20.0 * s, sh - 34.0 * s, 18.0 * s, INK_SOFT);
         }
-        let hint = "Arrows / mouse to choose  -  Enter to go";
+        let hint = if platform::MOBILE { "Tap to choose" } else { "Arrows / mouse to choose  -  Enter to go" };
         text(hint, x, sh - 26.0 * s, 17.0 * s, with_alpha(INK_SOFT, 0.9));
     }
 

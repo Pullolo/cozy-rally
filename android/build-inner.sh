@@ -54,7 +54,7 @@ javac -source 1.8 -target 1.8 -nowarn -Xlint:-options -bootclasspath "$ANDROID_J
 # ---------------------------------------------------------------- 3. resources + manifest
 mkdir -p "$WORK/tools" && javac -nowarn -d "$WORK/tools" android/tools/MakeIcon.java
 java -Djava.awt.headless=true -cp "$WORK/tools" MakeIcon "$WORK/res"
-VERSION_NAME=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/rally_game/Cargo.toml | head -1)
+VERSION_NAME=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/rally_game/Cargo.toml | head -1 | tr -d '\r')
 VERSION_CODE="${COZY_VERSION_CODE:-1}"
 sed -e "s/@PACKAGE@/$PACKAGE/" -e "s/@VERSION_CODE@/$VERSION_CODE/" -e "s/@VERSION_NAME@/$VERSION_NAME/" \
   android/AndroidManifest.xml.in > "$WORK/AndroidManifest.xml"

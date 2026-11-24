@@ -275,7 +275,39 @@ pub fn frame_end() {
         }
         p.cur = FrameStats::default();
         super::bench::record(&done);
+        #[cfg(target_os = "android")]
+        log_summary(&done, &p.avg);
     })
+}
+
+/// Android: a one-line perf summary in logcat every 5 s (`adb logcat -s CozyRally`), since
+/// phones have no F3 and GPU timer queries are unavailable on GLES.
+#[cfg(target_os = "android")]
+fn log_summary(done: &FrameStats, avg: &FrameStats) {
+    use std::cell::Cell;
+    thread_local! { static ACC: Cell<(u32, f32, f32)> = const { Cell::new((0, 0.0, 0.0)) }; }
+    ACC.with(|acc| {
+        let (n, t, worst) = acc.get();
+        let (n, t, worst) = (n + 1, t + done.frame_ms, worst.max(done.frame_ms));
+        if t < 5000.0 {
+            acc.set((n, t, worst));
+            return;
+        }
+        acc.set((0, 0.0, 0.0));
+        let c = &avg.cpu_ms;
+        crate::platform::log(&format!(
+            "perf: {:.1} fps (avg {:.1} ms, worst {:.1} ms) | cpu ms update {:.1} shadow {:.1} scene {:.1} fx {:.1} post {:.1} hud {:.1} | {} draws {}k verts | {}x{} {:?}",
+            n as f32 * 1000.0 / t,
+            t / n as f32,
+            worst,
+            c[0], c[1], c[2], c[3], c[4], c[5],
+            done.c.draws,
+            done.c.verts / 1000,
+            macroquad::prelude::screen_width(),
+            macroquad::prelude::screen_height(),
+            super::quality(),
+        ));
+    });
 }
 
 /// Stats of the last completed frame

@@ -29,6 +29,18 @@ for edition 2024, so `build-inner.sh` replaces `cargo-quad-apk`:
 
 `versionCode` is the git commit count, so every new build installs over the previous one.
 
+The `.so` is linked with `--no-undefined` and oboe's C++ runtime (`libc++_static`, `libc++abi`)
+is linked statically. A missing symbol fails the build instead of making
+`System.loadLibrary` crash the app on launch.
+
+**Windows / WSL:** run the build inside a WSL distro (Ubuntu) with rustup installed there, not
+the Windows toolchain. Docker Desktop must have WSL integration on for that distro. The
+"integrate with default distro" setting only covers the default distro, so either run
+`wsl --set-default Ubuntu` or enable Ubuntu under Settings > Resources > WSL integration. The
+build is faster from a copy of the repo on the WSL filesystem than from `/mnt/c` or `/mnt/d`.
+`.gitattributes` keeps `*.sh` LF so the scripts run even with `core.autocrlf=true`. Install
+from Windows with `adb install -r` on the APK path.
+
 ## Install
 
 On the phone, enable Developer options, then USB debugging. Then:
@@ -55,7 +67,9 @@ If you switch keys, uninstall the old app first. Doing so deletes its saves.
 adb logcat -s CozyRally SAPP AndroidRuntime
 ```
 
-Rust panics go to logcat with the `CozyRally` tag.
+Rust panics go to logcat with the `CozyRally` tag. Every 5 s the game also logs a `perf:` line
+with fps, average and worst frame time, CPU time per section, draw calls, resolution and
+quality. Phones have no F3 overlay, so use this line to check performance.
 
 ## What is different on the phone
 
