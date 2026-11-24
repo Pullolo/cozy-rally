@@ -1444,7 +1444,16 @@ impl App {
             text_mid(&sub, x + w * 0.5, y + 82.0 * s, 18.0 * s, INK_SOFT);
         }
         let mut f = std::mem::take(&mut self.pause_focus);
+        let fresh = f.is_fresh();
         f.begin(4);
+        if fresh {
+            // the press that opened the menu must not also act on it: Start is "accept" on pads
+            // (it activated the focused Resume, so the menu closed at once) and Esc is "back"
+            f.activated = false;
+            f.back = false;
+        }
+        // B on a pad (menu "back") resumes, like Esc / Start
+        let back = f.back;
         let bw = w - 60.0 * s;
         let bh = 54.0 * s;
         let bx = x + 30.0 * s;
@@ -1454,7 +1463,10 @@ impl App {
         let sett = button(&mut f, "Settings", bx, y + 248.0 * s, bw, bh, SKY);
         let quit = button_back(&mut f, if online { "Leave race" } else { "Quit to menu" }, bx, y + 316.0 * s, bw, bh, PEACH);
         self.pause_focus = f;
-        if resume {
+        if back && !resume {
+            audio::ui_sound(audio::UiSound::Back);
+        }
+        if resume || back {
             if let Some(sess) = self.session.as_mut() {
                 sess.paused = false;
             }

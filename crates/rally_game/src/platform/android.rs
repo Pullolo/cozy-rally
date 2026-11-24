@@ -118,6 +118,7 @@ fn with_pad(device: i32, f: impl FnOnce(&mut RawPad)) {
             Some(i) => i,
             None => {
                 pads.push(RawPad { device, ..Default::default() });
+                log(&format!("pad: device {device} connected (pad #{})", pads.len() - 1));
                 pads.len() - 1
             }
         };
@@ -141,6 +142,10 @@ pub extern "C" fn Java_com_cozyrally_game_CozyNative_padAxes(_: JNIEnv, _: JClas
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_com_cozyrally_game_CozyNative_padKey(_: JNIEnv, _: JClass, device: jint, code: jint, down: jboolean) {
     let bit = key_bit(code);
+    // controller debugging without the controller: every press is in logcat (`-s CozyRally`)
+    if down != 0 {
+        log(&format!("pad: device {device} key {code}{}", if bit == 0 { " (unmapped)" } else { "" }));
+    }
     with_pad(device, |p| {
         if down != 0 {
             p.keys |= bit;

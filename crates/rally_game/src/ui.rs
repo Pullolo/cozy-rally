@@ -391,6 +391,11 @@ pub struct Focus {
 }
 
 impl Focus {
+    /// True until the first `begin`: a menu that was just (re)opened with `Focus::default()`
+    pub fn is_fresh(&self) -> bool {
+        self.count == 0
+    }
+
     /// Call at the start of a frame with the number of focusable items
     pub fn begin(&mut self, count: usize) {
         self.count = count.max(1);
