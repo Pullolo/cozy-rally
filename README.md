@@ -59,9 +59,10 @@ The port is 27420 unless you passed `--port`. UDP carries the car positions; if 
 the game falls back to TCP automatically (works, but can stutter on bad Wi-Fi).
 
 **3. Everyone joins (the host too)**
-Start the game -> **Online** -> type the address (the port can be left out when it is 27420),
-your name, pick a car and paint -> **Connect**. You land in the lobby, which shows every
-player's car, ready state, ping and whether they are on UDP or TCP.
+Start the game -> **Online** -> type the address (the port can be left out when it is 27420)
+and your name -> **Connect**. You land in the lobby, which shows every player, ready state,
+ping and whether they are on UDP or TCP. Car and paint are picked in the lobby once the
+leader has chosen the race (rally cars for rally, circuit cars for circuits).
 
 **4. The leader starts the race**
 The first player to join is the **leader** (marked in the list; if they leave, the next player
