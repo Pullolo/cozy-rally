@@ -23,7 +23,10 @@ export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$LLVM/bin/${TRIPLE}${MIN_SDK}-
 export CC_aarch64_linux_android="$LLVM/bin/${TRIPLE}${MIN_SDK}-clang"
 export CXX_aarch64_linux_android="$LLVM/bin/${TRIPLE}${MIN_SDK}-clang++"
 export AR_aarch64_linux_android="$LLVM/bin/llvm-ar"
-export CXXSTDLIB=c++
+# C++ runtime for oboe (cpal's audio backend), linked statically at the end of the link line
+# (oboe-sys's own -lc++_static comes too early to resolve anything). --no-undefined makes a
+# missing symbol a build error instead of a crash when Android loads the library.
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-C link-arg=-Wl,--no-undefined -C link-arg=-lc++_static -C link-arg=-lc++abi"
 PROFILE_FLAG=""; PROFILE_DIR=debug
 if [ "$PROFILE" = release ]; then PROFILE_FLAG="--release"; PROFILE_DIR=release; fi
 # The game is a bin crate; the wrapper builds it as a cdylib (the .so Java loads).
