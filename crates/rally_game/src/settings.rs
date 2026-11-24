@@ -213,3 +213,32 @@ mod tests {
         assert_eq!(parse("garbage\nmaster=nan\nassists=99"), Settings { assists: 3, ..Settings::DEFAULT });
     }
 }
+
+/// Online prefs (last server address + player name), kept in `online.txt` next to settings.txt
+/// because `Settings` is `Copy`. Returns ("", "") when missing.
+pub fn load_online() -> (String, String) {
+    let text = paths().iter().find_map(|p| std::fs::read_to_string(p.with_file_name("online.txt")).ok()).unwrap_or_default();
+    let mut out = (String::new(), String::new());
+    for line in text.lines() {
+        match line.split_once('=') {
+            Some(("address", v)) => out.0 = v.trim().to_string(),
+            Some(("name", v)) => out.1 = v.trim().to_string(),
+            _ => {}
+        }
+    }
+    out
+}
+
+pub fn save_online(address: &str, name: &str) {
+    let clean = |s: &str| s.replace(['\n', '\r'], "");
+    let text = format!("address={}\nname={}\n", clean(address), clean(name));
+    for p in paths() {
+        let p = p.with_file_name("online.txt");
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if std::fs::write(&p, &text).is_ok() {
+            break;
+        }
+    }
+}

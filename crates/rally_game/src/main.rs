@@ -14,6 +14,7 @@ mod campaign_screens;
 mod hud;
 mod input;
 mod models;
+mod online;
 mod pacenotes_hud;
 mod weather_view;
 mod render;
@@ -61,11 +62,12 @@ enum Screen {
     StageIntro,
     StageResults,
     Leaderboard,
+    Online,
 }
 
 impl Screen {
     fn is_menu(self) -> bool {
-        matches!(self, Screen::Title | Screen::Setup | Screen::Help | Screen::Settings | Screen::Campaign | Screen::StageIntro | Screen::Leaderboard)
+        matches!(self, Screen::Title | Screen::Setup | Screen::Help | Screen::Settings | Screen::Campaign | Screen::StageIntro | Screen::Leaderboard | Screen::Online)
     }
 }
 
@@ -180,6 +182,7 @@ impl Setup {
             ai_skill: DIFFICULTY[self.difficulty].1,
             assist_level: ASSISTS[self.assists].1,
             mode: self.mode(),
+            online: None,
         }
     }
 }
@@ -294,6 +297,8 @@ struct App {
     pointer_seen: f32,
     /// Campaign screens state (chapter/stage selection, local progress, active stage)
     camp: campaign_screens::CampState,
+    /// Online races (connection, lobby, the running online race)
+    online: online::Online,
 }
 
 impl App {
@@ -326,7 +331,9 @@ impl App {
             settings::save();
         }
         // Settings/Help can be opened over a paused race: only the title/setup end a race
-        if matches!(s, Screen::Title | Screen::Setup | Screen::Campaign | Screen::StageIntro | Screen::Leaderboard) {
+        if matches!(s, Screen::Title | Screen::Setup | Screen::Campaign | Screen::StageIntro | Screen::Leaderboard | Screen::Online) {
+            // leaving an online race for a menu: tell the server
+            self.online.leave_race();
             self.end_session();
         }
         if matches!(s, Screen::Title | Screen::Setup) {
@@ -393,11 +400,16 @@ impl App {
             a.free(&mut self.gpu);
         }
         // [gameplay] a campaign stage queued by campaign_mode::start_stage wins
-        let mut cfg = campaign_mode::take_pending_config().unwrap_or_else(|| self.setup.config());
+        let assist = ASSISTS[self.setup.assists].1;
+        let mut cfg = match self.online.take_config(assist) {
+            Some(c) => c,
+            None => campaign_mode::take_pending_config().unwrap_or_else(|| self.setup.config()),
+        };
         if self.hooks.after_load.as_deref() == Some("results") {
             cfg.laps = 1;
         }
         let mut s = RaceSession::new(cfg, &mut self.gpu);
+        self.online.session_ready(&mut s);
         let cam = cam_mode(settings::get().camera);
         for p in s.players.iter_mut() {
             p.cam.mode = cam;
@@ -467,6 +479,7 @@ impl App {
                     ai_skill: 0.65,
                     assist_level: 1.0,
                     mode: gameplay::GameMode::Race,
+                    online: None,
                 };
                 let mut s = RaceSession::new(cfg, &mut self.gpu);
                 if let rally_core::race::RacePhase::Countdown(_) = s.world.race.phase {
@@ -620,7 +633,7 @@ impl App {
         let bh = 50.0 * s;
         let gap = 11.0 * s;
         let mut y = (sh * 0.38).max(logo_y + 84.0 * s);
-        let items: [(&str, Color); 6] = [("Campaign", BUTTER), ("Quick race", PEACH), ("Split-screen", SKY), ("Settings", LAVENDER), ("How to play", MINT), ("Quit", CREAM)];
+        let items: [(&str, Color); 7] = [("Campaign", BUTTER), ("Quick race", PEACH), ("Split-screen", SKY), ("Online", BERRY), ("Settings", LAVENDER), ("How to play", MINT), ("Quit", CREAM)];
         self.focus.begin(items.len());
         let mut chosen = None;
         for (i, (label, col)) in items.iter().enumerate() {
@@ -643,14 +656,18 @@ impl App {
                 self.goto(Screen::Setup);
             }
             Some(3) => {
+                self.setup.split = false;
+                self.goto(Screen::Online);
+            }
+            Some(4) => {
                 self.settings_from = Screen::Title;
                 self.goto(Screen::Settings);
             }
-            Some(4) => {
+            Some(5) => {
                 self.help_from = Screen::Title;
                 self.goto(Screen::Help);
             }
-            Some(5) => std::process::exit(0),
+            Some(6) => std::process::exit(0),
             _ => {}
         }
         // footer: now showing + hint
@@ -918,7 +935,17 @@ impl App {
             if self.focus.back {
                 audio::ui_sound(audio::UiSound::Back);
             }
-            self.goto(Screen::Title);
+            self.goto(if self.online.setup_for_online { Screen::Online } else { Screen::Title });
+            self.online.setup_for_online = false;
+            return;
+        }
+        if go && self.online.setup_for_online {
+            // leader picked the online race: send it to the lobby instead of starting
+            self.online.setup_for_online = false;
+            let laps = if self.setup.mode() == gameplay::GameMode::TimeTrial { 1 } else { self.setup.laps };
+            let rs = rally_net::RaceSettings { track: self.setup.track_params(), laps, contact: self.online.contact };
+            self.online.send(&rally_net::ClientMsg::SetSettings(rs));
+            self.goto(Screen::Online);
             return;
         }
         if go {
@@ -1205,7 +1232,9 @@ impl App {
                 sess.world.set_input(j, inp);
             }
         }
+        self.online.pre_update(sess, dt);
         sess.update(dt, touch);
+        self.online.post_update(sess, dt);
         // [gameplay] campaign instant restart (T)
         if campaign_mode::take_restart(&sess.config) {
             self.start_race();
@@ -1235,6 +1264,10 @@ impl App {
             } else {
                 draw_rectangle(0.0, screen_height() * 0.5 - 2.0, screen_width(), 4.0, CREAM);
             }
+        }
+        if let Some(line) = self.online.status_line(sess) {
+            let s = scale();
+            pill(&line, screen_width() * 0.5, screen_height() * 0.30, 22.0 * s, with_alpha(CREAM, 0.92), INK);
         }
         // small on-screen pause button for mouse / touch players
         PAUSE_BUTTON.store(!sess.paused && self.pointer_seen > 0.0, std::sync::atomic::Ordering::Relaxed);
@@ -1269,6 +1302,35 @@ impl App {
         }
     }
 
+    fn online_screen(&mut self) {
+        self.menu_backdrop();
+        // the lobby offers the cars of the race's discipline (rally cars until a race is picked)
+        let circuit = self.online.client.as_ref().and_then(|c| c.settings.as_ref()).map(|st| st.track.discipline == rally_core::track::Discipline::Circuit).unwrap_or(self.setup.is_circuit());
+        let want = if circuit { rally_core::vehicle::CarClass::Circuit } else { rally_core::vehicle::CarClass::Rally };
+        let allowed: Vec<usize> = car_specs().iter().enumerate().filter(|(_, c)| c.class == want).map(|(i, _)| i).collect();
+        let (mut car, mut paint) = (self.setup.cars[0], self.setup.paints[0]);
+        if !allowed.contains(&car) && !allowed.is_empty() {
+            car = allowed[0];
+        }
+        let mut f = std::mem::take(&mut self.focus);
+        let action = self.online.screen(&mut f, &mut car, &mut paint, &allowed);
+        self.focus = f;
+        self.setup.cars[0] = car;
+        self.setup.paints[0] = paint;
+        match action {
+            online::LobbyAction::Back => {
+                audio::ui_sound(audio::UiSound::Back);
+                self.goto(Screen::Title);
+            }
+            online::LobbyAction::PickRace => {
+                self.online.setup_for_online = true;
+                self.setup.split = false;
+                self.goto(Screen::Setup);
+            }
+            online::LobbyAction::None => {}
+        }
+    }
+
     fn pause_menu(&mut self) {
         let sw = screen_width();
         let sh = screen_height();
@@ -1295,9 +1357,10 @@ impl App {
         let bh = 54.0 * s;
         let bx = x + 30.0 * s;
         let resume = button_back(&mut f, "Resume", bx, y + 112.0 * s, bw, bh, MINT);
-        let restart = button(&mut f, "Restart", bx, y + 180.0 * s, bw, bh, BUTTER);
+        let online = self.online.in_race();
+        let restart = button(&mut f, if online { "Racing online" } else { "Restart" }, bx, y + 180.0 * s, bw, bh, BUTTER) && !online;
         let sett = button(&mut f, "Settings", bx, y + 248.0 * s, bw, bh, SKY);
-        let quit = button_back(&mut f, "Quit to menu", bx, y + 316.0 * s, bw, bh, PEACH);
+        let quit = button_back(&mut f, if online { "Leave race" } else { "Quit to menu" }, bx, y + 316.0 * s, bw, bh, PEACH);
         self.pause_focus = f;
         if resume {
             if let Some(sess) = self.session.as_mut() {
@@ -1312,7 +1375,7 @@ impl App {
             self.switch_now(Screen::Settings);
         }
         if quit {
-            self.goto(if self.camp.active.is_some() { Screen::Campaign } else { Screen::Title });
+            self.goto(if online { Screen::Online } else if self.camp.active.is_some() { Screen::Campaign } else { Screen::Title });
         }
     }
 
@@ -1323,7 +1386,9 @@ impl App {
         };
         // keep the world alive in the background (cars coast on autopilot), orbit the player
         let dt = get_frame_time().min(0.05);
+        self.online.pre_update(sess, dt);
         sess.update(dt, None);
+        self.online.post_update(sess, dt);
         self.results_cine.update(sess, dt);
         let horizon = sess.scene.sky_horizon;
         clear_background(Color::new(horizon[0], horizon[1], horizon[2], 1.0));
@@ -1454,6 +1519,15 @@ impl App {
         let by = (ty0 + th + 20.0 * s).min(sh - 76.0 * s);
         let bw = (tw - 32.0 * s) / 3.0;
         let bh = 52.0 * s;
+        if self.online.in_race() || self.online.connected() {
+            let official = self.online.race.as_ref().is_some_and(|r| r.official.is_some());
+            text(if official { "Official times from the server" } else { "Waiting for everyone to finish..." }, tx, by - 8.0 * s, 16.0 * s, INK_SOFT);
+            self.focus.begin(1);
+            if button(&mut self.focus, "Back to lobby", tx, by, tw, bh, MINT) || self.focus.back {
+                self.goto(Screen::Online);
+            }
+            return;
+        }
         self.focus.begin(3);
         let again = button(&mut self.focus, "Race again", tx, by, bw, bh, MINT);
         let new_track = button(&mut self.focus, "New track", tx + bw + 16.0 * s, by, bw, bh, BUTTER);
@@ -1640,6 +1714,7 @@ async fn main() {
         fps: 60.0,
         pointer_seen: 0.0,
         camp: campaign_screens::CampState::new(),
+        online: online::Online::new(),
         hooks,
     };
     app.set_music(audio::Music::Menu);
@@ -1715,10 +1790,33 @@ async fn main() {
         app.screen = Screen::Loading;
     }
     let start = get_time();
+    // test hooks: COZY_ONLINE=<address> joins a server at startup (COZY_NAME sets the name);
+    // COZY_ONLINE_LEAD=<n> makes this client pick a 1-lap race and start once n players are in
+    let online_lead: Option<usize> = std::env::var("COZY_ONLINE_LEAD").ok().and_then(|v| v.parse().ok());
+    let mut online_lead_done = false;
+    if let Ok(addr) = std::env::var("COZY_ONLINE") {
+        let name = std::env::var("COZY_NAME").unwrap_or_else(|_| "Tester".into());
+        app.online.client = Some(rally_net::NetClient::connect(&addr, &name, app.setup.cars[0] as u8, app.setup.paints[0] as u8));
+        app.screen = Screen::Online;
+    }
     let mut shot_idx = 0;
     loop {
+        if let (Some(n), false) = (online_lead, online_lead_done) {
+            if app.online.client.as_ref().is_some_and(|c| c.is_leader() && c.players.len() >= n) {
+                online_lead_done = true;
+                let rs = rally_net::RaceSettings { track: app.setup.track_params(), laps: 1, contact: false };
+                app.online.send(&rally_net::ClientMsg::SetSettings(rs));
+                app.online.send(&rally_net::ClientMsg::StartRace);
+            }
+        }
         input::poll(); // [gameplay] gamepads
         app.screen_t += get_frame_time().min(0.05);
+        app.online.poll();
+        // the leader started a race: everyone in the lobby (or on results) goes to the line.
+        // Retried every frame: `goto` is ignored while a fade is still playing.
+        if app.online.pending_start.is_some() && app.screen != Screen::Loading && app.trans.target != Some(Screen::Loading) && app.trans.phase == 0 {
+            app.start_race();
+        }
         match app.screen {
             Screen::Title => app.title(),
             Screen::Help => app.help(),
@@ -1731,6 +1829,7 @@ async fn main() {
             Screen::StageIntro => app.stage_intro(),
             Screen::StageResults => app.stage_results(),
             Screen::Leaderboard => app.leaderboard_screen(),
+            Screen::Online => app.online_screen(),
         }
         app.draw_overlays();
         app.update_transition();

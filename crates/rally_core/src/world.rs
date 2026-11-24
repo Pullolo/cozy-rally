@@ -38,6 +38,8 @@ pub struct World {
     acc: f32,
     pending_resets: Vec<bool>,
     collision_cooldown: Vec<f32>,
+    /// Online: remote cars collide with local ones (false = remote cars are ghosts)
+    pub remote_contact: bool,
 }
 
 pub struct RacerSetup {
@@ -71,6 +73,7 @@ impl World {
             acc: 0.0,
             pending_resets: vec![false; n],
             collision_cooldown: vec![0.0; n],
+            remote_contact: false,
         };
         // settle suspensions before the countdown
         for _ in 0..120 {
@@ -117,11 +120,6 @@ impl World {
         let mut race = std::mem::replace(&mut self.race, Race::new(0, 0, 0.0, &self.track));
         race.update(dt, &self.track, &mut self.cars, &resets, &mut race_events);
         self.race = race;
-        for (i, c) in self.controllers.iter().enumerate() {
-            if *c == Controller::Remote {
-                self.cars[i].frozen = false;
-            }
-        }
         for e in race_events {
             self.events.push(WorldEvent::Race(e));
         }
@@ -140,12 +138,9 @@ impl World {
             *cd = (*cd - dt).max(0.0);
         }
         for _ in 0..SUBSTEPS {
-            for (i, car) in self.cars.iter_mut().enumerate() {
-                if self.controllers[i] == Controller::Remote {
-                    // dead-reckon remote cars between network updates
-                    car.pos += car.vel * sub;
-                    continue;
-                }
+            for car in self.cars.iter_mut() {
+                // remote cars are simulated too (with their owner's inputs) and corrected
+                // toward the network state by rally_net::sync
                 car.step(sub, &self.track);
             }
             self.collide_cars();
@@ -158,7 +153,8 @@ impl World {
         for a in 0..n {
             for b in (a + 1)..n {
                 let ghost = self.race.racers.get(a).map_or(0.0, |r| r.ghost) > 0.0 || self.race.racers.get(b).map_or(0.0, |r| r.ghost) > 0.0;
-                if ghost {
+                let remote = self.controllers[a] == Controller::Remote || self.controllers[b] == Controller::Remote;
+                if ghost || (remote && !self.remote_contact) {
                     continue;
                 }
                 if self.cars[a].pos.distance_squared(self.cars[b].pos) > 36.0 {

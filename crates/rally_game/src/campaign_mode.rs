@@ -276,6 +276,7 @@ pub fn start_stage(id: &str, car: usize, paint: usize, assists: (&str, f32)) -> 
         ai_skill: 0.7,
         assist_level: assists.1,
         mode: GameMode::Campaign,
+        online: None,
     };
     STATE.with(|s| {
         let mut st = s.borrow_mut();

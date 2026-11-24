@@ -36,6 +36,8 @@ pub struct SessionConfig {
     pub assist_level: f32,
     /// [gameplay] Race or Time Trial (see gameplay.rs)
     pub mode: crate::gameplay::GameMode,
+    /// Online race: the server's grid (all cars, in slot order); `players` holds just me
+    pub online: Option<crate::online::OnlineGrid>,
 }
 
 pub struct LocalPlayer {
@@ -75,6 +77,8 @@ pub struct RaceSession {
     /// Cinematic camera override (title attract mode, results): (eye, target, fov radians).
     /// When set, a single full-screen viewport is rendered from this camera.
     pub cam_override: Option<(Vec3, Vec3, f32)>,
+    /// Online: waiting at the line for the other racers (the world does not tick)
+    pub hold: bool,
 }
 
 const AI_NAMES: [&str; 8] = ["Hazel", "Juniper", "Basil", "Clover", "Fern", "Rowan", "Maple", "Pebble"];
@@ -111,12 +115,24 @@ impl RaceSession {
             names.push(AI_NAMES[k % AI_NAMES.len()].to_string());
             paints.push((k + 3) % PAINTS.len());
         }
-        for (i, p) in config.players.iter().enumerate() {
-            racers.push(RacerSetup { car_spec: p.car, controller: Controller::Local(i as u8) });
-            names.push(p.name.clone());
-            paints.push(p.paint);
+        if let Some(grid) = &config.online {
+            // online: the server's grid order, my car is the local player
+            for g in &grid.entries {
+                let me = g.id == grid.my_id;
+                racers.push(RacerSetup { car_spec: g.car as usize, controller: if me { Controller::Local(0) } else { Controller::Remote } });
+                names.push(g.name.clone());
+                paints.push(g.paint as usize);
+            }
+        } else {
+            for (i, p) in config.players.iter().enumerate() {
+                racers.push(RacerSetup { car_spec: p.car, controller: Controller::Local(i as u8) });
+                names.push(p.name.clone());
+                paints.push(p.paint);
+            }
         }
         let mut world = World::new(track.clone(), &racers, config.laps);
+        world.remote_contact = config.online.as_ref().is_some_and(|g| g.contact);
+        let local_cars: Vec<usize> = world.controllers.iter().enumerate().filter(|(_, c)| matches!(c, Controller::Local(_))).map(|(i, _)| i).collect();
         for (i, c) in world.cars.iter_mut().enumerate() {
             if matches!(world.controllers[i], Controller::Local(_)) {
                 c.assist_level = config.assist_level;
@@ -154,11 +170,11 @@ impl RaceSession {
             .players
             .iter()
             .enumerate()
-            .map(|(i, p)| LocalPlayer { car: n_ai + i, input: PlayerInput::new(p.scheme), cam: ChaseCam::new(), name: p.name.clone() })
+            .map(|(i, p)| LocalPlayer { car: local_cars[i], input: PlayerInput::new(p.scheme), cam: ChaseCam::new(), name: p.name.clone() })
             .collect();
         let fx = Fx::new(&world);
-        let tt = crate::gameplay::session_start(&config, &(n_ai..n_ai + config.players.len()).collect::<Vec<_>>(), gpu); // [gameplay]
-        RaceSession { config, world, scene, cars, names, ais, players, alpha: 0.0, time: 0.0, frame_events: Vec::new(), paused: false, fx, tt, paints, cam_override: None }
+        let tt = crate::gameplay::session_start(&config, &local_cars, gpu); // [gameplay]
+        RaceSession { config, world, scene, cars, names, ais, players, alpha: 0.0, time: 0.0, frame_events: Vec::new(), paused: false, fx, tt, paints, cam_override: None, hold: false }
     }
 
     pub fn free(self, gpu: &mut Gpu) {
@@ -193,7 +209,9 @@ impl RaceSession {
 
     fn update_inner(&mut self, dt: f32, touch: Option<CarInput>) {
         self.frame_events.clear();
-        if self.paused {
+        // online races never stop for a pause menu: the others keep driving
+        let online = self.config.online.is_some();
+        if self.paused && !online {
             // let audio fade engines immediately while paused
             crate::audio::race_frame(self, dt);
             return;
@@ -201,7 +219,11 @@ impl RaceSession {
         self.time += dt;
         self.scene.env.time = self.time;
         for (pi, p) in self.players.iter_mut().enumerate() {
-            let inp = p.input.sample(dt, if pi == 0 { touch } else { None });
+            let mut inp = p.input.sample(dt, if pi == 0 { touch } else { None });
+            if self.paused {
+                // online pause menu: lift off and brake
+                inp = CarInput { brake: 1.0, ..CarInput::default() };
+            }
             if p.input.camera_pressed() {
                 p.cam.mode = p.cam.mode.next();
                 p.cam.snap();
@@ -218,7 +240,8 @@ impl RaceSession {
                 self.ais[p.car] = Some(AiDriver::new(0.5, 0.0));
             }
         }
-        self.alpha = self.world.update(dt);
+        // online: hold at the line until the server says go
+        self.alpha = self.world.update(if self.hold { 0.0 } else { dt });
         self.frame_events = self.world.drain_events();
         for e in &self.frame_events {
             match *e {
