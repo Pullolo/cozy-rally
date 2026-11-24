@@ -3,7 +3,8 @@
 //!   rally_server [--port 27420] [--name "Hazel's garage"]
 //!
 //! Friends connect with your address: LAN IP at home, your Tailscale/ZeroTier IP, or your public
-//! IP with TCP port 27420 forwarded on the router.
+//! IP with port 27420 forwarded on the router (TCP and UDP; UDP is optional - without it car
+//! snapshots fall back to TCP).
 use rally_net::server::Server;
 use rally_net::{DEFAULT_PORT, MAX_PLAYERS, PROTOCOL_VERSION};
 use std::time::Duration;
@@ -28,11 +29,11 @@ fn main() {
         }
     };
     println!("Cozy Rally server \"{name}\" (protocol {PROTOCOL_VERSION}, up to {MAX_PLAYERS} players)");
-    println!("Listening on TCP port {port}.");
+    println!("Listening on port {port} (TCP for the lobby, UDP for car snapshots{}).", if server.udp_enabled() { "" } else { " - UDP UNAVAILABLE, using TCP" });
     if let Some(ip) = lan_ip() {
         println!("Friends on your network join with:  {ip}:{port}");
     }
-    println!("Over the internet: share your Tailscale/ZeroTier IP, or forward TCP {port} and share your public IP.");
+    println!("Over the internet: share your Tailscale/ZeroTier IP, or forward port {port} (TCP and UDP) and share your public IP.");
     println!("Ctrl+C to stop.\n");
     loop {
         for line in server.poll() {

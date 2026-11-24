@@ -39,7 +39,9 @@ How friends reach the server:
 - Same Wi-Fi / LAN: the host's LAN IP (printed by the server).
 - Over the internet, easiest: install [Tailscale](https://tailscale.com) (or ZeroTier) on
   every PC and use the host's Tailscale IP. No router setup.
-- Or forward **TCP port 27420** on the host's router and share the public IP.
+- Or forward **port 27420, TCP and UDP**, on the host's router and share the public IP.
+  (UDP carries the car positions; if it is blocked the game falls back to TCP, which works
+  but can stutter on bad Wi-Fi. The lobby shows UDP/TCP per player.)
 
 Everyone needs the same game version (the server refuses mismatches). Join codes through a
 relay are planned later.

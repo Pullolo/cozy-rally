@@ -27,10 +27,17 @@ fn full_race_flow() {
     let mut a = NetClient::connect(&addr, "Alice", 0, 1);
     let mut b = NetClient::connect(&addr, "Bob", 1, 1);
     let mut c = NetClient::connect(&addr, "  ", 2, 1);
+    // c behaves like a player behind a firewall that drops UDP: TCP fallback only
+    c.udp_allowed = false;
     let mut ev = vec![Vec::new(), Vec::new(), Vec::new()];
     {
         let mut cl = [&mut a, &mut b, &mut c];
         until(&mut server, &mut cl, &mut ev, "lobby of 3", |cl, _| cl.iter().all(|c| c.status == Status::Connected && c.players.len() == 3));
+        until(&mut server, &mut cl, &mut ev, "udp for a and b", |cl, _| cl[0].udp_ok && cl[1].udp_ok && cl[0].players.iter().filter(|p| p.udp).count() == 2);
+    }
+    assert!(server.udp_enabled());
+    assert!(!c.udp_ok, "the TCP-only client stays on TCP");
+    {
     }
     assert_eq!(server.player_count(), 3);
     // the first to join leads
@@ -75,12 +82,14 @@ fn full_race_flow() {
     assert!(!ev.iter().flatten().any(|x| matches!(x, NetEvent::Go { .. })));
     cl[2].send(&ClientMsg::Loaded { race_id });
     until(&mut server, &mut cl, &mut ev, "go", |_, ev| ev.iter().all(|e| e.iter().any(|x| matches!(x, NetEvent::Go { .. }))));
-    // snapshots are relayed to the others, not echoed
-    let snap = CarSnapshot { t: 1.5, pos: [1.0, 2.0, 3.0], throttle: 1.0, ..Default::default() };
-    cl[0].send(&ClientMsg::State { race_id, snap });
-    let id0 = cl[0].my_id;
-    until(&mut server, &mut cl, &mut ev, "relay", |_, ev| ev[1..].iter().all(|e| e.iter().any(|x| *x == NetEvent::State { id: id0, snap })));
-    assert!(!ev[0].iter().any(|x| matches!(x, NetEvent::State { .. })));
+    // snapshots are relayed to the others (UDP or TCP fallback, both directions), not echoed
+    for k in 0..3 {
+        let snap = CarSnapshot { t: 1.5 + k as f32, pos: [1.0, 2.0, k as f32], throttle: 1.0, ..Default::default() };
+        cl[k].send(&ClientMsg::State { race_id, snap });
+        let idk = cl[k].my_id;
+        until(&mut server, &mut cl, &mut ev, "relay", |_, ev| (0..3).filter(|&j| j != k).all(|j| ev[j].iter().any(|x| *x == NetEvent::State { id: idk, snap })));
+        assert!(!ev[k].iter().any(|x| matches!(x, NetEvent::State { id, .. } if *id == idk)), "no echo");
+    }
     // player 3 drops mid race; the others are told
     let id2 = cl[2].my_id;
     cl[2].disconnect();

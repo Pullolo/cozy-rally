@@ -380,7 +380,7 @@ impl Online {
         if let Some(m) = &self.message {
             text_mid(m, cx, fy + 10.0 * s, 18.0 * s, BERRY);
         }
-        let hint = ["Host: run rally_server on any PC, then share its address.", "Same Wi-Fi: its LAN IP. Over the internet: a Tailscale/ZeroTier IP,", "or the host's public IP with TCP port 27420 forwarded."];
+        let hint = ["Host: run rally_server on any PC, then share its address.", "Same Wi-Fi: its LAN IP. Over the internet: a Tailscale/ZeroTier IP,", "or the host's public IP with port 27420 (TCP + UDP) forwarded."];
         for (i, l) in hint.iter().enumerate() {
             text_mid(l, cx, fy + 40.0 * s + i as f32 * 22.0 * s, 16.0 * s, INK_SOFT);
         }
@@ -421,7 +421,7 @@ impl Online {
             let name = if p.id == c.leader { format!("{}  (leader)", p.name) } else { p.name.clone() };
             text(&name, ix + 44.0 * s, mid_baseline(py + (row - 6.0 * s) * 0.5, 20.0 * s), 20.0 * s, INK);
             text(car_name(p.car), ix + iw * 0.45, mid_baseline(py + (row - 6.0 * s) * 0.5, 18.0 * s), 18.0 * s, INK_SOFT);
-            let tag = if p.racing { "racing".to_string() } else if p.ready { "ready!".to_string() } else { format!("{} ms", p.ping_ms) };
+            let tag = if p.racing { "racing".to_string() } else if p.ready { "ready!".to_string() } else { format!("{} ms  {}", p.ping_ms, if p.udp { "UDP" } else { "TCP" }) };
             text_right(&tag, ix + iw - 16.0 * s, mid_baseline(py + (row - 6.0 * s) * 0.5, 18.0 * s), 18.0 * s, if p.ready { MINT } else { INK_SOFT });
             py += row;
         }

@@ -27,7 +27,8 @@ crates/rally_core/   headless simulation (no graphics). glam 0.27 shared with ma
                stagesim.rs (stats per track difficulty), pacenotes.rs, surfaces.rs, trackstats.rs
 crates/rally_net/    online multiplayer (no graphics; depends on rally_core)
   protocol.rs  ClientMsg / ServerMsg, PROTOCOL_VERSION (bump on any layout change), DEFAULT_PORT 27420
-  conn.rs      non-blocking framed TCP (u32 LE length + bincode)
+  conn.rs      non-blocking framed TCP (u32 LE length + bincode); UdpMsg datagrams carry the
+               30 Hz snapshots on the same port (token-authenticated, TCP fallback)
   server.rs    lobby, leader, synchronised start (Loaded -> Go), snapshot relay, official results
   client.rs    NetClient used by the game (background connect, poll per frame)
   sync.rs      remote cars: simulated locally with the owner's inputs, softly corrected toward

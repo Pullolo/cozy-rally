@@ -1,10 +1,12 @@
 //! Wire protocol shared by the game client and `rally_server`.
 //!
-//! Transport: one TCP connection per player (TCP_NODELAY), every message a length-prefixed
-//! bincode frame (`u32` little-endian length, then the payload). Lobby/control messages and the
-//! ~30 Hz car snapshots share the connection; snapshots are small (~70 bytes) and clients render
-//! remote cars from a latency-tolerant correction model, so TCP is good enough between friends.
-//! (A UDP channel for snapshots is a possible later upgrade; the message types would not change.)
+//! Transport: one TCP connection per player (TCP_NODELAY) for lobby/control messages, every
+//! message a length-prefixed bincode frame (`u32` little-endian length, then the payload).
+//! The ~30 Hz car snapshots go over UDP on the same port number (one bincode `UdpMsg` per
+//! datagram): a lost snapshot is simply replaced by the next one instead of stalling the stream
+//! like TCP would. The client proves who it is with the `udp_token` from `Welcome`; until the
+//! server acknowledges its UDP hello (or if UDP is blocked by a firewall) snapshots fall back to
+//! the TCP connection, so a race always works.
 //!
 //! Model: every client simulates its OWN car authoritatively and streams snapshots (state +
 //! inputs). Other clients simulate remote cars locally with the received inputs and softly pull
@@ -14,7 +16,7 @@ use rally_core::track::TrackParams;
 use serde::{Deserialize, Serialize};
 
 /// Bump whenever a message layout changes; mismatching clients are refused with a clear reason.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const DEFAULT_PORT: u16 = 27420;
 pub const MAX_PLAYERS: usize = 4;
 /// Snapshot send rate per client
@@ -36,6 +38,8 @@ pub struct PlayerInfo {
     pub ping_ms: u16,
     /// Still driving the current race (joined the lobby mid-race = false)
     pub racing: bool,
+    /// Snapshots reach this player over UDP (false = TCP fallback)
+    pub udp: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -97,7 +101,7 @@ pub enum ClientMsg {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ServerMsg {
-    Welcome { id: PlayerId, server_name: String },
+    Welcome { id: PlayerId, server_name: String, udp_token: u64 },
     Refused { reason: String },
     Lobby { players: Vec<PlayerInfo>, leader: PlayerId, settings: Option<RaceSettings>, race_running: bool },
     Start(RaceStart),
@@ -112,3 +116,19 @@ pub enum ServerMsg {
     RaceOver { race_id: u32, results: Vec<(PlayerId, Option<f32>)> },
     Pong { t: f64 },
 }
+
+/// One UDP datagram (bincode, no framing). Snapshots only; everything else stays on TCP.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum UdpMsg {
+    /// client -> server: register / keep the NAT mapping open (sent every few seconds)
+    Hello { id: PlayerId, token: u64 },
+    /// server -> client: hello accepted, snapshots may use UDP
+    Ack,
+    /// client -> server: my car
+    State { id: PlayerId, token: u64, race_id: u32, snap: CarSnapshot },
+    /// server -> client: another player's car
+    Relay { id: PlayerId, snap: CarSnapshot },
+}
+
+/// Largest datagram we send or accept (snapshots are ~90 bytes)
+pub const MAX_DATAGRAM: usize = 1200;

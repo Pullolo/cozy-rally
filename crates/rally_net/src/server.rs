@@ -3,7 +3,7 @@
 use crate::conn::Conn;
 use crate::protocol::*;
 use std::io;
-use std::net::{SocketAddr, TcpListener};
+use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::time::{Duration, Instant};
 
 /// Wait this long for slow loaders before starting anyway
@@ -17,9 +17,17 @@ const RACE_MAX: Duration = Duration::from_secs(60 * 45);
 /// Number of paints in the game (rally_game::models::PAINTS)
 const PAINT_COUNT: u8 = 9;
 
+/// Forget a client's UDP address after this long without a datagram (it falls back to TCP)
+const UDP_TIMEOUT: Duration = Duration::from_secs(15);
+
 struct Client {
     id: PlayerId,
     conn: Conn,
+    /// Secret the client quotes in its UDP datagrams
+    token: u64,
+    /// Where this client's datagrams come from (None = TCP only)
+    udp_addr: Option<SocketAddr>,
+    udp_seen: Instant,
     /// None until Hello
     info: Option<PlayerInfo>,
     last_seen: Instant,
@@ -38,6 +46,8 @@ struct RaceRun {
 
 pub struct Server {
     listener: TcpListener,
+    /// Snapshots, same port number as the listener
+    udp: Option<UdpSocket>,
     pub name: String,
     clients: Vec<Client>,
     next_id: PlayerId,
@@ -52,11 +62,17 @@ impl Server {
     pub fn bind(addr: &str, name: &str) -> io::Result<Server> {
         let listener = TcpListener::bind(addr)?;
         listener.set_nonblocking(true)?;
-        Ok(Server { listener, name: name.to_string(), clients: Vec::new(), next_id: 1, leader: None, settings: None, race: None, next_race: 1, lobby_dirty: false })
+        // UDP on the same port; without it everything still works over TCP
+        let udp = UdpSocket::bind(listener.local_addr()?).and_then(|u| u.set_nonblocking(true).map(|_| u)).ok();
+        Ok(Server { listener, udp, name: name.to_string(), clients: Vec::new(), next_id: 1, leader: None, settings: None, race: None, next_race: 1, lobby_dirty: false })
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.listener.local_addr()
+    }
+
+    pub fn udp_enabled(&self) -> bool {
+        self.udp.is_some()
     }
 
     pub fn player_count(&self) -> usize {
@@ -70,7 +86,7 @@ impl Server {
         while let Ok((stream, addr)) = self.listener.accept() {
             if let Ok(conn) = Conn::new(stream) {
                 let id = self.alloc_id();
-                self.clients.push(Client { id, conn, info: None, last_seen: now });
+                self.clients.push(Client { id, conn, token: make_token(id), udp_addr: None, udp_seen: now, info: None, last_seen: now });
                 log.push(format!("connection from {addr}"));
             }
         }
@@ -83,6 +99,7 @@ impl Server {
                 self.handle(ci, m, now, &mut log);
             }
         }
+        self.poll_udp(now, &mut log);
         // drop dead / idle clients
         let mut gone = Vec::new();
         self.clients.retain(|c| {
@@ -148,8 +165,9 @@ impl Server {
                 }
                 let name = clean_name(&name, id);
                 log.push(format!("{name} joined (id {id})"));
-                self.clients[ci].info = Some(PlayerInfo { id, name, car, paint, ready: false, ping_ms: 0, racing: false });
-                let welcome = ServerMsg::Welcome { id, server_name: self.name.clone() };
+                self.clients[ci].info = Some(PlayerInfo { id, name, car, paint, ready: false, ping_ms: 0, racing: false, udp: false });
+                let udp_token = if self.udp.is_some() { self.clients[ci].token } else { 0 };
+                let welcome = ServerMsg::Welcome { id, server_name: self.name.clone(), udp_token };
                 self.clients[ci].conn.send(&welcome);
                 if self.leader.is_none() {
                     self.leader = Some(id);
@@ -188,16 +206,7 @@ impl Server {
                     }
                 }
             }
-            ClientMsg::State { race_id, snap } => {
-                let racing = self.race.as_ref().is_some_and(|r| r.start.race_id == race_id && r.racers.contains(&id));
-                if racing {
-                    let ids: Vec<PlayerId> = self.race.as_ref().map(|r| r.racers.clone()).unwrap_or_default();
-                    let msg = ServerMsg::State { id, snap };
-                    for c in self.clients.iter_mut().filter(|c| c.id != id && ids.contains(&c.id)) {
-                        c.conn.send(&msg);
-                    }
-                }
-            }
+            ClientMsg::State { race_id, snap } => self.relay_state(id, race_id, snap),
             ClientMsg::Finished { race_id, time } => {
                 let mut announce = false;
                 if let Some(r) = self.race.as_mut().filter(|r| r.start.race_id == race_id && r.go_sent) {
@@ -227,6 +236,72 @@ impl Server {
                     }
                     i.ping_ms = rtt_ms;
                 }
+            }
+        }
+    }
+
+    /// Forward a car snapshot to the other racers: UDP where it works, TCP otherwise
+    fn relay_state(&mut self, id: PlayerId, race_id: u32, snap: CarSnapshot) {
+        let Some(r) = self.race.as_ref().filter(|r| r.start.race_id == race_id && r.racers.contains(&id)) else { return };
+        let ids = r.racers.clone();
+        let datagram = bincode::serialize(&UdpMsg::Relay { id, snap }).ok();
+        for c in self.clients.iter_mut().filter(|c| c.id != id && ids.contains(&c.id)) {
+            match (c.udp_addr, &self.udp, &datagram) {
+                (Some(a), Some(u), Some(d)) => {
+                    let _ = u.send_to(d, a);
+                }
+                _ => c.conn.send(&ServerMsg::State { id, snap }),
+            }
+        }
+    }
+
+    fn poll_udp(&mut self, now: Instant, log: &mut Vec<String>) {
+        let mut buf = [0u8; MAX_DATAGRAM];
+        let mut got = Vec::new();
+        if let Some(u) = &self.udp {
+            while let Ok((n, from)) = u.recv_from(&mut buf) {
+                if let Ok(m) = bincode::deserialize::<UdpMsg>(&buf[..n]) {
+                    got.push((m, from));
+                }
+            }
+        }
+        for (m, from) in got {
+            let (id, token) = match &m {
+                UdpMsg::Hello { id, token } | UdpMsg::State { id, token, .. } => (*id, *token),
+                _ => continue,
+            };
+            // the token proves the datagram comes from the player on that TCP connection
+            let Some(c) = self.clients.iter_mut().find(|c| c.id == id && c.token == token && c.info.is_some()) else { continue };
+            c.udp_seen = now;
+            if c.udp_addr != Some(from) {
+                c.udp_addr = Some(from);
+                if let Some(i) = c.info.as_mut() {
+                    if !i.udp {
+                        log.push(format!("{}: snapshots over UDP ({from})", i.name));
+                    }
+                    i.udp = true;
+                }
+                self.lobby_dirty = true;
+            }
+            match m {
+                UdpMsg::Hello { .. } => {
+                    if let (Some(u), Ok(d)) = (&self.udp, bincode::serialize(&UdpMsg::Ack)) {
+                        let _ = u.send_to(&d, from);
+                    }
+                }
+                UdpMsg::State { race_id, snap, .. } => self.relay_state(id, race_id, snap),
+                _ => {}
+            }
+        }
+        // clients whose UDP went quiet (NAT mapping expired, firewall) fall back to TCP
+        for c in self.clients.iter_mut() {
+            if c.udp_addr.is_some() && now.duration_since(c.udp_seen) > UDP_TIMEOUT {
+                c.udp_addr = None;
+                if let Some(i) = c.info.as_mut() {
+                    i.udp = false;
+                    log.push(format!("{}: UDP went quiet, using TCP", i.name));
+                }
+                self.lobby_dirty = true;
             }
         }
     }
@@ -325,4 +400,13 @@ fn clean_name(name: &str, id: PlayerId) -> String {
     let n: String = name.chars().filter(|c| !c.is_control()).take(16).collect();
     let n = n.trim().to_string();
     if n.is_empty() { format!("Racer {id}") } else { n }
+}
+
+/// Unguessable-enough per-connection token (std only: RandomState is seeded from the OS)
+fn make_token(id: PlayerId) -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u8(id);
+    h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+    h.finish() | 1
 }
