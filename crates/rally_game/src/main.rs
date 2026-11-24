@@ -639,9 +639,20 @@ impl App {
         draw_logo(x, logo_y, 100.0 * s, t, self.screen_t);
         
         let bw = 330.0 * s;
-        let bh = 50.0 * s;
-        let gap = 11.0 * s;
+        let items_n = 7.0;
         let mut y = (sh * 0.38).max(logo_y + 84.0 * s);
+        // fit the column between the tagline and the footer hint (short / tall windows):
+        // shrink buttons and gaps together, and start higher when even that isn't enough
+        let bottom = sh - 54.0 * s;
+        let (mut bh, mut gap) = (50.0 * s, 11.0 * s);
+        let need = items_n * bh + (items_n - 1.0) * gap;
+        if y + need > bottom {
+            let k = ((bottom - y) / need).max(0.72);
+            bh *= k;
+            gap *= k;
+            let need = items_n * bh + (items_n - 1.0) * gap;
+            y = (bottom - need).max(logo_y + 70.0 * s);
+        }
         let items: [(&str, Color); 7] = [("Campaign", BUTTER), ("Quick race", PEACH), ("Split-screen", SKY), ("Online", BERRY), ("Settings", LAVENDER), ("How to play", MINT), ("Quit", CREAM)];
         self.focus.begin(items.len());
         let mut chosen = None;
