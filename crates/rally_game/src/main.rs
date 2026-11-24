@@ -16,6 +16,7 @@ mod input;
 mod models;
 mod pacenotes_hud;
 mod platform;
+mod touch;
 mod weather_view;
 mod render;
 mod settings;
@@ -629,15 +630,18 @@ impl App {
         let bh = 50.0 * s;
         let gap = 11.0 * s;
         let mut y = (sh * 0.38).max(logo_y + 84.0 * s);
-        let items: [(&str, Color); 6] = [("Campaign", BUTTER), ("Quick race", PEACH), ("Split-screen", SKY), ("Settings", LAVENDER), ("How to play", MINT), ("Quit", CREAM)];
+        let all: [(&str, Color); 6] = [("Campaign", BUTTER), ("Quick race", PEACH), ("Split-screen", SKY), ("Settings", LAVENDER), ("How to play", MINT), ("Quit", CREAM)];
+        // phones: no split-screen (one screen, one touch layout) and no Quit (Android apps
+        // are left with Home / Back); ids stay those of `all`
+        let items: Vec<(usize, &str, Color)> = all.iter().enumerate().filter(|(i, _)| !(platform::MOBILE && (*i == 2 || *i == 5))).map(|(i, (l, c))| (i, *l, *c)).collect();
         self.focus.begin(items.len());
         let mut chosen = None;
-        for (i, (label, col)) in items.iter().enumerate() {
+        for (i, (id, label, col)) in items.iter().enumerate() {
             // staggered slide-in
             let k = ease_back(((self.screen_t - 0.15 - i as f32 * 0.06) / 0.4).clamp(0.0, 1.0));
             let bx = x - (1.0 - k) * 60.0 * s;
             if button(&mut self.focus, label, bx, y, bw, bh, *col) {
-                chosen = Some(i);
+                chosen = Some(*id);
             }
             y += bh + gap;
         }
@@ -1063,7 +1067,11 @@ impl App {
         ly += step + 30.0 * s;
         header("Display", lx, ly);
         ly += 14.0 * s;
-        if toggle(&mut self.focus, "Fullscreen", &mut st.fullscreen, lx, ly, cw, rh, SKY) {
+        if touch::enabled() {
+            // phones are always fullscreen: this row picks the touch steering style instead
+            let d = selector(&mut self.focus, "Touch steering", touch::STEER_NAMES[st.touch_steer], lx, ly, cw, rh, SKY);
+            st.touch_steer = ((st.touch_steer as i32 + d).rem_euclid(touch::STEER_NAMES.len() as i32)) as usize;
+        } else if toggle(&mut self.focus, "Fullscreen", &mut st.fullscreen, lx, ly, cw, rh, SKY) {
             set_fullscreen(st.fullscreen);
         }
         ly += step;
@@ -1210,6 +1218,12 @@ impl App {
         }
         // autopilot for automated playtests
         let mut touch = None;
+        if sess.paused {
+            touch::release();
+        } else if !self.hooks.autoplay {
+            // on-screen controls (phones; COZY_TOUCH=1 on PC)
+            touch = touch::sample(dt, settings::get().touch_steer);
+        }
         if self.hooks.autoplay && !sess.paused {
             let i = sess.players[0].car;
             touch = Some(self.autopilots[0].drive(&sess.world.cars[i], &sess.world.track, dt));
@@ -1249,6 +1263,9 @@ impl App {
             } else {
                 draw_rectangle(0.0, screen_height() * 0.5 - 2.0, screen_width(), 4.0, CREAM);
             }
+        }
+        if !sess.paused && vps.len() == 1 {
+            touch::draw(settings::get().touch_steer);
         }
         // small on-screen pause button for mouse / touch players
         PAUSE_BUTTON.store(!sess.paused && self.pointer_seen > 0.0, std::sync::atomic::Ordering::Relaxed);

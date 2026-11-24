@@ -409,9 +409,12 @@ pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
     }
 
     // ---------------------------------------------------------------- speedo + traction (bottom right)
-    let sr = 78.0 * k;
+    // touch controls own the bottom corners: speedo moves under the timer card, minimap up the
+    // left side (no grip widget)
+    let touch = crate::touch::visible();
+    let sr = if touch { 66.0 * k } else { 78.0 * k };
     let cx = vp.x + vp.w - sr - pad - 6.0 * k;
-    let cy = vp.y + vp.h - sr - pad;
+    let cy = if touch { vp.y + 150.0 * k + sr } else { vp.y + vp.h - sr - pad };
     draw_speedo(car, h, cx, cy, sr, k, t);
     // circuits: gentle "track limits" reminder when all four wheels are beyond the white lines
     if s.track().params.discipline == rally_core::track::Discipline::Circuit && race.is_racing() && !r.finished {
@@ -424,13 +427,14 @@ pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
             let _ = w;
         }
     }
-    if crate::settings::get().show_traction {
+    if crate::settings::get().show_traction && !touch {
         draw_traction(car, h, cx - sr - 64.0 * k, cy - 4.0 * k, k);
     }
 
     // ---------------------------------------------------------------- minimap (bottom left)
-    let ms = (190.0 * k).min(vp.h * 0.36);
-    draw_minimap(s, player, vp.x + pad, vp.y + vp.h - pad - ms, ms);
+    let ms = if touch { (150.0 * k).min(vp.h * 0.26) } else { (190.0 * k).min(vp.h * 0.36) };
+    let my = if touch { vp.y + 238.0 * k } else { vp.y + vp.h - pad - ms };
+    draw_minimap(s, player, vp.x + pad, my, ms);
 
     // ---------------------------------------------------------------- pace notes (top centre; N / settings)
     crate::pacenotes_hud::draw_pace_notes(s, player, vp);

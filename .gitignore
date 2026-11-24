@@ -4,3 +4,4 @@
 !assets/**/*.png
 /screenshots
 /dist
+/android/keystore

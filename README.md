@@ -19,6 +19,7 @@ physics. Everything (models, sounds, music) is generated in code.
 cargo run --release -p rally_game
 cargo build --release --target x86_64-pc-windows-gnu -p rally_game   # Windows exe
 ```
+Android APK (sideload, arm64): `android/build.sh` (needs Docker), see [android/README.md](android/README.md).
 Linux needs `libasound2-dev libxi-dev libgl1-mesa-dev`. Gamepads on Linux: `--features gamepad-linux` (needs libudev).
 
 ## Controls

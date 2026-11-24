@@ -408,7 +408,8 @@ impl PlayerInput {
     pub fn camera_pressed(&self) -> bool {
         let ks = self.keys();
         let p = self.pad_state().is_some_and(|p| p.pressed(PadButton::X) || p.pressed(PadButton::Back));
-        p || pressed(&ks.iter().map(|k| k.camera).collect::<Vec<_>>())
+        let touch = self.pad == Some(0) && crate::touch::take_camera();
+        touch || p || pressed(&ks.iter().map(|k| k.camera).collect::<Vec<_>>())
     }
 
     pub fn sample(&mut self, dt: f32, extra: Option<CarInput>) -> CarInput {

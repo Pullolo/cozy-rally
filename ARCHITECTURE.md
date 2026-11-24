@@ -1,8 +1,10 @@
 # Cozy Rally — architecture & contributor guide
 
-Cozy, pretty, procedural rally racing in Rust. Target right now: **Windows PC** (cross-compiled
-from Linux with `x86_64-pc-windows-gnu`). Online multiplayer and Android come later, so keep
-code portable (no Windows-only APIs, GLSL `#version 100`, u16 index buffers).
+Cozy, pretty, procedural rally racing in Rust. Targets: **Windows PC** (cross-compiled
+from Linux with `x86_64-pc-windows-gnu`) and **Android** (sideload APK, see `android/README.md`),
+built from one code base. Online multiplayer comes later. Keep code portable (no Windows-only
+APIs, GLSL `#version 100`, u16 index buffers); anything platform-specific goes in
+`rally_game/src/platform/` behind `cfg(target_os = ...)`.
 
 **Art direction: cozy and super pretty.** Soft pastel palettes, warm sun, gentle fog, low-poly
 flat-shaded shapes with rounded silhouettes, lots of small life (flowers, critters, bunting,
@@ -33,7 +35,9 @@ crates/rally_game/   macroquad app
   models.rs        procedural car + prop models
   game.rs          RaceSession: World + players + AI + cameras + viewports + 3D drawing
   camera.rs        chase camera
-  input.rs         keyboard -> CarInput
+  input.rs         keyboard + gamepads (gilrs on PC, platform::android on phones) -> CarInput
+  touch.rs         on-screen touch controls (phones; COZY_TOUCH=1 on PC)
+  platform/        platform layer: Android JNI glue (lifecycle, Back, pads, saves, logcat)
   hud.rs           in-race HUD
   pacenotes_hud.rs pace-notes strip (top centre), N toggles, PACE_NOTES_ENABLED / settings.pace_notes
   ui.rs            immediate-mode cozy UI widgets
