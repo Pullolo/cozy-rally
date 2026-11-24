@@ -1,0 +1,13 @@
+package TARGET_PACKAGE_NAME;
+
+// Native callbacks implemented in Rust: crates/rally_game/src/platform/android.rs
+// (JNI names Java_com_cozyrally_game_CozyNative_*; keep both sides in sync).
+public class CozyNative {
+    public native static void init(Object activity, String filesDir);
+    public native static void onPause();
+    public native static void onResume();
+    public native static void onBack();
+    public native static void padAxes(int device, float lx, float ly, float lt, float rt, float hatX, float hatY);
+    public native static void padKey(int device, int keycode, boolean down);
+    public native static void padRemoved(int device);
+}

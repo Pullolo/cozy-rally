@@ -401,7 +401,7 @@ impl Focus {
         self.activated = is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) || is_key_pressed(KeyCode::KpEnter);
         self.left = is_key_pressed(KeyCode::Left) || is_key_pressed(KeyCode::A);
         self.right = is_key_pressed(KeyCode::Right) || is_key_pressed(KeyCode::D);
-        self.back = is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Backspace);
+        self.back = is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Backspace) || crate::input::system_back();
         if mouse_delta_position().length() > 0.0 {
             self.pointer_active = true;
         }

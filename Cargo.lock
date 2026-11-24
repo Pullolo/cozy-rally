@@ -875,7 +875,9 @@ version = "0.1.0"
 dependencies = [
  "cpal",
  "gilrs",
+ "jni",
  "macroquad",
+ "ndk-context",
  "rally_core",
 ]
 

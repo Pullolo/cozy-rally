@@ -94,6 +94,8 @@ struct Pads {
 }
 
 thread_local! {
+    /// Android Back button this frame (sampled once in `poll`)
+    static SYSTEM_BACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static PADS: RefCell<Pads> = RefCell::new(Pads::default());
 }
 
@@ -186,8 +188,43 @@ mod backend {
     }
 }
 
+/// Android: raw input-device state from the Java activity -> PadState (Xbox-style layout;
+/// Android's own gamepad mapping already normalises most pads to it).
+#[cfg(target_os = "android")]
+fn android_pads() -> Vec<PadState> {
+    use crate::platform::android::{key_bit, pads};
+    pads()
+        .into_iter()
+        .map(|r| {
+            let k = |code: i32| r.keys & key_bit(code) != 0;
+            let mut s = PadState { lx: r.lx, ly: -r.ly, lt: r.lt.max(if k(104) { 1.0 } else { 0.0 }), rt: r.rt.max(if k(105) { 1.0 } else { 0.0 }), ..Default::default() };
+            let map = [
+                (k(96) || k(23), PadButton::A),
+                (k(97) || k(4), PadButton::B),
+                (k(99), PadButton::X),
+                (k(100), PadButton::Y),
+                (k(108) || k(82), PadButton::Start),
+                (k(109), PadButton::Back),
+                (k(102), PadButton::Lb),
+                (k(103), PadButton::Rb),
+                (k(19) || r.hat_y < -0.5, PadButton::Up),
+                (k(20) || r.hat_y > 0.5, PadButton::Down),
+                (k(21) || r.hat_x < -0.5, PadButton::Left),
+                (k(22) || r.hat_x > 0.5, PadButton::Right),
+            ];
+            for (on, b) in map {
+                if on {
+                    s.buttons |= b as u32;
+                }
+            }
+            s
+        })
+        .collect()
+}
+
 /// Read the gamepads. Call once per frame, before any other input query.
 pub fn poll() {
+    SYSTEM_BACK.with(|b| b.set(crate::platform::take_back()));
     let now = get_time();
     PADS.with(|p| {
         let mut p = p.borrow_mut();
@@ -203,6 +240,10 @@ pub fn poll() {
             if let Some(b) = p.backend.as_mut() {
                 pads = b.poll(now);
             }
+        }
+        #[cfg(target_os = "android")]
+        {
+            pads = android_pads();
         }
         for (i, s) in pads.iter_mut().enumerate() {
             s.prev_buttons = prev.get(i).copied().unwrap_or(s.buttons);
@@ -282,12 +323,21 @@ pub fn pause_pressed() -> bool {
 /// "Back" in menus: Escape or B on any pad (ui::Focus::back already includes the pad)
 #[allow(dead_code)]
 pub fn back_pressed() -> bool {
-    is_key_pressed(KeyCode::Escape) || any_pad_pressed(PadButton::B)
+    is_key_pressed(KeyCode::Escape) || system_back() || any_pad_pressed(PadButton::B)
+}
+
+/// Android system Back button pressed this frame: acts exactly like Esc. Always false on PC.
+pub fn system_back() -> bool {
+    SYSTEM_BACK.with(|b| b.get())
 }
 
 /// Light rumble on a pad (0..1 strength). No-op without pads / force feedback.
 #[allow(unused_variables)]
 pub fn rumble(pad_index: usize, strength: f32, ms: u32) {
+    #[cfg(target_os = "android")]
+    if let Some(p) = crate::platform::android::pads().get(pad_index) {
+        crate::platform::android::rumble(p.device, strength, ms);
+    }
     #[cfg(any(windows, target_os = "macos", feature = "gamepad-linux"))]
     PADS.with(|p| {
         if let Some(b) = p.borrow_mut().backend.as_mut() {

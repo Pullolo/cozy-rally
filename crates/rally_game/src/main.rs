@@ -15,10 +15,19 @@ mod hud;
 mod input;
 mod models;
 mod pacenotes_hud;
+mod platform;
 mod weather_view;
 mod render;
 mod settings;
 mod ui;
+
+/// Android entry point: the Java activity (android/java) loads librally_game.so and miniquad
+/// calls `quad_main` on its render thread.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "C" fn quad_main() {
+    main();
+}
 
 use cinematic::Cinematic;
 use game::{PlayerSlot, RaceSession, SessionConfig};
@@ -1155,7 +1164,12 @@ impl App {
             self.switch_now(Screen::Title);
             return;
         };
-        if !input_blocked() && (is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::P) || input::pause_pressed()) {
+        // app sent to the background (Android): pause the race
+        if platform::suspended() && !sess.paused {
+            sess.paused = true;
+            self.pause_focus = Focus::default();
+        }
+        if !input_blocked() && (is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::P) || input::pause_pressed() || input::system_back()) {
             sess.paused = !sess.paused;
             self.pause_focus = Focus::default();
             audio::ui_sound(if sess.paused { audio::UiSound::Select } else { audio::UiSound::Back });

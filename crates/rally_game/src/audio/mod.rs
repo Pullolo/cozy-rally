@@ -101,6 +101,19 @@ fn send(cmd: Cmd) {
     }
 }
 
+/// Audio thread (to wake it for suspend/resume) and the wanted suspend state
+static AUDIO_THREAD: OnceLock<std::thread::Thread> = OnceLock::new();
+static SUSPENDED: AtomicBool = AtomicBool::new(false);
+
+/// Pause / resume the output stream (app sent to the background on Android).
+#[allow(dead_code)]
+pub fn suspend(on: bool) {
+    SUSPENDED.store(on, Ordering::Relaxed);
+    if let Some(t) = AUDIO_THREAD.get() {
+        t.unpark();
+    }
+}
+
 /// Start audio. Never panics; without a device the game simply runs muted.
 pub fn init() {
     if AUDIO.get().is_some() {
@@ -113,6 +126,7 @@ pub fn init() {
     ENABLED.store(true, Ordering::Relaxed);
     let wav = std::env::var("COZY_AUDIO_WAV").ok().filter(|s| !s.is_empty());
     let spawned = std::thread::Builder::new().name("cozy-audio".into()).spawn(move || {
+        let _ = AUDIO_THREAD.set(std::thread::current());
         let ok = match wav {
             Some(path) => wav_capture(rx, &path),
             None => device::run(rx),
@@ -364,9 +378,20 @@ mod device {
         if stream.play().is_err() {
             return false;
         }
-        // keep the stream (which may be !Send) alive for the life of the program
+        // keep the stream (which may be !Send) alive for the life of the program; pause it
+        // while the app is suspended (see audio::suspend)
+        let mut paused = false;
         loop {
             std::thread::park();
+            let want = super::SUSPENDED.load(std::sync::atomic::Ordering::Relaxed);
+            if want != paused {
+                paused = want;
+                if paused {
+                    let _ = stream.pause();
+                } else {
+                    let _ = stream.play();
+                }
+            }
         }
     }
 

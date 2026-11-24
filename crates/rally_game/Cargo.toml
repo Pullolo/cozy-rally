@@ -14,6 +14,13 @@ gilrs = { version = "0.11", optional = true }
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 gilrs = "0.11"
 
+# Android (sideload APK, see android/README.md): JNI glue for the Java activity, and the JNI
+# context cpal's oboe backend needs. Same versions cpal already pulls in.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
 [features]
 default = []
 gamepad-linux = ["dep:gilrs"]
+
