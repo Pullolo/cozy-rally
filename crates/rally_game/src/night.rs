@@ -37,7 +37,22 @@ pub struct Night {
     seed: u32,
     /// Lamp brightness for the biome (white snow would wash out)
     power: f32,
+    /// Circuit floodlight masts (lit zones only)
+    posts: Vec<PostLight>,
 }
+
+/// A circuit floodlight: head position and where it is aimed (the nearest bit of track)
+#[derive(Clone, Copy, Debug)]
+struct PostLight {
+    head: Vec3,
+    dir: Vec3,
+    range: f32,
+}
+
+/// Car headlamps take at most this many lights; floodlights get the rest
+const CAR_LIGHTS: usize = 6;
+/// Floodlights further than this are just glowing heads (no light pool)
+const POST_LIGHT_DIST: f32 = 170.0;
 
 fn hash(mut x: u32) -> f32 {
     x ^= x >> 16;
@@ -49,14 +64,28 @@ fn hash(mut x: u32) -> f32 {
 }
 
 impl Night {
-    pub fn new(cars: usize, biome: Biome, seed: u64) -> Night {
+    pub fn new(cars: usize, track: &rally_core::track::Track, seed: u64) -> Night {
+        let biome = track.biome;
+        let posts = track
+            .props
+            .iter()
+            .filter(|p| p.kind == rally_core::track::PropKind::LampPost)
+            .map(|p| {
+                let head = p.lamp_head();
+                // aim at the middle of the nearest track, a little ahead of straight down
+                let q = track.query(head, None);
+                let aim = track.samples[q.index].pos;
+                let to = aim - head;
+                PostLight { head, dir: to.normalize_or(Vec3::NEG_Y), range: to.length() + 20.0 }
+            })
+            .collect();
         let firefly_color = match biome {
             Biome::Snow => [0.0; 3], // no fireflies in the snow
             Biome::Desert => [1.0, 0.75, 0.45],
             Biome::Coast => [0.55, 1.0, 0.85],
             _ => [0.85, 1.0, 0.45],
         };
-        Night { lamps: vec![[1.0, 1.0]; cars], high: vec![std::env::var("COZY_HIGHBEAM").is_ok_and(|v| v == "1"); cars], lamp_msg: vec![f32::INFINITY; cars], fireflies: Vec::new(), firefly_color, seed: seed as u32, power: match biome {
+        Night { lamps: vec![[1.0, 1.0]; cars], high: vec![std::env::var("COZY_HIGHBEAM").is_ok_and(|v| v == "1"); cars], lamp_msg: vec![f32::INFINITY; cars], fireflies: Vec::new(), firefly_color, seed: seed as u32, posts, power: match biome {
             Biome::Snow => 0.62,
             Biome::Desert => 0.82,
             _ => 1.0,
@@ -155,7 +184,7 @@ impl Night {
             order.insert(0, v);
         }
         for c in order {
-            if out.len() >= MAX_LIGHTS {
+            if out.len() >= CAR_LIGHTS {
                 break;
             }
             let car = &sess.world.cars[c];
@@ -193,7 +222,70 @@ impl Night {
                 out.push(SpotLight { pos: pos + rot * Vec3::new(x, -he.y * 0.1, -he.z * 0.95), dir, color: [warm[0] * p, warm[1] * p, warm[2] * p], range, cos_inner: inner.to_radians().cos(), cos_outer: outer.to_radians().cos() });
             }
         }
+        self.post_lights(&mut out, viewer.map(|v| {
+            let (p, r) = interp(&sess.world.cars[v], sess.alpha);
+            p + r * Vec3::new(0.0, 0.0, -25.0)
+        }).unwrap_or(eye));
         out
+    }
+
+    /// The floodlights nearest to `focus` (a point a little ahead of the viewer's car).
+    /// The last ones in the budget fade with distance so pools never pop on or off.
+    fn post_lights(&self, out: &mut Vec<SpotLight>, focus: Vec3) {
+        let budget = MAX_LIGHTS - out.len();
+        if budget == 0 || self.posts.is_empty() {
+            return;
+        }
+        let mut near: Vec<(f32, &PostLight)> = self.posts.iter().map(|p| (p.head.distance(focus), p)).filter(|(d, _)| *d < POST_LIGHT_DIST).collect();
+        near.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // the first light that doesn't fit sets the fade-out distance
+        let cutoff = near.get(budget).map_or(POST_LIGHT_DIST, |n| n.0);
+        let warm = [1.0, 0.8, 0.55];
+        for &(d, p) in near.iter().take(budget) {
+            let w = ((cutoff - d) / 22.0).clamp(0.0, 1.0) * ((POST_LIGHT_DIST - d) / 40.0).clamp(0.0, 1.0);
+            if w <= 0.01 {
+                continue;
+            }
+            let k = 2.8 * w * self.power;
+            out.push(SpotLight { pos: p.head, dir: p.dir, color: [warm[0] * k, warm[1] * k, warm[2] * k], range: p.range, cos_inner: 32f32.to_radians().cos(), cos_outer: 66f32.to_radians().cos() });
+        }
+    }
+
+    /// Glowing floodlight lenses with a soft halo (every mast in view, lit or not)
+    pub fn draw_posts(&self, gpu: &mut Gpu, view: &View, env: &Environment) {
+        if self.posts.is_empty() {
+            return;
+        }
+        let mut verts: Vec<Vertex> = Vec::new();
+        let mut idx: Vec<u16> = Vec::new();
+        let to_cam = |p: Vec3| (view.eye - p).normalize_or_zero();
+        for p in &self.posts {
+            let d = p.head.distance(view.eye);
+            if d > 600.0 || !view.sphere_visible(p.head, 2.0) || verts.len() > 60000 {
+                continue;
+            }
+            let tc = to_cam(p.head);
+            let right = tc.cross(Vec3::Y).normalize_or_zero();
+            let up = right.cross(tc);
+            // halo: bright core fading to a transparent ring (bigger far away so it reads)
+            let r = 1.1 + d * 0.012;
+            let b = verts.len() as u16;
+            let core = p.head - Vec3::Y * 0.08 + tc * 0.4;
+            verts.push(Vertex { pos: core.to_array(), normal: [0.0, 1.0, 0.0], color: rgba([1.0, 0.86, 0.62], 0.95) });
+            let ring = 10u16;
+            for j in 0..ring {
+                let a = j as f32 / ring as f32 * std::f32::consts::TAU;
+                let q = core + (right * a.cos() + up * a.sin() * 0.8) * r;
+                verts.push(Vertex { pos: q.to_array(), normal: [0.0, 1.0, 0.0], color: rgba([1.0, 0.7, 0.4], 0.0) });
+            }
+            for j in 0..ring {
+                idx.extend_from_slice(&[b, b + 1 + j, b + 1 + (j + 1) % ring]);
+            }
+        }
+        if !idx.is_empty() {
+            let p = DrawParams { unlit: 1.0, tint: [2.0, 1.9, 1.7, 1.0], cast_shadow: false, receive_shadow: false, ..Default::default() };
+            gpu.draw_dynamic(&verts, &idx, view, env, Mat4::IDENTITY, &p, 1);
+        }
     }
 
     /// Headlight lens brightness for drawing a car (matches the lamp health)

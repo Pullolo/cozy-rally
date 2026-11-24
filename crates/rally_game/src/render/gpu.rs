@@ -186,7 +186,7 @@ pub struct Environment {
 }
 
 /// Maximum dynamic lights per draw (headlights at night)
-pub const MAX_LIGHTS: usize = 6;
+pub const MAX_LIGHTS: usize = 10;
 
 /// A spot light (car headlamp). Intensity is baked into `color`.
 #[derive(Clone, Copy, Debug, Default)]

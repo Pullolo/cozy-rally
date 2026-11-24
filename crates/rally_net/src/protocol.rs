@@ -16,7 +16,7 @@ use rally_core::track::TrackParams;
 use serde::{Deserialize, Serialize};
 
 /// Bump whenever a message layout changes; mismatching clients are refused with a clear reason.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 pub const DEFAULT_PORT: u16 = 27420;
 pub const MAX_PLAYERS: usize = 4;
 /// Snapshot send rate per client

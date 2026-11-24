@@ -93,7 +93,7 @@ struct Setup {
     discipline: usize,
     /// Circuit picker: 0 = Random, i = circuits()[i - 1]
     circuit: usize,
-    /// Random circuit size: 0 Sprint, 1 Grand Prix, 2 Ring
+    /// Random circuit size: 0 Sprint, 1 Grand Prix, 2 Ring, 3 Nordring
     circuit_size: usize,
     /// Night race (headlights)
     night: bool,
@@ -102,10 +102,10 @@ struct Setup {
 const DIFFICULTY: [(&str, f32); 3] = [("Chill", 0.35), ("Normal", 0.7), ("Spicy", 1.0)];
 const ASSISTS: [(&str, f32); 4] = [("Cozy", 1.3), ("Normal", 1.0), ("Sport", 0.55), ("Sim", 0.0)];
 const LENGTHS: [&str; 3] = ["Short", "Medium", "Long"];
-const CIRCUIT_SIZES: [&str; 3] = ["Sprint", "Grand Prix", "Ring"];
+const CIRCUIT_SIZES: [&str; 4] = ["Sprint", "Grand Prix", "Ring", "Nordring"];
 const DISCIPLINES: [&str; 2] = ["Rally", "Circuit"];
 /// Sensible lap counts per circuit size
-const CIRCUIT_LAPS: [u32; 3] = [5, 3, 1];
+const CIRCUIT_LAPS: [u32; 4] = [5, 3, 1, 1];
 const SURFACES: [&str; 5] = ["Biome default", "Gravel", "Tarmac", "Snow", "Mixed"];
 const TRACK_DIFFICULTY: [&str; 3] = ["Relaxed", "Rally", "Expert"];
 const PAINT_NAMES: [&str; 9] = ["Strawberry", "Blueberry", "Honey", "Pistachio", "Lilac", "Tangerine", "Coconut", "Lagoon", "Sakura"];
@@ -139,7 +139,7 @@ impl Setup {
     }
 
     fn circuit_size_now(&self) -> usize {
-        self.named_circuit().map(|c| c.params.length_class as usize).unwrap_or(self.circuit_size).min(2)
+        self.named_circuit().map(|c| c.params.length_class as usize).unwrap_or(self.circuit_size).min(3)
     }
 
     /// Cars offered for the discipline (rally cars for rally, circuit cars for circuits)
@@ -171,7 +171,7 @@ impl Setup {
         if self.is_circuit() {
             return match self.named_circuit() {
                 Some(c) => c.params,
-                None => rally_core::circuits::circuit_params(self.seed, if self.biome == 0 { None } else { Some(ALL_BIOMES[self.biome - 1]) }, self.circuit_size.min(2) as u8, self.track_difficulty.min(2) as u8),
+                None => rally_core::circuits::circuit_params(self.seed, if self.biome == 0 { None } else { Some(ALL_BIOMES[self.biome - 1]) }, self.circuit_size.min(3) as u8, self.track_difficulty.min(2) as u8),
             }
             .with_env_overrides();
         }
@@ -873,9 +873,9 @@ impl App {
             }
             by += step;
             if named.is_none() {
-                let d = selector(&mut self.focus, "Size", CIRCUIT_SIZES[self.setup.circuit_size.min(2)], bx, by, cw, rh, MINT);
+                let d = selector(&mut self.focus, "Size", CIRCUIT_SIZES[self.setup.circuit_size.min(3)], bx, by, cw, rh, MINT);
                 if d != 0 {
-                    self.setup.circuit_size = wrap(self.setup.circuit_size, d, 3);
+                    self.setup.circuit_size = wrap(self.setup.circuit_size, d, 4);
                     self.setup.laps = CIRCUIT_LAPS[self.setup.circuit_size];
                 }
                 by += step;
@@ -916,8 +916,8 @@ impl App {
             rounded_rect(bx, by + 4.0 * s, cw, card_h - 8.0 * s, 14.0 * s, with_alpha(CREAM_DEEP, 0.7));
             let opp = if tt { "time trial".to_string() } else { format!("{} opponents", self.setup.opponents) };
             let (title, line, blurb) = match (circuit, &named) {
-                (true, Some(c)) => (c.name.clone(), format!("{} - {} laps - {}", CIRCUIT_SIZES[c.params.length_class.min(2) as usize], self.setup.laps, opp), Some(c.blurb.clone())),
-                (true, None) => ("A brand-new circuit".to_string(), format!("{} - {} laps - {}", CIRCUIT_SIZES[self.setup.circuit_size.min(2)], self.setup.laps, opp), None),
+                (true, Some(c)) => (c.name.clone(), format!("{} - {} laps - {}", CIRCUIT_SIZES[c.params.length_class.min(3) as usize], self.setup.laps, opp), Some(c.blurb.clone())),
+                (true, None) => ("A brand-new circuit".to_string(), format!("{} - {} laps - {}", CIRCUIT_SIZES[self.setup.circuit_size.min(3)], self.setup.laps, opp), None),
                 _ => (if self.setup.biome == 0 { "A surprise biome".to_string() } else { ALL_BIOMES[self.setup.biome - 1].style().name.to_string() }, format!("{} laps  -  {} track  -  {}", self.setup.laps, LENGTHS[self.setup.length as usize].to_lowercase(), opp), None),
             };
             let tfs = (21.0 * s).min((cw - 32.0 * s) / text_size(&title, 21.0 * s).x.max(1.0) * 21.0 * s);
@@ -1583,7 +1583,7 @@ impl App {
         text_outlined_centered("Building your track...", cx, cy + 10.0 * s, 46.0 * s, CREAM);
         let what = match (self.setup.is_circuit(), self.setup.named_circuit()) {
             (true, Some(c)) => c.name,
-            (true, None) => format!("{} {}", biome_reveal(self.setup.biome, self.setup.seed), CIRCUIT_SIZES[self.setup.circuit_size.min(2)]),
+            (true, None) => format!("{} {}", biome_reveal(self.setup.biome, self.setup.seed), CIRCUIT_SIZES[self.setup.circuit_size.min(3)]),
             _ => biome_reveal(self.setup.biome, self.setup.seed),
         };
         text_mid(&what, cx, cy + 46.0 * s, 26.0 * s, INK);
@@ -1718,7 +1718,7 @@ async fn main() {
     let mut app = App {
         gpu: Gpu::new(),
         screen: Screen::Title,
-        setup: Setup { split: hooks.split, cars: [2, 1], paints: [0, 1], biome: 0, length: 1, seed: random_seed(), laps: 3, opponents: 3, difficulty: 1, assists: st.assists.min(ASSISTS.len() - 1), surface_mode: 0, track_difficulty: 1, mode: 0, discipline: st.discipline.min(1), circuit: st.circuit.min(rally_core::circuits::circuits().len()), circuit_size: st.circuit_size.min(2), night: false },
+        setup: Setup { split: hooks.split, cars: [2, 1], paints: [0, 1], biome: 0, length: 1, seed: random_seed(), laps: 3, opponents: 3, difficulty: 1, assists: st.assists.min(ASSISTS.len() - 1), surface_mode: 0, track_difficulty: 1, mode: 0, discipline: st.discipline.min(1), circuit: st.circuit.min(rally_core::circuits::circuits().len()), circuit_size: st.circuit_size.min(3), night: false },
         session: None,
         hud: None,
         focus: Focus::default(),

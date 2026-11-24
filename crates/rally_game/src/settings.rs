@@ -52,7 +52,7 @@ pub struct Settings {
     pub discipline: usize,
     /// Circuit picker: 0 = Random, 1.. = index+1 into rally_core::circuits::circuits()
     pub circuit: usize,
-    /// Random circuit size: 0 Sprint, 1 Grand Prix, 2 Ring
+    /// Random circuit size: 0 Sprint, 1 Grand Prix, 2 Ring, 3 Nordring
     pub circuit_size: usize,
     /// Last car per discipline
     pub car_rally: usize,
@@ -147,7 +147,7 @@ fn parse(text: &str) -> Settings {
             "pace_notes_circuit" => s.pace_notes_circuit = b(),
             "discipline" => s.discipline = v.parse::<usize>().unwrap_or(0).min(1),
             "circuit" => s.circuit = v.parse::<usize>().unwrap_or(s.circuit),
-            "circuit_size" => s.circuit_size = v.parse::<usize>().unwrap_or(1).min(2),
+            "circuit_size" => s.circuit_size = v.parse::<usize>().unwrap_or(1).min(3),
             "car_rally" => s.car_rally = v.parse::<usize>().unwrap_or(s.car_rally),
             "car_circuit" => s.car_circuit = v.parse::<usize>().unwrap_or(s.car_circuit),
             "racing_line" => s.racing_line = v.parse::<usize>().unwrap_or(s.racing_line).min(RACING_LINE_NAMES.len() - 1),

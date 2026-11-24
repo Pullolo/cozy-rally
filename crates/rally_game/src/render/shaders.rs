@@ -106,9 +106,9 @@ uniform vec4 params3;
 uniform vec4 params4;
 uniform vec4 params5; // x snow cover, y wetness, z lightning flash, w overcast
 uniform vec4 params6; // x light count, y night
-uniform vec4 light_pos[6]; // xyz position, w range
-uniform vec4 light_dir[6]; // xyz direction, w cos outer
-uniform vec4 light_col[6]; // rgb colour * intensity, w cos inner
+uniform vec4 light_pos[10]; // xyz position, w range
+uniform vec4 light_dir[10]; // xyz direction, w cos outer
+uniform vec4 light_col[10]; // rgb colour * intensity, w cos inner
 
 float unpack_depth(vec4 c) {
     return dot(c, vec4(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0));
@@ -227,7 +227,7 @@ void main() {
     if (params6.x > 0.5) {
         vec3 lamp = vec3(0.0);
         vec3 lamp_spec = vec3(0.0);
-        for (int i = 0; i < 6; i++) {
+        for (int i = 0; i < 10; i++) {
             if (float(i) >= params6.x) { break; }
             vec3 L = light_pos[i].xyz - v_world;
             float ld = length(L);

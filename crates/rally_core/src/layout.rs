@@ -1261,7 +1261,7 @@ pub fn design_stage(rng: &mut Rng, difficulty: u8, stage_len: f32, spacing: f32,
 // =============================================================================================
 
 /// Circuit size classes (TrackParams::length_class for Discipline::Circuit)
-pub const CIRCUIT_SIZE_NAMES: [&str; 3] = ["Sprint", "Grand Prix", "Ring"];
+pub const CIRCUIT_SIZE_NAMES: [&str; 4] = ["Sprint", "Grand Prix", "Ring", "Nordring"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CJ {
@@ -1364,24 +1364,46 @@ fn circuit_chicane(rng: &mut Rng, out: &mut Vec<Elem>) {
 /// (~9-11 km, many corners, built for crests and blind bends).
 pub fn design_circuit(rng: &mut Rng, size: u8, difficulty: u8, spacing: f32, max_half_width: f32, shoulder: f32) -> Option<Layout> {
     let dbg = std::env::var("CIRCUIT_DEBUG").is_ok();
-    let size = (size as usize).min(2);
+    let size = (size as usize).min(3);
+    // size 3, the Nordring: ~20 km of forest road that wriggles left AND right (corners may
+    // turn against the loop direction), a long flat-out straight, little run-off
+    let nord = size == 3;
     let d = (difficulty as usize).min(2);
-    let target = [2500.0, 4500.0, 10000.0][size] * rng.range(0.9, 1.1);
+    let target = [2500.0, 4500.0, 10000.0, 20500.0][size] * rng.range(0.9, 1.1);
     let k_main = match size {
         0 => rng.range_i(6, 9),
         1 => rng.range_i(9, 13),
-        _ => rng.range_i(18, 25),
+        2 => rng.range_i(18, 25),
+        _ => rng.range_i(34, 42),
     } as usize;
     let dir = if rng.chance(0.5) { 1.0 } else { -1.0 };
     let mut deltas: Vec<f32> = (0..k_main).map(|_| rng.range(0.5, 1.6)).collect();
-    for _ in 0..4 {
-        let sum: f32 = deltas.iter().sum();
-        for dl in deltas.iter_mut() {
-            *dl = (*dl / sum * TAU).clamp(deg(18.0), deg(125.0));
+    if nord {
+        // signed turns: about a third against the loop direction; the rest scaled so the lap
+        // still turns exactly once around
+        deltas = (0..k_main).map(|k| { let m = deg(rng.range(28.0, 105.0)); if k > 0 && rng.chance(0.36) { -m } else { m } }).collect();
+        for _ in 0..6 {
+            let pos: f32 = deltas.iter().filter(|x| **x > 0.0).sum();
+            let neg: f32 = -deltas.iter().filter(|x| **x < 0.0).sum::<f32>();
+            let s = (TAU + neg) / pos.max(1e-3);
+            for dl in deltas.iter_mut().filter(|x| **x > 0.0) {
+                *dl = (*dl * s).clamp(deg(20.0), deg(140.0));
+            }
         }
+        let pos: f32 = deltas.iter().filter(|x| **x > 0.0).sum();
+        let neg: f32 = -deltas.iter().filter(|x| **x < 0.0).sum::<f32>();
+        let s = (TAU + neg) / pos.max(1e-3);
+        deltas.iter_mut().filter(|x| **x > 0.0).for_each(|dl| *dl *= s);
+    } else {
+        for _ in 0..4 {
+            let sum: f32 = deltas.iter().sum();
+            for dl in deltas.iter_mut() {
+                *dl = (*dl / sum * TAU).clamp(deg(18.0), deg(125.0));
+            }
+        }
+        let sum: f32 = deltas.iter().sum();
+        deltas.iter_mut().for_each(|dl| *dl *= TAU / sum);
     }
-    let sum: f32 = deltas.iter().sum();
-    deltas.iter_mut().for_each(|dl| *dl *= TAU / sum);
 
     // mandatory corners first, the rest by weight
     let mut kinds = vec![CJ::Medium; k_main];
@@ -1394,6 +1416,12 @@ pub fn design_circuit(rng: &mut Rng, size: u8, difficulty: u8, spacing: f32, max
     let mandatory: Vec<CJ> = match size {
         0 => vec![CJ::Hairpin, CJ::Esses],
         1 => vec![CJ::Hairpin, CJ::HeavyBrake, CJ::Esses, CJ::DoubleApex, CJ::Sweeper],
+        3 => vec![
+            CJ::Hairpin, CJ::Hairpin, CJ::Hairpin, CJ::HeavyBrake, CJ::HeavyBrake, CJ::HeavyBrake,
+            CJ::Esses, CJ::Esses, CJ::Esses, CJ::Esses, CJ::Esses, CJ::Esses,
+            CJ::Carousel, CJ::Carousel, CJ::DoubleApex, CJ::DoubleApex, CJ::DoubleApex,
+            CJ::Tightening, CJ::Tightening, CJ::Tightening, CJ::Sweeper, CJ::Sweeper, CJ::Sweeper,
+        ],
         _ => vec![CJ::Hairpin, CJ::Hairpin, CJ::HeavyBrake, CJ::HeavyBrake, CJ::Esses, CJ::Esses, CJ::Esses, CJ::Carousel, CJ::DoubleApex, CJ::Sweeper, CJ::Sweeper],
     };
     let mut oi = 0;
@@ -1426,7 +1454,7 @@ pub fn design_circuit(rng: &mut Rng, size: u8, difficulty: u8, spacing: f32, max
     let back = 1 + rng.range_i(0, (k_main - 1) as i32) as usize;
     let mut elems: Vec<Elem> = Vec::new();
     let mut weights = vec![0.0f32; k_main];
-    let chicane_p = [0.15, 0.22, 0.25][size];
+    let chicane_p = [0.15, 0.22, 0.25, 0.16][size];
     for k in 0..k_main {
         if k > 0 && rng.chance(chicane_p) {
             let f = rng.range(0.3, 0.7);
@@ -1447,11 +1475,13 @@ pub fn design_circuit(rng: &mut Rng, size: u8, difficulty: u8, spacing: f32, max
             wk *= 3.0;
         }
         weights[k] = wk;
-        circuit_junction(rng, kinds[k], dir, deltas[k], &mut elems);
+        // a negative turn is a corner against the loop direction
+        let (jdir, jdelta) = if deltas[k] < 0.0 { (-dir, -deltas[k]) } else { (dir, deltas[k]) };
+        circuit_junction(rng, kinds[k], jdir, jdelta, &mut elems);
     }
-    let min_main = [500.0, 650.0, 700.0][size];
-    let min_back = [330.0, 550.0, 700.0][size];
-    let min_other = [70.0, 90.0, 80.0][size];
+    let min_main = [500.0, 650.0, 700.0, 700.0][size];
+    let min_back = [330.0, 550.0, 700.0, 1500.0][size];
+    let min_other = [70.0, 90.0, 80.0, 60.0][size];
     let min_len = |k: usize| if k == 0 { min_main } else if k == back { min_back } else { min_other };
     let zero = vec![0.0; k_main];
     let fixed: f32 = elems.iter().map(|e| e.len(&zero)).sum();
@@ -1503,7 +1533,8 @@ pub fn design_circuit(rng: &mut Rng, size: u8, difficulty: u8, spacing: f32, max
         if dbg { eprintln!("reject: not closed {:.1}", it.pts.last().unwrap().length()); }
         return None;
     }
-    if mains[0] > 1300.0 || mains.iter().any(|&m| m > 1400.0) {
+    let max_straight = if nord { 2400.0 } else { 1400.0 };
+    if mains[0] > 1300.0 || mains.iter().any(|&m| m > max_straight) {
         if dbg { eprintln!("reject: long straight {:?}", mains.iter().map(|m| *m as i32).collect::<Vec<_>>()); }
         return None; // no absurd drag strips
     }

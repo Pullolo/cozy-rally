@@ -14,12 +14,13 @@ pub struct CircuitDef {
     pub params: TrackParams,
 }
 
-/// Params for a circuit: `size` 0 = Sprint (~2.5 km), 1 = Grand Prix (~4.5 km), 2 = Ring (~10 km)
+/// Params for a circuit: `size` 0 = Sprint (~2.5 km), 1 = Grand Prix (~4.5 km), 2 = Ring (~10 km),
+/// 3 = Nordring (~20 km of narrow, hilly forest road)
 pub fn circuit_params(seed: u64, biome: Option<Biome>, size: u8, difficulty: u8) -> TrackParams {
     TrackParams {
         seed,
         biome,
-        length_class: size.min(2),
+        length_class: size.min(3),
         difficulty,
         surface: SurfaceMode::Tarmac,
         layout: LayoutKind::Loop,
@@ -45,6 +46,7 @@ pub fn circuits() -> Vec<CircuitDef> {
         def("circuit-autumn-ring", "Maplering", "The green-gold hell: ten kilometres of crests, compressions and blind corners through the maple forest.", 7401, Autumn, 2, 2),
         def("circuit-meadow-ring", "Hillside Ring", "A rolling old-school ring road over the meadow hills.", 7402, Meadow, 2, 1),
         def("circuit-coast-ring", "Clifftop Ring", "Endless clifftop sweepers and a banked carousel.", 7403, Coast, 2, 2),
+        def("circuit-meadow-nordring", "Wolfsthal Nordring", "Twenty kilometres of the green hell: narrow, hilly, blind brows that throw you in the air, two banked carousels and barriers right at the edge. Learn it, or it learns you.", 7501, Meadow, 3, 2),
     ]
 }
 

@@ -174,7 +174,7 @@ impl RaceSession {
             .enumerate()
             .map(|(i, p)| LocalPlayer { car: local_cars[i], input: PlayerInput::new(p.scheme), cam: ChaseCam::new(), name: p.name.clone() })
             .collect();
-        let night = config.track.night.then(|| crate::night::Night::new(world.cars.len(), track.biome, config.track.seed));
+        let night = config.track.night.then(|| crate::night::Night::new(world.cars.len(), &track, config.track.seed));
         let fx = Fx::new(&world);
         let tt = crate::gameplay::session_start(&config, &local_cars, gpu); // [gameplay]
         RaceSession { config, world, scene, cars, names, ais, players, alpha: 0.0, time: 0.0, frame_events: Vec::new(), paused: false, fx, tt, paints, cam_override: None, hold: false, night }
@@ -404,6 +404,7 @@ impl RaceSession {
             self.fx.draw(gpu, &view, &self.scene.env);
             if let Some(n) = &self.night {
                 n.draw_fireflies(gpu, &view, &self.scene.env, self.time);
+                n.draw_posts(gpu, &view, &self.scene.env);
             }
             crate::gameplay::draw_world_overlays(self, gpu, &view, i); // [gameplay] racing line + ghost
             perf::end(Sec::Fx);
