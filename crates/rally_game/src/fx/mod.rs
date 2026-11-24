@@ -388,7 +388,7 @@ impl Fx {
         if let (Some(w), Some(track)) = (weather.as_ref(), self.track.as_ref()) {
             self.wx.build_ground(&mut sc.marks, &bs, w, track, self.time);
         }
-        sc.marks.draw(gpu, view, env, &DrawParams { unlit: 0.15, ..Default::default() });
+        sc.marks.draw(gpu, view, env, &DrawParams { unlit: 0.15 * (1.0 - env.night), ..Default::default() });
 
         // particles: lit ones sorted back-to-front, glows after
         sc.order.clear();
@@ -432,7 +432,8 @@ impl Fx {
                 _ => render::bit(&mut sc.lit, &bs, p, d),
             }
         }
-        sc.lit.draw(gpu, view, env, &DrawParams { unlit: 0.6, ..Default::default() });
+        // at night dust and spray only show where lamps (or the moon) light them
+        sc.lit.draw(gpu, view, env, &DrawParams { unlit: 0.6 * (1.0 - env.night * 0.92), ..Default::default() });
         sc.glow.clear();
         for &i in &sc.glow_list {
             let p = &self.parts[i as usize];

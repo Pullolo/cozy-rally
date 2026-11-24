@@ -79,6 +79,8 @@ pub struct RaceSession {
     pub cam_override: Option<(Vec3, Vec3, f32)>,
     /// Online: waiting at the line for the other racers (the world does not tick)
     pub hold: bool,
+    /// Night race state (headlamps, beams, fireflies); None by day
+    pub night: Option<crate::night::Night>,
 }
 
 const AI_NAMES: [&str; 8] = ["Hazel", "Juniper", "Basil", "Clover", "Fern", "Rowan", "Maple", "Pebble"];
@@ -172,9 +174,10 @@ impl RaceSession {
             .enumerate()
             .map(|(i, p)| LocalPlayer { car: local_cars[i], input: PlayerInput::new(p.scheme), cam: ChaseCam::new(), name: p.name.clone() })
             .collect();
+        let night = config.track.night.then(|| crate::night::Night::new(world.cars.len(), track.biome, config.track.seed));
         let fx = Fx::new(&world);
         let tt = crate::gameplay::session_start(&config, &local_cars, gpu); // [gameplay]
-        RaceSession { config, world, scene, cars, names, ais, players, alpha: 0.0, time: 0.0, frame_events: Vec::new(), paused: false, fx, tt, paints, cam_override: None, hold: false }
+        RaceSession { config, world, scene, cars, names, ais, players, alpha: 0.0, time: 0.0, frame_events: Vec::new(), paused: false, fx, tt, paints, cam_override: None, hold: false, night }
     }
 
     pub fn free(self, gpu: &mut Gpu) {
@@ -224,6 +227,12 @@ impl RaceSession {
                 // online pause menu: lift off and brake
                 inp = CarInput { brake: 1.0, ..CarInput::default() };
             }
+            if p.input.beam_pressed() {
+                if let Some(n) = self.night.as_mut() {
+                    n.high[p.car] = !n.high[p.car];
+                    crate::audio::ui_sound(crate::audio::UiSound::Move);
+                }
+            }
             if p.input.camera_pressed() {
                 p.cam.mode = p.cam.mode.next();
                 p.cam.snap();
@@ -272,6 +281,19 @@ impl RaceSession {
         for p in self.players.iter_mut() {
             let (pos, _) = interp(&self.world.cars[p.car], self.alpha);
             p.cam.update(pos, &self.world.cars[p.car], &track, dt);
+        }
+        if let Some(n) = self.night.as_mut() {
+            let local: Vec<usize> = self.players.iter().map(|p| p.car).collect();
+            // AI and remote drivers dip their lights when someone is close
+            for c in 0..self.world.cars.len() {
+                if !local.contains(&c) {
+                    let pc = self.world.cars[c].pos;
+                    let near = self.world.cars.iter().enumerate().any(|(o, oc)| o != c && oc.pos.distance_squared(pc) < 80.0 * 80.0);
+                    n.high[c] = !near;
+                }
+            }
+            let eye = self.cam_override.map(|c| c.0).or_else(|| self.players.first().map(|p| self.world.cars[p.car].pos));
+            n.update(&self.frame_events, &local, dt, eye, &track, self.time);
         }
         self.fx.update(&self.world, &self.frame_events, self.alpha, dt);
         crate::gameplay::frame(self, dt); // [gameplay] time trial + rumble
@@ -357,6 +379,13 @@ impl RaceSession {
             // each player's weather comes from their own position on the stage
             let s = debug_cam_s(self.track()).unwrap_or_else(|| self.players.get(i).map_or(0.0, |p| self.world.race.racers[p.car].s));
             gpu.set_weather(crate::render::weather::look_at(&self.world.track, s, self.time));
+            match &self.night {
+                Some(n) => {
+                    let viewer = if self.cam_override.is_some() { None } else { self.players.get(i).map(|p| p.car) };
+                    gpu.set_lights(&n.lights(self, viewer, view.eye));
+                }
+                None => gpu.set_lights(&[]),
+            }
             if shadows {
                 if let Some(light) = gpu.begin_shadow(&view, &self.scene.env) {
                     self.scene.draw_shadow_casters(gpu, &light, view.eye);
@@ -373,6 +402,9 @@ impl RaceSession {
             perf::end(Sec::Scene);
             perf::begin(Sec::Fx);
             self.fx.draw(gpu, &view, &self.scene.env);
+            if let Some(n) = &self.night {
+                n.draw_fireflies(gpu, &view, &self.scene.env, self.time);
+            }
             crate::gameplay::draw_world_overlays(self, gpu, &view, i); // [gameplay] racing line + ghost
             perf::end(Sec::Fx);
             perf::begin(Sec::Scene);
@@ -423,9 +455,13 @@ impl RaceSession {
             // Extra per-car meshes go here too, drawn with the car matrix `m`.
             let cr = &self.cars[i];
             let lamp = |tint: [f32; 4]| DrawParams { unlit: 1.0, tint, cast_shadow: false, receive_shadow: false, ..Default::default() };
-            gpu.draw(&cr.head_lights, view, &env, m, &lamp([1.35, 1.3, 1.15, 1.0]), false);
+            let head = self.night.as_ref().map_or([1.35, 1.3, 1.15, 1.0], |n| n.lens_tint(i, self.time));
+            gpu.draw(&cr.head_lights, view, &env, m, &lamp(head), false);
             if car.telemetry.brake > 0.05 || car.frozen {
                 gpu.draw(&cr.brake_lights, view, &env, m, &lamp([2.4, 0.28, 0.22, 1.0]), false);
+            } else if self.night.is_some() {
+                // tail lights glow at night: the rival ahead is a pair of red dots in the dark
+                gpu.draw(&cr.brake_lights, view, &env, m, &lamp([1.25, 0.12, 0.10, 1.0]), false);
             }
             if car.gear < 0 {
                 gpu.draw(&cr.reverse_lights, view, &env, m, &lamp([1.6, 1.6, 1.6, 1.0]), false);

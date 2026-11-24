@@ -11,6 +11,8 @@ physics. Everything (models, sounds, music) is generated in code.
 - Surfaces: gravel, tarmac, dirt, snow, ice, mud, sand, Mixed stages with smooth transitions
 - Rally pace notes with co-driver calls (N)
 - 5 biomes, shadows, bloom, wind, water, golden hour
+- Night races (Setup -> Time: Night): you see what your headlights reach. H toggles high /
+  low beam (pad: D-pad up); big hits can smash a lamp; stars, moon, fireflies, glowing tail lights
 - AI with racing lines, split-screen, gamepads, Time Trial with ghost
 - Online races with up to 4 friends on a server you host yourself (`rally_server`)
 - Procedural synth audio and music

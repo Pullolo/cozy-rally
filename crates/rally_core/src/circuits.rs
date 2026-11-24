@@ -25,6 +25,7 @@ pub fn circuit_params(seed: u64, biome: Option<Biome>, size: u8, difficulty: u8)
         layout: LayoutKind::Loop,
         conditions: ConditionsSpec::BiomeDefault,
         discipline: Discipline::Circuit,
+        night: false,
     }
 }
 

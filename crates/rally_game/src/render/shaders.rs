@@ -105,6 +105,10 @@ uniform vec4 params2;
 uniform vec4 params3;
 uniform vec4 params4;
 uniform vec4 params5; // x snow cover, y wetness, z lightning flash, w overcast
+uniform vec4 params6; // x light count, y night
+uniform vec4 light_pos[6]; // xyz position, w range
+uniform vec4 light_dir[6]; // xyz direction, w cos outer
+uniform vec4 light_col[6]; // rgb colour * intensity, w cos inner
 
 float unpack_depth(vec4 c) {
     return dot(c, vec4(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0));
@@ -218,6 +222,31 @@ void main() {
         float fres = pow(1.0 - clamp(dot(n, view), 0.0, 1.0), 4.0);
         lit += sun_color * spec * 1.4 + sky_amb * fres * gloss * 0.35;
     }
+    // headlights (night): soft-edged cones, smooth distance falloff, wrapped diffuse for the
+    // low-poly faces and a glint on glossy paint and the rubbered / wet road
+    if (params6.x > 0.5) {
+        vec3 lamp = vec3(0.0);
+        vec3 lamp_spec = vec3(0.0);
+        for (int i = 0; i < 6; i++) {
+            if (float(i) >= params6.x) { break; }
+            vec3 L = light_pos[i].xyz - v_world;
+            float ld = length(L);
+            vec3 l = L / max(ld, 1e-3);
+            float cone = smoothstep(light_dir[i].w, light_col[i].w, dot(-l, light_dir[i].xyz));
+            float fall = clamp(1.0 - ld / light_pos[i].w, 0.0, 1.0);
+            fall *= fall;
+            // no blinding hot spot right in front of the bumper
+            fall *= smoothstep(0.0, 3.0, ld);
+            float ndl = clamp(dot(n, l) * 0.7 + 0.3, 0.0, 1.0);
+            vec3 c = light_col[i].rgb * cone * fall;
+            lamp += c * ndl;
+            if (gloss > 0.0) {
+                vec3 hl = normalize(l + view);
+                lamp_spec += c * pow(max(dot(n, hl), 0.0), 20.0 + gloss * 80.0) * gloss;
+            }
+        }
+        lit += base * lamp * v_ao + lamp_spec * 1.2;
+    }
     float rim = pow(1.0 - clamp(dot(n, view), 0.0, 1.0), 3.0) * params.w;
     lit += rim * mix(sky_amb, sun_color, 0.6) * 0.3 * (0.5 + 0.5 * sh);
     lit = soft_clip(lit);
@@ -304,7 +333,7 @@ uniform vec3 fog_color;
 uniform vec3 sun_dir;
 uniform vec3 sun_color;
 uniform vec4 params; // x out mode, y sun size, z glow strength, w time
-uniform vec4 params2; // x overcast, y lightning flash, z precipitation
+uniform vec4 params2; // x overcast, y lightning flash, z precipitation, w night
 
 float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float vnoise(vec2 p) {
@@ -324,8 +353,28 @@ void main() {
     float s = max(dot(d, sun_dir), 0.0);
     float glow = pow(s, 10.0) * 0.16 + pow(s, 64.0) * 0.3;
     col += sun_color * glow * params.z * vec3(1.0, 0.92, 0.8);
-    float disc = smoothstep(1.0 - params.y * 1.25, 1.0 - params.y, s) * params.z;
-    col = mix(col, vec3(1.0, 0.98, 0.9), disc);
+    float night = params2.w;
+    // the moon is a little bigger than the sun disc, pale and softly mottled
+    float size = params.y * (1.0 + 0.6 * night);
+    float disc = smoothstep(1.0 - size * 1.25, 1.0 - size, s) * params.z;
+    vec3 disc_col = mix(vec3(1.0, 0.98, 0.9), vec3(0.90, 0.93, 1.0) * (0.86 + 0.14 * vnoise(d.xz * 700.0 + d.y * 300.0)), night);
+    if (night > 0.01 && y > 0.0) {
+        // stars on a grid projected onto a dome; a few bright ones twinkle
+        vec2 g = d.xz / (y + 0.3) * 60.0;
+        vec2 cell = floor(g);
+        float h = hash(cell);
+        vec2 off = vec2(hash(cell + 1.7), hash(cell + 3.1)) - 0.5;
+        float r = length(fract(g) - 0.5 - off * 0.6);
+        float bright = clamp((h - 0.975) / 0.025, 0.0, 1.0);
+        float tw = 0.65 + 0.35 * sin(params.w * (1.5 + h * 3.0) + h * 90.0);
+        float star = step(0.975, h) * smoothstep(0.09 + 0.06 * bright, 0.0, r) * (0.35 + bright * 0.9) * tw;
+        // a faint milky way band of dust and tiny stars
+        float band = exp(-pow(dot(d, normalize(vec3(0.55, 0.25, -0.8))) * 3.2, 2.0));
+        float dust = vnoise(d.xz / (y + 0.3) * 9.0) * 0.6 + vnoise(d.xz / (y + 0.3) * 23.0) * 0.4;
+        float fade = smoothstep(0.02, 0.28, y) * (1.0 - min(1.0, params2.x * 1.3));
+        col += (vec3(0.85, 0.9, 1.0) * star + vec3(0.10, 0.11, 0.18) * band * dust) * fade * night;
+    }
+    col = mix(col, disc_col, disc);
     // overcast / rain cloud deck: soft billows on a plane above, drifting with time
     float oc = params2.x;
     if (oc > 0.01 && y > -0.05) {
@@ -338,6 +387,7 @@ void main() {
         vec3 dark = mix(vec3(0.66, 0.68, 0.73), vec3(0.34, 0.36, 0.41), params2.z);
         vec3 cloud = mix(dark, light, smoothstep(0.35, 0.95, n));
         cloud = mix(cloud, sky_horizon, (1.0 - smoothstep(0.0, 0.3, y)) * 0.65);
+        cloud *= mix(1.0, 0.09, night);
         cloud += vec3(0.55, 0.57, 0.68) * params2.y * (0.4 + 0.6 * n);
         col = mix(col, cloud, cover * min(1.0, 0.35 + oc));
     }

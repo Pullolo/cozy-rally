@@ -51,6 +51,10 @@ crates/rally_game/   macroquad app
   fx.rs            particle/effects system (owned by RaceSession)
   online.rs        Online screen (connect form + lobby), OnlineRace: feeds NetEvents into the
                    RaceSession (pre_update / post_update around RaceSession::update)
+  night.rs         night races: per-car headlamps -> gpu.set_lights (MAX_LIGHTS spot lights,
+                   viewer gets both lamps), beams, lamp damage, fireflies. TrackParams::night,
+                   scene.rs TimeOfDay::Night palette + grade, Environment::night (sky stars,
+                   darker weather/clouds/fx). COZY_NIGHT=1 / COZY_HIGHBEAM=1 test hooks
   main.rs          app state machine: Title / Setup / Loading / Race / Results / Help
 ```
 

@@ -40,6 +40,9 @@ pub struct TrackParams {
     /// Rally stage/loop (default) or a tarmac racing circuit for the circuit car class
     #[serde(default)]
     pub discipline: Discipline,
+    /// Night race: moonlight + headlights (visual; the same road and conditions as by day)
+    #[serde(default)]
+    pub night: bool,
 }
 
 /// Track discipline (shared interface).
@@ -84,6 +87,10 @@ impl TrackParams {
             self.discipline = Discipline::Circuit;
             self.surface = SurfaceMode::Tarmac;
         }
+        // COZY_NIGHT=1: night race (visual testing)
+        if std::env::var("COZY_NIGHT").is_ok_and(|v| v == "1") {
+            self.night = true;
+        }
         // COZY_WEATHER=<preset>|dynamic|stormy: fixed weather for loop races (visual testing)
         if let Ok(v) = std::env::var("COZY_WEATHER") {
             use crate::weather::{ConditionsSpec as C, WeatherPreset as P};
@@ -115,7 +122,7 @@ impl TrackParams {
 
 impl Default for TrackParams {
     fn default() -> Self {
-        TrackParams { seed: 1, biome: None, length_class: 1, difficulty: default_difficulty(), surface: SurfaceMode::BiomeDefault, layout: LayoutKind::Loop, conditions: crate::weather::ConditionsSpec::BiomeDefault, discipline: Discipline::Rally }
+        TrackParams { seed: 1, biome: None, length_class: 1, difficulty: default_difficulty(), surface: SurfaceMode::BiomeDefault, layout: LayoutKind::Loop, conditions: crate::weather::ConditionsSpec::BiomeDefault, discipline: Discipline::Rally, night: false }
     }
 }
 

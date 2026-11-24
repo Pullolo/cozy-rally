@@ -281,6 +281,7 @@ pub fn race_summary(s: &RaceSettings) -> String {
     let t = &s.track;
     let kind = if t.discipline == rally_core::track::Discipline::Circuit { "Circuit" } else { "Rally" };
     let biome = t.biome.map_or("Random scenery".to_string(), |b| format!("{b:?}"));
+    let kind = if t.night { format!("Night {}", kind.to_lowercase()) } else { kind.to_string() };
     format!("{kind}  -  {biome}  -  {} lap{}  -  seed {}  -  {}", s.laps, if s.laps == 1 { "" } else { "s" }, t.seed, if s.contact { "contact on" } else { "ghost cars" })
 }
 

@@ -14,6 +14,7 @@ mod campaign_screens;
 mod hud;
 mod input;
 mod models;
+mod night;
 mod online;
 mod pacenotes_hud;
 mod weather_view;
@@ -94,6 +95,8 @@ struct Setup {
     circuit: usize,
     /// Random circuit size: 0 Sprint, 1 Grand Prix, 2 Ring
     circuit_size: usize,
+    /// Night race (headlights)
+    night: bool,
 }
 
 const DIFFICULTY: [(&str, f32); 3] = [("Chill", 0.35), ("Normal", 0.7), ("Spicy", 1.0)];
@@ -159,6 +162,12 @@ impl Setup {
     }
 
     fn track_params(&self) -> TrackParams {
+        let mut p = self.track_params_base();
+        p.night |= self.night;
+        p
+    }
+
+    fn track_params_base(&self) -> TrackParams {
         if self.is_circuit() {
             return match self.named_circuit() {
                 Some(c) => c.params,
@@ -549,7 +558,7 @@ impl App {
         let view = Mat4::look_at_rh(eye, target, Vec3::Y);
         let proj = Mat4::perspective_rh_gl(fov, aspect, 0.1, 100.0);
         let v = View::new(view, proj, eye);
-        let env = Environment { sun_dir: vec3(-0.4, 0.8, 0.5).normalize(), sun_color: [1.0, 0.95, 0.88], ambient: [0.48, 0.5, 0.56], fog_color: [1.0, 1.0, 1.0], fog_density: 0.0, time: 0.0 };
+        let env = Environment { sun_dir: vec3(-0.4, 0.8, 0.5).normalize(), sun_color: [1.0, 0.95, 0.88], ambient: [0.48, 0.5, 0.56], fog_color: [1.0, 1.0, 1.0], fog_density: 0.0, time: 0.0, night: 0.0 };
         let rot = Mat4::from_rotation_y(self.preview_angle);
         let ride = -spec.mount_height + spec.susp_rest * 0.8 + spec.wheel_radius - 0.6;
         let m = rot * Mat4::from_translation(vec3(0.0, ride, 0.0));
@@ -771,7 +780,7 @@ impl App {
         let named = self.setup.named_circuit();
         // track column: Discipline + (rally: 5 rows | random circuit: 5 rows | named circuit: 1 row)
         let track_rows = 1 + if circuit && named.is_some() { 1 } else { 5 };
-        let rows = players * 2 + 4 + track_rows + 2 + 1 - if tt { 2 } else { 0 };
+        let rows = players * 2 + 5 + track_rows + 2 + 1 - if tt { 2 } else { 0 };
         self.focus.begin(rows);
         let gap = 22.0 * s;
         let cw = (w - 2.0 * 26.0 * s - gap) * 0.5;
@@ -781,7 +790,7 @@ impl App {
         let top = y + 72.0 * s;
         let button_h = 54.0 * s;
         // tallest column: car rows + race rows, plus two section headers
-        let col_rows = (players * 2 + 5) as f32;
+        let col_rows = (players * 2 + 6) as f32;
         let avail = h - (top - y) - 2.0 * head_h - button_h - 34.0 * s;
         let rh = (avail / col_rows - 8.0 * s).clamp(30.0 * s, 48.0 * s);
         let step = rh + 8.0 * s;
@@ -835,6 +844,11 @@ impl App {
             let a = self.setup.assists;
             settings::update(|s| s.assists = a);
             settings::save();
+        }
+        ay += step;
+        let d = selector(&mut self.focus, "Time", if self.setup.night { "Night" } else { "Day" }, ax, ay, cw, rh, LAVENDER);
+        if d != 0 {
+            self.setup.night = !self.setup.night;
         }
         // --- column B: track options
         let mut by = top;
@@ -1265,6 +1279,19 @@ impl App {
                 draw_rectangle(0.0, screen_height() * 0.5 - 2.0, screen_width(), 4.0, CREAM);
             }
         }
+        if let Some(n) = &sess.night {
+            let s = scale();
+            for (i, vp) in vps.iter().enumerate() {
+                let Some(p) = sess.players.get(i) else { continue };
+                let cx = vp.x + vp.w * 0.5;
+                let y = vp.y + vp.h - 34.0 * s;
+                if n.lamp_msg[p.car] < 3.0 {
+                    pill("Headlight smashed! It'll flicker back...", cx, vp.y + vp.h * 0.36, 20.0 * s, with_alpha(BERRY, 0.92), CREAM);
+                }
+                let beam = if n.high_beam(p.car) { "High beam (H)" } else { "Low beam (H)" };
+                pill(beam, cx - vp.w * 0.17, y, 16.0 * s, with_alpha(if n.high_beam(p.car) { SKY } else { CREAM }, 0.85), INK);
+            }
+        }
         if let Some(line) = self.online.status_line(sess) {
             let s = scale();
             pill(&line, screen_width() * 0.5, screen_height() * 0.30, 22.0 * s, with_alpha(CREAM, 0.92), INK);
@@ -1691,7 +1718,7 @@ async fn main() {
     let mut app = App {
         gpu: Gpu::new(),
         screen: Screen::Title,
-        setup: Setup { split: hooks.split, cars: [2, 1], paints: [0, 1], biome: 0, length: 1, seed: random_seed(), laps: 3, opponents: 3, difficulty: 1, assists: st.assists.min(ASSISTS.len() - 1), surface_mode: 0, track_difficulty: 1, mode: 0, discipline: st.discipline.min(1), circuit: st.circuit.min(rally_core::circuits::circuits().len()), circuit_size: st.circuit_size.min(2) },
+        setup: Setup { split: hooks.split, cars: [2, 1], paints: [0, 1], biome: 0, length: 1, seed: random_seed(), laps: 3, opponents: 3, difficulty: 1, assists: st.assists.min(ASSISTS.len() - 1), surface_mode: 0, track_difficulty: 1, mode: 0, discipline: st.discipline.min(1), circuit: st.circuit.min(rally_core::circuits::circuits().len()), circuit_size: st.circuit_size.min(2), night: false },
         session: None,
         hud: None,
         focus: Focus::default(),

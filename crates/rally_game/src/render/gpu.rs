@@ -38,6 +38,14 @@ pub struct Uniforms {
     pub params4: [f32; 4],
     /// x snow cover, y wetness, z lightning flash, w overcast
     pub params5: [f32; 4],
+    /// x light count, y night
+    pub params6: [f32; 4],
+    /// per light: xyz position, w range
+    pub light_pos: [[f32; 4]; MAX_LIGHTS],
+    /// per light: xyz direction, w cos outer
+    pub light_dir: [[f32; 4]; MAX_LIGHTS],
+    /// per light: rgb colour * intensity, w cos inner
+    pub light_col: [[f32; 4]; MAX_LIGHTS],
 }
 
 fn meta() -> ShaderMeta {
@@ -61,6 +69,10 @@ fn meta() -> ShaderMeta {
                 UniformDesc::new("params3", UniformType::Float4),
                 UniformDesc::new("params4", UniformType::Float4),
                 UniformDesc::new("params5", UniformType::Float4),
+                UniformDesc::new("params6", UniformType::Float4),
+                UniformDesc::new("light_pos", UniformType::Float4).array(MAX_LIGHTS),
+                UniformDesc::new("light_dir", UniformType::Float4).array(MAX_LIGHTS),
+                UniformDesc::new("light_col", UniformType::Float4).array(MAX_LIGHTS),
             ],
         },
     }
@@ -169,6 +181,25 @@ pub struct Environment {
     pub fog_color: [f32; 3],
     pub fog_density: f32,
     pub time: f32,
+    /// 0 = day .. 1 = night (headlights on, stars, dark weather)
+    pub night: f32,
+}
+
+/// Maximum dynamic lights per draw (headlights at night)
+pub const MAX_LIGHTS: usize = 6;
+
+/// A spot light (car headlamp). Intensity is baked into `color`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SpotLight {
+    pub pos: Vec3,
+    pub dir: Vec3,
+    pub color: [f32; 3],
+    /// distance where the light has faded out (m)
+    pub range: f32,
+    /// cosine of the full-brightness cone half-angle
+    pub cos_inner: f32,
+    /// cosine of the cone edge
+    pub cos_outer: f32,
 }
 
 impl Environment {
@@ -224,7 +255,10 @@ impl WeatherLook {
         let cool = mix3([1.0, 1.0, 1.0], [0.9, 0.95, 1.05], oc);
         e.sun_color = [env.sun_color[0] * dim * cool[0], env.sun_color[1] * dim * cool[1], env.sun_color[2] * dim * cool[2]];
         // diffuse skylight: flatter, slightly brighter ambient so overcast stays cosy, not gloomy
-        let sky_light = mix3([0.66, 0.68, 0.74], [0.50, 0.52, 0.58], self.precip);
+        // at night the clouds and murk are lit by the moon only
+        let dark = 1.0 - 0.9 * env.night;
+        let dk = |c: [f32; 3]| [c[0] * dark, c[1] * dark, c[2] * (dark * 1.1).min(1.0)];
+        let sky_light = dk(mix3([0.66, 0.68, 0.74], [0.50, 0.52, 0.58], self.precip));
         e.ambient = mix3(env.ambient, sky_light, oc * 0.75);
         let grey = if self.dusty {
             [0.86, 0.74, 0.58]
@@ -233,6 +267,7 @@ impl WeatherLook {
         } else {
             mix3([0.72, 0.75, 0.80], [0.56, 0.59, 0.64], self.precip)
         };
+        let grey = dk(grey);
         let murk = (self.fog * 0.95 + oc * 0.5 + self.precip * 0.3).min(1.0);
         e.fog_color = mix3(env.fog_color, grey, murk);
         e.fog_density = env.fog_density * (1.0 + 7.5 * self.fog + 1.8 * self.precip);
@@ -248,7 +283,8 @@ impl WeatherLook {
     pub fn sky(&self, env_w: &Environment, top: [f32; 3], horizon: [f32; 3]) -> ([f32; 3], [f32; 3]) {
         let mix3 = |a: [f32; 3], b: [f32; 3], t: f32| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
         let oc = self.overcast.clamp(0.0, 1.0);
-        let top_oc = mix3([0.55, 0.59, 0.66], [0.36, 0.39, 0.45], self.precip);
+        let dark = 1.0 - 0.92 * env_w.night;
+        let top_oc = mix3([0.55, 0.59, 0.66], [0.36, 0.39, 0.45], self.precip).map(|c| c * dark);
         let t = mix3(top, top_oc, oc);
         let h = mix3(horizon, env_w.fog_color, (oc * 0.85 + self.fog * 0.6).min(1.0));
         (t, h)
@@ -379,6 +415,8 @@ pub struct Gpu {
     weather: WeatherLook,
     /// high-speed factor for the next `begin_scene` (speed streaks in post)
     view_speed: f32,
+    /// dynamic lights for the viewport being drawn (headlights at night)
+    lights: Vec<SpotLight>,
 }
 
 pub const STREAM_VERTS: usize = 60_000;
@@ -510,6 +548,7 @@ impl Gpu {
             shadow_receive: true,
             weather: WeatherLook::default(),
             view_speed: 0.0,
+            lights: Vec::new(),
         }
     }
 
@@ -722,6 +761,12 @@ impl Gpu {
         self.weather = w;
     }
 
+    /// Spot lights for the following draws (at most MAX_LIGHTS are used)
+    pub fn set_lights(&mut self, lights: &[SpotLight]) {
+        self.lights.clear();
+        self.lights.extend(lights.iter().take(MAX_LIGHTS).copied());
+    }
+
 
     pub fn weather(&self) -> WeatherLook {
         self.weather
@@ -767,6 +812,10 @@ impl Gpu {
             params3: [p.depth_bias, out_mode, texel_uv, p.ao_y[0]],
             params4: [texel_world, sbias, if p.vertex_gloss && !blended { 1.0 } else { 0.0 }, p.fog_max],
             params5: [wl.snow, wl.wetness, wl.flash, wl.overcast],
+            params6: [if p.unlit > 0.5 { 0.0 } else { self.lights.len() as f32 }, env.night, 0.0, 0.0],
+            light_pos: std::array::from_fn(|i| self.lights.get(i).map_or([0.0; 4], |l| [l.pos.x, l.pos.y, l.pos.z, l.range])),
+            light_dir: std::array::from_fn(|i| self.lights.get(i).map_or([0.0, -1.0, 0.0, 1.0], |l| [l.dir.x, l.dir.y, l.dir.z, l.cos_outer])),
+            light_col: std::array::from_fn(|i| self.lights.get(i).map_or([0.0; 4], |l| [l.color[0], l.color[1], l.color[2], l.cos_inner])),
         }
     }
 
@@ -906,7 +955,7 @@ impl Gpu {
             sun_dir: env.sun_dir.to_array(),
             sun_color: env.sun_color,
             params: [if self.target == Target::Scene { 1.0 } else { 0.0 }, 0.0011, (1.0 - 0.95 * wl.overcast).max(0.0), env.time],
-            params2: [wl.overcast, wl.flash, wl.precip, 0.0],
+            params2: [wl.overcast, wl.flash, wl.precip, env.night],
         };
         ctx.apply_uniforms(UniformsSource::table(&u));
         for c in &mesh.chunks {
