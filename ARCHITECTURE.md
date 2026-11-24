@@ -1,8 +1,10 @@
 # Cozy Rally — architecture & contributor guide
 
-Cozy, pretty, procedural rally racing in Rust. Targets: **Windows PC** (cross-compiled
-from Linux with `x86_64-pc-windows-gnu`) and **Android** (sideload APK, see `android/README.md`),
-built from one code base. Online multiplayer comes later. Keep code portable (no Windows-only
+Cozy, pretty, procedural rally racing in Rust. Targets: **Windows PC** (native build, or
+cross-compiled from Linux with `x86_64-pc-windows-gnu`) and **Android** (sideload APK, see
+`android/README.md`), built from one code base on `main`. PC and phones play online together
+through `rally_server` (Windows or Linux). Workflow, phone testing and releases: `CLAUDE.md`.
+Keep code portable (no Windows-only
 APIs, GLSL `#version 100`, u16 index buffers); anything platform-specific goes in
 `rally_game/src/platform/` behind `cfg(target_os = ...)`.
 
