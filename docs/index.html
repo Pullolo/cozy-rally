@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cozy Rally: cosy rally stages &amp; circuit racing with friends</title>
+<meta name="description" content="A free, cosy low-poly rally racer for Windows and Android. Every stage is generated, every sound is synthesised, and PC and phones race together online.">
+<meta name="theme-color" content="#fff6e6">
+<meta property="og:title" content="Cozy Rally">
+<meta property="og:description" content="Cosy rally stages &amp; circuit racing with friends. Free for Windows and Android.">
+<meta property="og:image" content="img/attract.webp">
+<link rel="preload" href="fonts/Fredoka-SemiBold.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="preload" href="img/attract.webp" as="image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='4' y='4' width='56' height='56' rx='16' fill='%23fdd673' stroke='%233d3345' stroke-width='5'/%3E%3Cpath d='M20 44V22h12a8 8 0 0 1 0 16h-12M31 38l11 6' fill='none' stroke='%233d3345' stroke-width='6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<!--
+THESIS: The site opens the way the game does: a live stage behind the real title menu, whose buttons ARE the downloads. Refuses the generic hero-plus-feature-grid store page.
+OWN-WORLD: The game's own UI: cream cards (#fff6e6) with ink outlines (#3d3345), pastel lipped buttons (peach, sky, berry, lavender, mint), butter for the selected item with a white ring and play arrow, Fredoka SemiBold, multicolour outlined logo, "Now showing" pill.
+STORY: A stranger sees a real stage, reads one line, presses the button for their platform; below, they learn what the game is through its own pace notes, garage and online lobby.
+FIRST VIEWPORT: Full-bleed biome screenshots cross-fading; logo, tagline pill and menu stack top-left (left column on desktop, full width on phones); Windows/Android buttons first, platform-detected one selected.
+FORM: Title screen, structure 2 of 7, seed ca995953.
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+-->
+<a class="skip" href="#inside">Skip to what's inside</a>
+
+<header class="title" id="top">
+  <div class="scenes" aria-hidden="true">
+    <img class="scene is-on" src="img/attract.webp" alt="" data-name="Maple Woods" width="1700" height="956" fetchpriority="high">
+    <img class="scene" data-src="img/forest.webp" alt="" data-name="Mountain Forest" width="1920" height="1080">
+    <img class="scene" data-src="img/coast.webp" alt="" data-name="Seaside Cliffs" width="1920" height="1080">
+    <img class="scene" data-src="img/snow.webp" alt="" data-name="Frosty Peaks" width="1920" height="1080">
+    <img class="scene" data-src="img/desert.webp" alt="" data-name="Canyon Dunes" width="1920" height="1080">
+    <img class="scene" data-src="img/meadow.webp" alt="" data-name="Sunny Meadow" width="1920" height="1080">
+  </div>
+  <div class="title__veil" aria-hidden="true"></div>
+
+  <div class="title__menu">
+    <h1 class="logo">
+      <svg viewBox="0 0 680 150" role="img" aria-labelledby="logo-t">
+        <title id="logo-t">Cozy Rally</title>
+        <g class="logo__ink"><text x="8" y="118">Cozy</text><text x="330" y="118">Rally</text></g>
+        <g class="logo__rim"><text x="8" y="118">Cozy</text><text x="330" y="118">Rally</text></g>
+        <g class="logo__fill">
+          <text x="8" y="118"><tspan class="c-peach">C</tspan><tspan class="c-butter">o</tspan><tspan class="c-mint">z</tspan><tspan class="c-sky">y</tspan></text>
+          <text x="330" y="118"><tspan class="c-lavender">R</tspan><tspan class="c-peach">a</tspan><tspan class="c-butter">l</tspan><tspan class="c-mint">l</tspan><tspan class="c-sky">y</tspan></text>
+        </g>
+      </svg>
+    </h1>
+    <p class="tagline">cosy rally stages &amp; circuit racing with friends</p>
+
+    <nav class="menu" aria-label="Main menu">
+      <a class="mbtn mbtn--peach" data-platform="windows" href="https://github.com/Pullolo/cozy-rally/releases/latest/download/CozyRally-windows-x64.exe">
+        <span class="mbtn__label">Download for Windows</span>
+        <span class="mbtn__meta" data-asset="CozyRally-windows-x64.exe">64-bit · one file, no installer</span>
+      </a>
+      <a class="mbtn mbtn--sky" data-platform="android" href="https://github.com/Pullolo/cozy-rally/releases/latest/download/CozyRally-android-arm64.apk">
+        <span class="mbtn__label">Download for Android</span>
+        <span class="mbtn__meta" data-asset="CozyRally-android-arm64.apk">APK · arm64 phones, Android 8+</span>
+      </a>
+      <a class="mbtn mbtn--berry" href="#online"><span class="mbtn__label">Race friends online</span></a>
+      <a class="mbtn mbtn--lavender" href="#inside"><span class="mbtn__label">What's inside</span></a>
+      <a class="mbtn mbtn--mint" href="#install"><span class="mbtn__label">How to install</span></a>
+      <a class="mbtn mbtn--cream" href="https://github.com/Pullolo/cozy-rally"><span class="mbtn__label">Source on GitHub</span></a>
+    </nav>
+    <p class="hint"><span class="hint__keys">Arrows / mouse to choose · Enter to go</span><span class="hint__ver" data-version></span></p>
+  </div>
+
+  <p class="now"><span class="now__label">Now showing:</span> <span class="now__name" data-now>Maple Woods</span></p>
+</header>
+
+<main>
+  <section class="band band--cream" id="inside" aria-labelledby="inside-h">
+    <div class="wrap">
+      <h2 id="inside-h">Every stage is a new one</h2>
+      <p class="lede">Each road, hill, tree and grandstand is grown from a seed, so there is always another stage to learn. Six biomes, day or night, rain or shine. The cars, the engine notes and the music are generated in code too: there isn't a single image or sound file in the game.</p>
+
+      <div class="postcards">
+        <figure class="postcard postcard--big"><img src="img/forest-bend-sm.webp" alt="Two black rally hatches on a tarmac road through a tall spruce and beech forest" loading="lazy" width="960" height="540"><figcaption>Mountain Forest</figcaption></figure>
+        <figure class="postcard"><img src="img/autumn-sm.webp" alt="Rally cars kicking up dust on a dirt road between orange maple trees" loading="lazy" width="960" height="540"><figcaption>Maple Woods</figcaption></figure>
+        <figure class="postcard"><img src="img/snow-sm.webp" alt="A red rally car sliding on a snowy stage past pine trees" loading="lazy" width="960" height="540"><figcaption>Frosty Peaks</figcaption></figure>
+        <figure class="postcard"><img src="img/coast-road-sm.webp" alt="Cars on a coastal tarmac road with a striped lighthouse and palm trees" loading="lazy" width="960" height="540"><figcaption>Seaside Cliffs</figcaption></figure>
+        <figure class="postcard"><img src="img/desert-sm.webp" alt="A 4x4 camper and rally cars on a sandy desert track below red mesas" loading="lazy" width="960" height="540"><figcaption>Canyon Dunes</figcaption></figure>
+        <figure class="postcard"><img src="img/meadow-sm.webp" alt="A small rally car on a gravel road through green meadows with spectators" loading="lazy" width="960" height="540"><figcaption>Sunny Meadow</figcaption></figure>
+      </div>
+    </div>
+  </section>
+
+  <section class="band band--butter" id="notes" aria-labelledby="notes-h">
+    <div class="wrap notes">
+      <div class="notes__intro">
+        <h2 id="notes-h">Your co-driver reads the road</h2>
+        <p class="lede">Pace notes call every bend before you see it, like on a real stage. Here is what is waiting on the other side of the crest.</p>
+      </div>
+      <ol class="calls" aria-label="What the game has">
+        <li class="call">
+          <span class="note" aria-hidden="true"><svg viewBox="0 0 48 48"><path d="M32 40V18a10 10 0 0 0-20 0v14"/><path d="M6 27l6 7 6-7"/></svg></span>
+          <div><h3>Hairpins, chicanes, crests and jumps</h3><p>Procedural stages with real rally features, from Relaxed to Expert. Loops for laps, or long point-to-point stages.</p></div>
+        </li>
+        <li class="call">
+          <span class="note" aria-hidden="true"><svg viewBox="0 0 48 48"><path d="M10 40V24a12 12 0 0 1 12-12h14"/><path d="M30 6l7 6-7 6"/></svg></span>
+          <div><h3>Gravel, tarmac, snow, ice, mud and sand</h3><p>Surfaces blend into each other mid-stage, and each one grips differently. Slicks love tarmac and kerbs, and hate everything else.</p></div>
+        </li>
+        <li class="call">
+          <span class="note" aria-hidden="true"><svg viewBox="0 0 48 48"><path d="M4 34c8-14 32-14 40 0"/><path d="M24 12v6"/></svg></span>
+          <div><h3>Physics you can feel</h3><p>Suspension on every wheel, slip-based tyres, a clutch and limited-slip diffs. Assists go from Cozy (forgiving) to Sim (all off).</p></div>
+        </li>
+        <li class="call">
+          <span class="note" aria-hidden="true"><svg viewBox="0 0 48 48"><path d="M30 8a16 16 0 1 0 10 26A13 13 0 0 1 30 8z"/></svg></span>
+          <div><h3>Night stages</h3><p>You only see what your headlights reach. Flick to high beam, and try not to smash a lamp on the first tree.</p></div>
+        </li>
+        <li class="call">
+          <span class="note" aria-hidden="true"><svg viewBox="0 0 48 48"><path d="M8 40V10l10 4 10-4 12 4v18l-12-4-10 4-10-4"/></svg></span>
+          <div><h3>Circuits up to 20 km</h3><p>Club sprints, Grand Prix tracks and the Nordring: twenty kilometres of narrow forest road with blind crests and two carousels.</p></div>
+        </li>
+        <li class="call">
+          <span class="note" aria-hidden="true"><svg viewBox="0 0 48 48"><circle cx="17" cy="17" r="7"/><circle cx="33" cy="20" r="5"/><path d="M5 40c1-8 6-12 12-12s11 4 12 12M30 30c6 0 11 3 13 10"/></svg></span>
+          <div><h3>AI rivals, split-screen, ghosts</h3><p>AI drivers who take proper racing lines, two players on one PC with gamepads, a campaign, and time trials against your own ghost.</p></div>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="band band--sky" id="garage" aria-labelledby="garage-h">
+    <div class="wrap">
+      <h2 id="garage-h">Nine cars in the garage</h2>
+      <p class="lede">Six rally cars for every surface, three circuit racers on slicks.</p>
+      <ul class="garage">
+        <li class="car"><img src="img/car0.webp" alt="" loading="lazy" width="640" height="448"><div><h3>Pip</h3><p>Tiny front-drive hatch. Nimble, forgiving, a little slow.</p></div></li>
+        <li class="car"><img src="img/car1.webp" alt="" loading="lazy" width="640" height="448"><div><h3>Bramble</h3><p>Rear-drive coupe. Loves to slide. Hold that drift!</p></div></li>
+        <li class="car"><img src="img/car2.webp" alt="" loading="lazy" width="640" height="448"><div><h3>Thistle</h3><p>All-wheel-drive rally legend. Fast and planted everywhere.</p></div></li>
+        <li class="car"><img src="img/car3.webp" alt="" loading="lazy" width="640" height="448"><div><h3>Burrow</h3><p>Chunky 4x4 camper. Soft, bouncy, unstoppable off-road.</p></div></li>
+        <li class="car"><img src="img/car4.webp" alt="" loading="lazy" width="640" height="448"><div><h3>Blossom</h3><p>Pink turbo pocket rocket. Tiny, twitchy, loves to rotate.</p></div></li>
+        <li class="car car--new"><img src="img/car8.webp" alt="" loading="lazy" width="640" height="448"><div><h3>Kestrel <span class="tag">new</span></h3><p>Wide-body turbo rally hatch. Sharp turn-in, huge grip, a proper works car.</p></div></li>
+        <li class="car car--circuit"><img src="img/car5.webp" alt="" loading="lazy" width="640" height="448"><div><h3>Comet</h3><p>Rear-engined GT racer with a big wing. Tarmac only!</p></div></li>
+        <li class="car car--circuit"><img src="img/car6.webp" alt="" loading="lazy" width="640" height="448"><div><h3>Zephyr</h3><p>Hybrid hypercar. Silent shove, glued to the tarmac.</p></div></li>
+        <li class="car car--circuit"><img src="img/car7.webp" alt="" loading="lazy" width="640" height="448"><div><h3>Dragonfly</h3><p>Open-wheel formula racer. Featherlight, all wing.</p></div></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="band band--peach" id="online" aria-labelledby="online-h">
+    <div class="wrap online">
+      <div>
+        <h2 id="online-h">PC and phones on one grid</h2>
+        <p class="lede">Up to four friends race online through a tiny server one of you runs. It has no graphics, barely uses the CPU and happily runs on the same PC you play on.</p>
+        <div class="server-dl">
+          <a class="mbtn mbtn--cream mbtn--small" href="https://github.com/Pullolo/cozy-rally/releases/latest/download/rally_server-windows-x64.exe"><span class="mbtn__label">Server for Windows</span></a>
+          <a class="mbtn mbtn--cream mbtn--small" href="https://github.com/Pullolo/cozy-rally/releases/latest/download/rally_server-linux-x64"><span class="mbtn__label">Server for Linux</span></a>
+        </div>
+      </div>
+      <ol class="lobby">
+        <li><b>Start the server</b><span>Run it on any PC. It prints the address your friends should type in.</span></li>
+        <li><b>Let friends reach it</b><span>Same Wi-Fi works as is. Over the internet, use Tailscale or ZeroTier, or forward port 27420 (TCP and UDP).</span></li>
+        <li><b>Meet in the lobby</b><span>In the game: Online, type the address, Connect. The first player in picks the race, everyone picks a car, go.</span></li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="band band--cream" id="install" aria-labelledby="install-h">
+    <div class="wrap">
+      <h2 id="install-h">How to install</h2>
+      <div class="install">
+        <article class="card">
+          <h3>Windows</h3>
+          <ol>
+            <li>Download <code>CozyRally-windows-x64.exe</code> and run it. That's the whole game, nothing to unpack.</li>
+            <li>The exe isn't code-signed, so SmartScreen may stop it the first time: choose <em>More info</em>, then <em>Run anyway</em>.</li>
+            <li>Plays with keyboard, mouse or a gamepad. Two players can share one PC in split-screen.</li>
+          </ol>
+          <a class="mbtn mbtn--peach mbtn--small" href="https://github.com/Pullolo/cozy-rally/releases/latest/download/CozyRally-windows-x64.exe"><span class="mbtn__label">Download for Windows</span></a>
+        </article>
+        <article class="card">
+          <h3>Android</h3>
+          <ol>
+            <li>Download <code>CozyRally-android-arm64.apk</code> on the phone and open it.</li>
+            <li>Android asks once to allow installs from your browser or file app. Allow it, then tap <em>Install</em>.</li>
+            <li>New versions install over the old one and keep your saves. Touch controls, or connect a gamepad.</li>
+          </ol>
+          <a class="mbtn mbtn--sky mbtn--small" href="https://github.com/Pullolo/cozy-rally/releases/latest/download/CozyRally-android-arm64.apk"><span class="mbtn__label">Download for Android</span></a>
+        </article>
+      </div>
+      <p class="fine">Every file is listed with its SHA-256 checksum on the <a href="https://github.com/Pullolo/cozy-rally/releases/latest">release page</a>. Older versions live there too.</p>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap foot__row">
+    <p>Cozy Rally is made in Rust with macroquad. Everything you see and hear is generated in code.</p>
+    <p><a href="https://github.com/Pullolo/cozy-rally">GitHub</a> · <a href="https://github.com/Pullolo/cozy-rally/releases">All releases</a> · <a href="#top">Back to the menu</a></p>
+    <p class="fine">Lettering in Fredoka (SIL Open Font License, <a href="fonts/OFL.txt">licence</a>).</p>
+  </div>
+</footer>
+
+<script src="app.js" defer></script>
+</body>
+</html>

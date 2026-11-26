@@ -256,6 +256,8 @@ struct TestHooks {
     shot_dir: String,
     exit_after: Option<f32>,
     split: bool,
+    /// COZY_NO_HUD=1: clean frames for screenshots (no HUD, touch widgets or racing line)
+    no_hud: bool,
     /// Extra state to enter once a race has loaded: "pause" or "results" (fast-forwarded)
     after_load: Option<String>,
 }
@@ -269,6 +271,7 @@ impl TestHooks {
             shot_dir: get("COZY_SHOT_DIR").unwrap_or_else(|| ".".into()),
             exit_after: get("COZY_EXIT_AFTER").and_then(|v| v.parse().ok()),
             split: get("COZY_SPLIT").is_some(),
+            no_hud: get("COZY_NO_HUD").is_some(),
             after_load: None,
         }
     }
@@ -1306,7 +1309,7 @@ impl App {
         clear_background(Color::new(horizon[0], horizon[1], horizon[2], 1.0));
         sess.draw_3d(&mut self.gpu, |_, _, _| {});
         let vps = sess.viewports(screen_width(), screen_height());
-        if let Some(h) = &self.hud {
+        if let Some(h) = self.hud.as_ref().filter(|_| !self.hooks.no_hud) {
             for (i, vp) in vps.iter().enumerate() {
                 hud::draw_hud(sess, h, i, vp);
                 gameplay::draw_hud(sess, i, vp); // [gameplay] time-trial delta
@@ -1319,7 +1322,7 @@ impl App {
                 draw_rectangle(0.0, screen_height() * 0.5 - 2.0, screen_width(), 4.0, CREAM);
             }
         }
-        if !sess.paused && vps.len() == 1 {
+        if !sess.paused && vps.len() == 1 && !self.hooks.no_hud {
             touch::draw(settings::get().touch_steer);
         }
         if let Some(n) = &sess.night {

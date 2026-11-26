@@ -1,0 +1,80 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "design-system-radius",
+        "value": "8px",
+        "createdAt": "2026-11-26T21:49:04.046Z",
+        "reason": "Claude: value in the shipped docs/ build that passed the finish review (ship); DESIGN.md was written from this build and records it only as a range or single-use value"
+      },
+      {
+        "rule": "design-system-radius",
+        "value": "1.25rem",
+        "createdAt": "2026-11-26T21:49:04.148Z",
+        "reason": "Claude: value in the shipped docs/ build that passed the finish review (ship); DESIGN.md was written from this build and records it only as a range or single-use value"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#c9d6cf",
+        "createdAt": "2026-11-26T21:49:04.264Z",
+        "reason": "Claude: single-use backing colour behind images before they load (title stage / car renders), noted as not canonized in DESIGN.md"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#cbe1f3",
+        "createdAt": "2026-11-26T21:49:04.364Z",
+        "reason": "Claude: single-use backing colour behind images before they load (title stage / car renders), noted as not canonized in DESIGN.md"
+      },
+      {
+        "rule": "design-system-font-size",
+        "value": "128px",
+        "createdAt": "2026-11-26T21:49:04.468Z",
+        "reason": "Claude: value in the shipped docs/ build that passed the finish review (ship); DESIGN.md was written from this build and records it only as a range or single-use value"
+      },
+      {
+        "rule": "design-system-font-size",
+        "value": "0.95rem",
+        "createdAt": "2026-11-26T21:49:04.579Z",
+        "reason": "Claude: value in the shipped docs/ build that passed the finish review (ship); DESIGN.md was written from this build and records it only as a range or single-use value"
+      },
+      {
+        "rule": "design-system-font-size",
+        "value": "1.1rem",
+        "createdAt": "2026-11-26T21:49:04.684Z",
+        "reason": "Claude: value in the shipped docs/ build that passed the finish review (ship); DESIGN.md was written from this build and records it only as a range or single-use value"
+      },
+      {
+        "rule": "design-system-font-size",
+        "value": "1.2rem",
+        "createdAt": "2026-11-26T21:49:04.779Z",
+        "reason": "Claude: value in the shipped docs/ build that passed the finish review (ship); DESIGN.md was written from this build and records it only as a range or single-use value"
+      },
+      {
+        "rule": "design-system-font-size",
+        "value": "0.75rem",
+        "createdAt": "2026-11-26T21:49:04.893Z",
+        "reason": "Claude: value in the shipped docs/ build that passed the finish review (ship); DESIGN.md was written from this build and records it only as a range or single-use value"
+      },
+      {
+        "rule": "design-system-font-size",
+        "value": "1.6rem",
+        "createdAt": "2026-11-26T21:49:04.999Z",
+        "reason": "Claude: value in the shipped docs/ build that passed the finish review (ship); DESIGN.md was written from this build and records it only as a range or single-use value"
+      },
+      {
+        "rule": "design-system-font-size",
+        "value": "0.92rem",
+        "createdAt": "2026-11-26T21:49:05.106Z",
+        "reason": "Claude: value in the shipped docs/ build that passed the finish review (ship); DESIGN.md was written from this build and records it only as a range or single-use value"
+      },
+      {
+        "rule": "design-system-font-size",
+        "value": "0.9rem",
+        "createdAt": "2026-11-26T21:49:05.207Z",
+        "reason": "Claude: value in the shipped docs/ build that passed the finish review (ship); DESIGN.md was written from this build and records it only as a range or single-use value"
+      }
+    ]
+  }
+}

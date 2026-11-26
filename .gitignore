@@ -5,3 +5,6 @@
 /screenshots
 /dist
 /android/keystore
+/.impeccable/review/
+/.impeccable/decision-surface.json
+/.impeccable/questions/

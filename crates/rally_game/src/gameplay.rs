@@ -123,7 +123,10 @@ thread_local! {
 /// World-space gameplay overlays for one viewport (called from RaceSession::draw_3d):
 /// the racing-line ribbon and the time-trial ghost.
 pub fn draw_world_overlays(sess: &RaceSession, gpu: &mut Gpu, view: &View, player: usize) {
-    crate::line_assist::draw(sess, gpu, view, player);
+    static NO_HUD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*NO_HUD.get_or_init(|| std::env::var_os("COZY_NO_HUD").is_some()) {
+        crate::line_assist::draw(sess, gpu, view, player);
+    }
     draw_ghost(sess, gpu, view, player);
 }
 

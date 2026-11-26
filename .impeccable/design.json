@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-26T12:00:00Z",
+  "title": "Design System: Cozy Rally",
+  "extensions": {
+    "colorMeta": {
+      "butter":     { "role": "primary",   "displayName": "Butter Yolk",   "canonical": "#fdd673", "source": "ui.rs BUTTER", "tonalRamp": ["#4b3601","#856002","#be8903","#f8b304","#fcc539","#fdd673","#fee7ac","#fff8e6"] },
+      "peach":      { "role": "secondary", "displayName": "Apricot Peach", "canonical": "#fa9e85", "source": "ui.rs PEACH", "tonalRamp": ["#491203","#812005","#b92e08","#f13b0a","#f7663f","#f99277","#fcbfaf","#feece7"] },
+      "sky":        { "role": "secondary", "displayName": "Dusk Sky",      "canonical": "#8cbff2", "source": "ui.rs SKY", "tonalRamp": ["#082645","#0e4379","#1461ad","#1a7ee2","#4b9beb","#7fb8f1","#b4d5f6","#e8f2fc"] },
+      "berry":      { "role": "secondary", "displayName": "Berry Red",     "canonical": "#ed6b6b", "source": "ui.rs BERRY", "tonalRamp": ["#440808","#780f0f","#ac1515","#e01b1b","#e94c4c","#f08080","#f6b4b4","#fce8e8"] },
+      "lavender":   { "role": "secondary", "displayName": "Soft Lavender", "canonical": "#bfa8eb", "source": "ui.rs LAVENDER", "tonalRamp": ["#1f0e3e","#36196e","#4e249d","#652fcc","#875cda","#aa8be4","#cdbbef","#f0eafa"] },
+      "mint":       { "role": "secondary", "displayName": "Spearmint",     "canonical": "#8cd1ad", "source": "ui.rs MINT", "tonalRamp": ["#163726","#276042","#378a5f","#48b47b","#70c699","#9ad6b7","#c3e7d4","#edf8f2"] },
+      "cream":      { "role": "neutral",   "displayName": "Warm Cream",    "canonical": "#fff6e6", "source": "ui.rs CREAM", "tonalRamp": ["#4c3100","#875600","#c17c00","#fba100","#ffb737","#ffcc71","#ffe1ab","#fff6e6"] },
+      "cream-deep": { "role": "neutral",   "displayName": "Toasted Cream", "canonical": "#f2e3cc", "source": "ui.rs CREAM_DEEP", "tonalRamp": ["#3d2b10","#6b4c1b","#9a6d27","#c88d33","#d6a75f","#e2c18e","#eedabc","#faf4eb"] },
+      "ink":        { "role": "neutral",   "displayName": "Plum Ink",      "canonical": "#3d3345", "source": "ui.rs INK", "tonalRamp": ["#27212c","#45394e","#62526f","#806b91","#9c8caa","#b9adc3","#d6cfdb","#f2f0f4"] },
+      "ink-soft":   { "role": "neutral",   "displayName": "Faded Plum",    "canonical": "#64576b", "source": "ui.rs INK_SOFT", "tonalRamp": ["#27222a","#453c4a","#64576a","#82718b","#9e90a5","#bab1bf","#d6d1d9","#f3f1f4"] },
+      "rim-white":  { "role": "neutral",   "displayName": "Rim White",     "canonical": "#ffffff", "tonalRamp": ["#262626","#434343","#616161","#7e7e7e","#9b9b9b","#b8b8b8","#d5d5d5","#f2f2f2"] }
+    },
+    "typographyMeta": {
+      "display":    { "displayName": "Display", "purpose": "The multicolour outlined SVG logo only (ink outline, white rim, pastel letters)." },
+      "headline":   { "displayName": "Headline", "purpose": "One heading per colour band." },
+      "title":      { "displayName": "Title", "purpose": "Car names, pace-note calls, lobby steps, install card heads." },
+      "menu-label": { "displayName": "Menu label", "purpose": "Labels on lipped menu slabs." },
+      "pill-label": { "displayName": "Pill label", "purpose": "Tagline, hint, Now showing, postcard captions." },
+      "lede":       { "displayName": "Lede", "purpose": "The single paragraph under each headline, max 62ch." },
+      "body":       { "displayName": "Body", "purpose": "Explanatory copy. The platform rounded/system sans is a provisional stand-in; only Fredoka SemiBold ships in the repo." },
+      "label":      { "displayName": "Label", "purpose": "Meta line under download labels (format, size)." }
+    },
+    "shadows": [
+      { "name": "rest", "value": "0 6px 14px rgb(38 26 51 / 0.22)", "purpose": "Default lift for pills, cards, postcards, buttons (the game's SHADOW)." },
+      { "name": "lift", "value": "0 10px 22px rgb(38 26 51 / 0.28)", "purpose": "Selected/hovered buttons and the pace-notes panel." },
+      { "name": "lip", "value": "inset 0 -6px 0 rgb(61 51 69 / 0.16)", "purpose": "Bottom lip on menu buttons; 4-5px at 0.06-0.14 alpha on cards and badges. Shrinks to 2px on press." },
+      { "name": "rim", "value": "0 0 0 4px #fff", "purpose": "White ring on selected buttons and every postcard." }
+    ],
+    "motion": [
+      { "name": "ease-out", "value": "cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "The only easing curve; all state changes." },
+      { "name": "button-state", "value": "0.25s", "purpose": "Transform and shadow on menu buttons." },
+      { "name": "scene-crossfade", "value": "1.6s, every 7s", "purpose": "Attract-loop cross-fade between biome screenshots." },
+      { "name": "scene-drift", "value": "14s linear, scale(1.06) translateX(+-1.2%)", "purpose": "Slow pan on the visible scene; off under reduced motion." }
+    ],
+    "breakpoints": [
+      { "name": "split-collapse", "value": "960px" },
+      { "name": "phone", "value": "720px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Menu Button",
+      "kind": "button",
+      "refersTo": "menu-button-peach",
+      "description": "Pastel lipped slab from the game's menu; downloads are menu items. Hover/focus selects it.",
+      "html": "<a class=\"ds-mbtn ds-mbtn--peach\" href=\"#\"><span>Download for Windows</span><span class=\"ds-mbtn__meta\">64-bit · one file, no installer</span></a>",
+      "css": ".ds-mbtn { position: relative; display: inline-grid; justify-items: center; gap: 0.05rem; padding: 0.85rem 2.75rem 0.95rem; border-radius: 16px; background: #fff6e6; color: #3d3345; text-decoration: none; font: 600 1.25rem/1.15 Fredoka, ui-rounded, 'Arial Rounded MT Bold', system-ui, sans-serif; box-shadow: inset 0 -6px 0 rgb(61 51 69 / 0.16), 0 6px 14px rgb(38 26 51 / 0.22); transition: transform 0.25s cubic-bezier(0.16,1,0.3,1), box-shadow 0.25s cubic-bezier(0.16,1,0.3,1), background-color 0.2s cubic-bezier(0.16,1,0.3,1); } .ds-mbtn--peach { background: #fa9e85; } .ds-mbtn__meta { font: 600 0.8rem/1.3 ui-rounded, system-ui, sans-serif; letter-spacing: 0.01em; color: rgb(61 51 69 / 0.78); } .ds-mbtn::before { content: ''; position: absolute; left: 1.15rem; top: 50%; border-block: 0.45rem solid transparent; border-left: 0.65rem solid #3d3345; transform: translate(-0.4rem, -50%); opacity: 0; transition: opacity 0.2s, transform 0.3s cubic-bezier(0.16,1,0.3,1); } .ds-mbtn:hover, .ds-mbtn:focus-visible { background: #fdd673; box-shadow: 0 0 0 4px #fff, inset 0 -6px 0 rgb(61 51 69 / 0.14), 0 10px 22px rgb(38 26 51 / 0.28); transform: scale(1.035); } .ds-mbtn:hover::before, .ds-mbtn:focus-visible::before { opacity: 1; transform: translate(0, -50%); } .ds-mbtn:focus-visible { outline: 3px solid #3d3345; outline-offset: 6px; } .ds-mbtn:active { transform: scale(1.035) translateY(3px); box-shadow: 0 0 0 4px #fff, inset 0 -2px 0 rgb(61 51 69 / 0.16), 0 6px 14px rgb(38 26 51 / 0.22); }"
+    },
+    {
+      "name": "Menu Button (Sky)",
+      "kind": "button",
+      "refersTo": "menu-button-sky",
+      "description": "Android download colourway.",
+      "html": "<a class=\"ds-mbtn-sky\" href=\"#\">Download for Android</a>",
+      "css": ".ds-mbtn-sky { display: inline-block; padding: 0.85rem 2.75rem 0.95rem; border-radius: 16px; background: #8cbff2; color: #3d3345; text-decoration: none; font: 600 1.25rem/1.15 Fredoka, ui-rounded, system-ui, sans-serif; box-shadow: inset 0 -6px 0 rgb(61 51 69 / 0.16), 0 6px 14px rgb(38 26 51 / 0.22); transition: transform 0.25s cubic-bezier(0.16,1,0.3,1), box-shadow 0.25s cubic-bezier(0.16,1,0.3,1), background-color 0.2s; } .ds-mbtn-sky:hover, .ds-mbtn-sky:focus-visible { background: #fdd673; box-shadow: 0 0 0 4px #fff, inset 0 -6px 0 rgb(61 51 69 / 0.14), 0 10px 22px rgb(38 26 51 / 0.28); transform: scale(1.035); } .ds-mbtn-sky:focus-visible { outline: 3px solid #3d3345; outline-offset: 6px; } .ds-mbtn-sky:active { transform: scale(1.035) translateY(3px); }"
+    },
+    {
+      "name": "Small Button",
+      "kind": "button",
+      "refersTo": "menu-button-small",
+      "description": "Secondary download (server, install cards); no arrow, no scale.",
+      "html": "<a class=\"ds-mbtn-small\" href=\"#\">Server for Linux</a>",
+      "css": ".ds-mbtn-small { display: inline-block; padding: 0.65rem 1.6rem 0.75rem; border-radius: 16px; background: #fff6e6; color: #3d3345; text-decoration: none; font: 600 1.05rem/1.15 Fredoka, ui-rounded, system-ui, sans-serif; box-shadow: inset 0 -6px 0 rgb(61 51 69 / 0.16), 0 6px 14px rgb(38 26 51 / 0.22); transition: box-shadow 0.25s cubic-bezier(0.16,1,0.3,1), background-color 0.2s, transform 0.25s; } .ds-mbtn-small:hover { background: #fdd673; box-shadow: 0 0 0 4px #fff, inset 0 -6px 0 rgb(61 51 69 / 0.14), 0 10px 22px rgb(38 26 51 / 0.28); } .ds-mbtn-small:focus-visible { outline: 3px solid #3d3345; outline-offset: 6px; } .ds-mbtn-small:active { transform: translateY(3px); box-shadow: inset 0 -2px 0 rgb(61 51 69 / 0.16), 0 6px 14px rgb(38 26 51 / 0.22); }"
+    },
+    {
+      "name": "Pill",
+      "kind": "chip",
+      "refersTo": "pill",
+      "description": "Cream label for any text over imagery (tagline, Now showing, captions).",
+      "html": "<p class=\"ds-pill\"><span class=\"ds-pill__label\">Now showing:</span> Maple Woods</p>",
+      "css": ".ds-pill { display: inline-block; margin: 0; font: 600 1.1rem/1.4 Fredoka, ui-rounded, system-ui, sans-serif; color: #3d3345; background: rgb(255 246 230 / 0.92); padding: 0.4rem 1.1rem 0.45rem; border-radius: 999px; box-shadow: 0 6px 14px rgb(38 26 51 / 0.22); } .ds-pill__label { color: #64576b; }"
+    },
+    {
+      "name": "Chips",
+      "kind": "chip",
+      "refersTo": "chip",
+      "description": "Tiny round labels after a car name: butter new, lavender circuit.",
+      "html": "<span class=\"ds-chip\">new</span> <span class=\"ds-chip ds-chip--lav\">circuit</span>",
+      "css": ".ds-chip { font: 600 0.75rem/1.4 Fredoka, ui-rounded, system-ui, sans-serif; color: #3d3345; background: #fdd673; padding: 0.1rem 0.55rem 0.15rem; border-radius: 999px; } .ds-chip--lav { background: #bfa8eb; }"
+    },
+    {
+      "name": "Car Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Cream card on a coloured band; screenshot on top, Fredoka title, soft body.",
+      "html": "<div class=\"ds-card\"><div class=\"ds-card__img\"></div><div class=\"ds-card__body\"><h3>Kestrel <span class=\"ds-card__tag\">new</span></h3><p>Wide-body turbo rally hatch. Sharp turn-in, huge grip.</p></div></div>",
+      "css": ".ds-card { width: 280px; background: #fff6e6; border-radius: 22px; overflow: hidden; box-shadow: inset 0 -5px 0 rgb(61 51 69 / 0.08), 0 6px 14px rgb(38 26 51 / 0.22); } .ds-card__img { aspect-ratio: 10 / 7; background: #8cbff2; } .ds-card__body { padding: 0.9rem 1.2rem 1.2rem; } .ds-card h3 { margin: 0 0 0.25rem; display: flex; align-items: center; gap: 0.5rem; font: 600 1.3rem/1.1 Fredoka, ui-rounded, system-ui, sans-serif; color: #3d3345; } .ds-card p { margin: 0; font: 400 0.98rem/1.6 ui-rounded, system-ui, sans-serif; color: #64576b; } .ds-card__tag { font-size: 0.75rem; background: #fdd673; padding: 0.1rem 0.55rem 0.15rem; border-radius: 999px; }"
+    },
+    {
+      "name": "Postcard",
+      "kind": "custom",
+      "refersTo": "postcard",
+      "description": "Real screenshot in a rimmed 22px frame with a cream pill caption; slow zoom on hover.",
+      "html": "<figure class=\"ds-postcard\"><div class=\"ds-postcard__img\"></div><figcaption>Frosty Peaks</figcaption></figure>",
+      "css": ".ds-postcard { position: relative; margin: 0; width: 320px; aspect-ratio: 16 / 10; border-radius: 22px; overflow: hidden; background: #f2e3cc; box-shadow: 0 0 0 4px #fff, 0 6px 14px rgb(38 26 51 / 0.22); } .ds-postcard__img { position: absolute; inset: 0; background: #f2e3cc; transition: transform 0.8s cubic-bezier(0.16,1,0.3,1); } .ds-postcard:hover .ds-postcard__img { transform: scale(1.04); } .ds-postcard figcaption { position: absolute; left: 0.75rem; bottom: 0.75rem; font: 600 1rem/1.4 Fredoka, ui-rounded, system-ui, sans-serif; color: #3d3345; background: rgb(255 246 230 / 0.94); padding: 0.25rem 0.85rem 0.3rem; border-radius: 999px; box-shadow: 0 6px 14px rgb(38 26 51 / 0.22); }"
+    },
+    {
+      "name": "Pace-note Call",
+      "kind": "custom",
+      "refersTo": "note-badge",
+      "description": "Butter lipped badge with a stroked ink pace-note icon beside a title and line.",
+      "html": "<div class=\"ds-call\"><span class=\"ds-note\"><svg viewBox=\"0 0 48 48\"><path d=\"M32 40V18a10 10 0 0 0-20 0v14\"/><path d=\"M6 27l6 7 6-7\"/></svg></span><div><h3>Hairpins, chicanes, crests and jumps</h3><p>Procedural stages with real rally features.</p></div></div>",
+      "css": ".ds-call { display: grid; grid-template-columns: auto 1fr; gap: 1.2rem; align-items: center; padding: 1.15rem 1.6rem; background: #fff6e6; border-radius: 22px; box-shadow: inset 0 -6px 0 rgb(61 51 69 / 0.08), 0 10px 22px rgb(38 26 51 / 0.28); max-width: 520px; } .ds-note { width: 4.2rem; height: 4.2rem; display: grid; place-items: center; background: #fdd673; border-radius: 16px; box-shadow: inset 0 -5px 0 rgb(61 51 69 / 0.14); } .ds-note svg { width: 2.6rem; height: 2.6rem; fill: none; stroke: #3d3345; stroke-width: 4.5; stroke-linecap: round; stroke-linejoin: round; } .ds-call h3 { margin: 0 0 0.2rem; font: 600 1.2rem/1.1 Fredoka, ui-rounded, system-ui, sans-serif; color: #3d3345; } .ds-call p { margin: 0; font: 400 1rem/1.6 ui-rounded, system-ui, sans-serif; color: #64576b; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Title Screen, Left On",
+    "overview": "The website is not a store page that borrows the game's colours; it is the game's own front end, still running. Its world is inherited directly from the in-game UI in `crates/rally_game/src/ui.rs`: the same named constants (CREAM, CREAM_DEEP, INK, INK_SOFT, PEACH, MINT, SKY, BUTTER, LAVENDER, BERRY, SHADOW) converted to hex, the same Fredoka SemiBold lettering, the same lipped pastel menu slabs, and the same selection grammar (butter fill, white ring, play arrow). When the site and the game disagree, the game is the reference and the site follows.\n\nThe page reads as a sequence of full-width colour bands (cream, butter, sky, peach, cream, ink footer), each holding cream or white rounded objects that sit slightly lifted off the band. Density is relaxed: big rounded type, generous band padding, few elements per row. Real screenshots are the only imagery, framed as rounded postcards with a white rim. Everything that floats over a photo (tagline, hint, \"Now showing\", captions) is a cream pill.\n\nMotion is slow and soft: a 14 s drift and 1.6 s cross-fade on the attract scenes, 0.25 s ease-out lifts on buttons, all on one long-tail ease-out curve, and all of it collapses under `prefers-reduced-motion`.",
+    "keyCharacteristics": [
+      "Palette and type are the game's, token for token; no web-only hues.",
+      "Pastel slabs with a darker bottom lip, never flat rectangles.",
+      "One selected item at a time, shown in butter with a white ring.",
+      "Cream pills for any text laid over imagery.",
+      "Soft plum-tinted drop shadows, never grey or black."
+    ],
+    "rules": [
+      { "name": "The Game Owns The Palette Rule", "body": "Every colour is a `ui.rs` constant. A new surface picks from these eleven; it does not mix a new hue. Translucent cream (`rgb(255 246 230 / 0.88-0.94)`) and translucent ink (`rgb(61 51 69 / 0.06-0.16)`) are tints of existing tokens, not new colours.", "section": "colors" },
+      { "name": "The Butter Means Selected Rule", "body": "On interactive elements, butter is the selected/hover state. Never give a resting button a butter fill; it would read as already chosen.", "section": "colors" },
+      { "name": "The Ink On Pastel Rule", "body": "Text on every pastel is ink, never white. Berry is the darkest pastel (about 3.9:1 against ink), so it carries only large display labels, not body copy.", "section": "colors" },
+      { "name": "The Fredoka Speaks Rule", "body": "Anything that names, labels or invites a press is set in Fredoka 600. Sentences of explanation are set in the body face. There is only one Fredoka weight; hierarchy comes from size, never weight.", "section": "typography" },
+      { "name": "The Lipped Slab Rule", "body": "Buttons and badges always carry the bottom lip. Pressing a button shrinks the lip (6px to 2px) and moves it down 3px, so the lip is the press feedback.", "section": "elevation" },
+      { "name": "The Plum Shadow Rule", "body": "Shadows are tinted rgb(38 26 51); a neutral black shadow breaks the world.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do take every colour from the `ui.rs` set and set ink text on every pastel.",
+      "Do give every button and badge the bottom lip and the plum Rest shadow (`0 6px 14px rgb(38 26 51 / 0.22)`).",
+      "Do show selection the game's way: butter, 4px white ring, Lift shadow, play arrow; one selected item per menu.",
+      "Do float text over imagery only inside a cream pill.",
+      "Do use real in-game screenshots, framed as rimmed 22px postcards.",
+      "Do keep all motion on `cubic-bezier(0.16, 1, 0.3, 1)` and disable drift and cross-fades under reduced motion."
+    ],
+    "donts": [
+      "Don't introduce colours or shadow tints that the game UI doesn't have; gradients appear only as the cream or ink veil that fades a photo into the menu.",
+      "Don't use butter as a resting fill on an interactive element.",
+      "Don't set white text on pastels or body copy on berry.",
+      "Don't add hairline borders or hard offset shadows; edges come from fills, lips and the white rim.",
+      "Don't use more than one Fredoka weight or set long paragraphs in Fredoka."
+    ]
+  }
+}
