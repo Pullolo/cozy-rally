@@ -67,6 +67,8 @@ pub fn grade_for(biome: Biome) -> Grade {
         Biome::Snow => Grade { lift: [0.95, 0.96, 1.06], gain: [1.03, 1.0, 0.97], saturation: 1.04, contrast: 1.06, warmth: 0.35, threshold: 0.94, knee: 0.35, ..d },
         Biome::Desert => Grade { lift: [0.98, 0.95, 1.03], gain: [1.04, 1.0, 0.94], saturation: 1.02, warmth: 0.7, threshold: 0.9, knee: 0.45, ..d },
         Biome::Coast => Grade { lift: [0.95, 0.98, 1.05], gain: [1.04, 1.01, 0.96], saturation: 1.1, warmth: 0.45, ..d },
+        // cool, slightly misty mountain woods
+        Biome::Forest => Grade { lift: [0.96, 0.98, 1.03], gain: [1.03, 1.02, 0.97], saturation: 1.0, warmth: 0.45, softness: 0.2, ..d },
     }
 }
 
@@ -153,6 +155,8 @@ impl<'a> GroundPainter<'a> {
             let (w, r) = match p.kind {
                 PropKind::Tree => (1.0, 3.2),
                 PropKind::Pine => (0.9, 2.6),
+                PropKind::TallTree => (1.0, 4.2),
+                PropKind::Spruce => (1.0, 3.0),
                 PropKind::Palm => (0.5, 2.4),
                 PropKind::Bush => (0.4, 1.6),
                 _ => continue,
@@ -211,6 +215,12 @@ impl<'a> GroundPainter<'a> {
                 let hollow = smoothstep(0.55, 0.25, v);
                 col = mix(col, [0.80, 0.86, 0.98], hollow * 0.5);
                 col = mix(col, [0.62, 0.70, 0.66], (canopy * 0.25).min(0.3));
+            }
+            Biome::Forest => {
+                col = mix(col, [0.46, 0.58, 0.28], meadow * 0.3);
+                col = mix(col, shade(st.shoulder, 1.05), dirt * 0.2);
+                // brown needle and beech-leaf litter under the canopy
+                col = mix(col, [0.40, 0.31, 0.21], (canopy * 0.5).min(0.6));
             }
             Biome::Desert => {
                 // wind-swept dune banding
@@ -1208,6 +1218,24 @@ pub fn detail_mesh(track: &Track, painter: &GroundPainter) -> MeshBuilder {
                             d.m.blob(Mat4::from_translation(p), Vec3::new(s * 1.4, s * 0.55, s), 2, 6, rgb([0.95, 0.97, 1.0]));
                         } else {
                             d.tuft(p, rng.range(0.25, 0.45), rng.range_i(3, 6) as usize, [0.35, 0.42, 0.36], [0.62, 0.70, 0.58]);
+                        }
+                    }
+                    Biome::Forest => {
+                        if r < 0.3 {
+                            // old beech leaves
+                            for _ in 0..rng.range_i(2, 4) {
+                                let o = Vec3::new(rng.range(-0.6, 0.6), 0.0, rng.range(-0.6, 0.6));
+                                d.leaf(p + o, shade([0.55, 0.38, 0.22], rng.range(0.85, 1.15)));
+                            }
+                        } else if r < 0.4 {
+                            d.pebble(p, rng.range(0.07, 0.18), shade(st.cliff, rng.range(0.9, 1.15)));
+                        } else if r < 0.6 && !near_shoulder {
+                            // ferns
+                            d.tuft(p, rng.range(0.5, 0.85), rng.range_i(5, 8) as usize, [0.22, 0.38, 0.16], [0.45, 0.62, 0.28]);
+                        } else {
+                            let base = shade(g, 0.7);
+                            let tip = mix(shade(g, 1.15), [0.7, 0.8, 0.4], 0.2);
+                            d.tuft(p, rng.range(0.3, 0.6), rng.range_i(4, 7) as usize, base, tip);
                         }
                     }
                     Biome::Desert => {

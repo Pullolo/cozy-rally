@@ -211,6 +211,7 @@ fn biome_color(ch: &Chapter) -> Color {
         Biome::Coast => SKY,
         Biome::Desert => BUTTER,
         Biome::Snow => LAVENDER,
+        Biome::Forest => MINT,
     }
 }
 

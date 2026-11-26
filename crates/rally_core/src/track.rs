@@ -243,6 +243,13 @@ pub enum PropKind {
     /// Floodlight mast (circuits, lit zones only): ~10 m pole, lamp head hanging toward -Z
     /// (the track) at local (0, LAMP_HEAD_Y, LAMP_HEAD_Z) * scale. Lit at night.
     LampPost,
+    // --- Mountain Forest
+    /// Tall beech: long bare trunk, crown high up (~16 m at scale 1)
+    TallTree,
+    /// Tall narrow spruce (~17 m at scale 1)
+    Spruce,
+    /// Stack of felled logs by the forest road
+    LogPile,
 }
 
 /// Lamp head position on a `PropKind::LampPost` in prop-local metres (before scale)
@@ -467,6 +474,11 @@ fn natural_height(style: &BiomeStyle, biome: Biome, seed: u32, x: f32, z: f32) -
         Biome::Coast => {
             // land slopes down toward the sea on one side
             base + (x * 0.6 + z * 0.4) * 0.05 + detail
+        }
+        Biome::Forest => {
+            // steep wooded ridges and valleys
+            let m = noise::ridged(x * f * 0.8, z * f * 0.8, 3, seed + 11) * style.hill_amp * 0.9;
+            base * 0.7 + m + detail
         }
         _ => base + detail,
     }
@@ -1119,7 +1131,8 @@ pub struct CircuitEdge {
 
 /// Surface properties of zones that have no own `Surface` variant.
 pub fn kerb_props() -> SurfaceProps {
-    SurfaceProps { bumpiness: 0.022, rolling: 0.014, ..Surface::Asphalt.props() }
+    // paved (inherits asphalt): the rumble is ride texture, slicks keep their grip
+    SurfaceProps { bumpiness: 0.012, rolling: 0.014, ..Surface::Asphalt.props() }
 }
 
 pub fn gravel_trap_props() -> SurfaceProps {
@@ -2766,6 +2779,23 @@ impl<'a> PropPlacer<'a> {
                 let e = self.edge(i);
                 self.tape_line(i - 12, i + 12, outside * (e + 3.2));
             }
+            if self.t.biome == Biome::Forest && c > 1.0 / 42.0 {
+                // banners on the outside of the bend, like a real event
+                let e = self.edge(i);
+                {
+                    for k in [-6isize, 0, 6] {
+                        let j = i + k;
+                        let sj = self.smp(j);
+                        let p = self.beside(j, outside * (e + 4.4), 0.0);
+                        if self.clearance(p) > 3.6 && !self.under_water(p.y, 0.3) {
+                            let t = Vec3::new(sj.tangent.x, 0.0, sj.tangent.z).normalize();
+                            // front (-Z) faces the road
+                            let yaw = yaw_along(t) + if outside < 0.0 { std::f32::consts::PI } else { 0.0 };
+                            self.push(PropKind::AdBanner, p, yaw, 1.0, 0.0, rng.range_i(0, 8) as u8);
+                        }
+                    }
+                }
+            }
             let max_spots = if self.open() { (self.t.length / 450.0) as usize + 3 } else { 7 };
             if c > 1.0 / 48.0 && spectator_spots < max_spots {
                 spectator_spots += 1;
@@ -2936,6 +2966,19 @@ impl<'a> PropPlacer<'a> {
                     self.around(rng, c, Sheep, 3, 9.0, 14.0, 0.0, (0.9, 1.1), 12.0);
                     self.around(rng, c, Palm, 2, 6.0, 9.0, 0.45, (0.9, 1.2), 12.0);
                 }
+                (Biome::Forest, 0) => {
+                    // forester's hut with a woodpile
+                    self.push(SkiCabin, c, face, 1.0, 3.8, v);
+                    self.around(rng, c, LogPile, 2, 6.0, 9.0, 1.2, (0.9, 1.2), 10.0);
+                    self.around(rng, c, Deer, 2, 10.0, 16.0, 0.0, (0.9, 1.1), 12.0);
+                }
+                (Biome::Forest, _) => {
+                    // timber yard in a clearing
+                    self.push(LogPile, c, face, 1.4, 2.4, v);
+                    self.around(rng, c, LogPile, 2, 5.0, 9.0, 1.4, (0.8, 1.2), 10.0);
+                    self.around(rng, c, Deer, 3, 9.0, 15.0, 0.0, (0.9, 1.1), 12.0);
+                    self.around(rng, c, Spruce, 3, 10.0, 16.0, 0.5, (0.8, 1.1), 12.0);
+                }
             }
             self.keep_out.push((Vec2::new(c.x, c.z), if mesa { 14.0 } else { 9.0 }));
             placed.push(c);
@@ -2968,7 +3011,8 @@ impl<'a> PropPlacer<'a> {
     /// Fences along calm stretches, a few metres beyond the shoulder.
     fn fences(&mut self, noise_seed: u32) {
         let biome = self.t.biome;
-        if biome == Biome::Desert {
+        // no ranch fences in the desert or the deep forest
+        if biome == Biome::Desert || biome == Biome::Forest {
             return;
         }
         let n = self.n() as isize;
@@ -3023,6 +3067,9 @@ impl<'a> PropPlacer<'a> {
                     Biome::Coast => {
                         if r < 0.55 { PropKind::Grass } else { PropKind::Flowers }
                     }
+                    Biome::Forest => {
+                        if r < 0.6 { PropKind::Grass } else if r < 0.78 { PropKind::Mushroom } else if r < 0.96 { PropKind::Bush } else { PropKind::Rock }
+                    }
                 };
                 let (scale, radius) = match kind {
                     PropKind::Rock => (rng.range(0.4, 0.7), 0.0),
@@ -3069,6 +3116,10 @@ impl<'a> PropPlacer<'a> {
                 } else {
                     density *= 1.0 - 0.72 * smoothstep(50.0, 140.0, q.dist);
                 }
+                if biome == Biome::Forest {
+                    // closed woods: the forest stands right behind the verge
+                    density = (density * 1.3 + 0.22).min(0.95);
+                }
                 if !rng.chance(density) {
                     continue;
                 }
@@ -3105,10 +3156,15 @@ impl<'a> PropPlacer<'a> {
                         Biome::Coast => {
                             if r < 0.12 { Rock } else if r < 0.42 { Palm } else if r < 0.58 { Tree } else if r < 0.7 { Bush } else if r < 0.82 { Flowers } else { Grass }
                         }
+                        Biome::Forest => {
+                            if r < 0.04 { Rock } else if r < 0.42 { TallTree } else if r < 0.74 { Spruce } else if r < 0.8 { Birch } else if r < 0.88 { Bush } else if r < 0.92 { Mushroom } else { Grass }
+                        }
                     }
                 };
-                let tall = matches!(kind, Tree | Pine | Palm | Birch | Blossom);
-                if tall && q.dist < hw + SHOULDER + 6.0 {
+                let tall = matches!(kind, Tree | Pine | Palm | Birch | Blossom | TallTree | Spruce);
+                // forest: the big trunks stand closer to the road (like a real forest stage)
+                let tall_gap = if biome == Biome::Forest { 3.5 } else { 6.0 };
+                if tall && q.dist < hw + SHOULDER + tall_gap {
                     continue;
                 }
                 let scale = match kind {
@@ -3119,6 +3175,9 @@ impl<'a> PropPlacer<'a> {
                 };
                 let radius = match kind {
                     Tree | Pine | Palm | Blossom => 0.45 * scale,
+                    TallTree => 0.55 * scale,
+                    Spruce => 0.45 * scale,
+                    LogPile => 1.2 * scale,
                     Birch => 0.3 * scale,
                     Cactus => 0.35 * scale,
                     Rock => 0.9 * scale,

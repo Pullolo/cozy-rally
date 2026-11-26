@@ -640,6 +640,144 @@ pub fn car_model(spec: &CarSpec, paint: [f32; 3]) -> CarModel {
             antenna(&mut m, Vec3::new(-0.42, hull.top_y(0.8, 0.42) - 0.01, 0.8), 0.4, [0.98, 0.75, 0.85]);
             wheel = wheel_mesh(spec, WHITE, paint, 6, false);
         }
+        8 => {
+            // ---------------- Kestrel: wide-body turbo rally hatch (modern works car). Gloss
+            // black body, the picked paint goes on sharp diagonal slashes, flared arches, big
+            // two-tier roof wing, wide mesh grille, splitter. No badges or sponsor text.
+            let look = Look { number: 21, helmet: WHITE, suit: [0.12, 0.12, 0.15] };
+            let body = [0.075, 0.078, 0.09];
+            let gloss = [0.16, 0.17, 0.2];
+            let hull = Hull {
+                keys: vec![
+                    key(-1.76, -0.40, -0.03, 0.8, 0.12, 0.06),
+                    key(-1.4, -0.43, 0.07, 0.87, 0.15, 0.05),
+                    key(-0.62, -0.43, 0.14, 0.88, 0.16, 0.02),
+                    key(1.3, -0.43, 0.24, 0.88, 0.16, 0.0),
+                    key(1.66, -0.41, 0.31, 0.85, 0.13, 0.0),
+                ],
+                cabin: Some(Cabin { z0: -0.62, z1: 0.0, z2: 1.3, z3: 1.58, yr: 0.66, wr: 0.64, rail: 0.1, crown: 0.03, win: (-0.42, 1.24), b_pillar: Some(0.45), rear_solid: false, open: false }),
+                arches: vec![Arch { z: fz, yc: wy, r: r + 0.06, flare: (wheel_out + 0.08 - 0.87).max(0.1) }, Arch { z: rz, yc: wy, r: r + 0.06, flare: (wheel_out + 0.08 - 0.88).max(0.1) }],
+                nose_r: 0.12,
+                tail_r: 0.08,
+            };
+            hull.build(&mut m, &mut glass, &Livery { paint: body, lower: DARK, side_band: Some(paint), top_band: None, roof: body, pillar: body });
+            let (front, rear) = (hull.front(), hull.rear());
+            let ground = wy - r;
+            let pc = rgb(paint);
+            let hi = rgb(shade(paint, 1.35));
+            // diagonal ribbon on the flank from (z0, u0) to (z1, u1), following the skin
+            let slash = |m: &mut MeshBuilder, sx: f32, z0: f32, z1: f32, u0: f32, u1: f32, hw: f32, col: [u8; 4]| {
+                let steps = ((z1 - z0) / 0.12).ceil().max(1.0) as usize;
+                for k in 0..steps {
+                    let (ta, tb) = (k as f32 / steps as f32, (k + 1) as f32 / steps as f32);
+                    let (za, zb) = (z0 + (z1 - z0) * ta, z0 + (z1 - z0) * tb);
+                    let (ua, ub) = (u0 + (u1 - u0) * ta, u0 + (u1 - u0) * tb);
+                    let (pa, na) = hull.point3(za, sx, ua);
+                    let (pb, nb) = hull.point3(zb, sx, ub);
+                    let (qa, _) = hull.point3(za, sx, ua + 0.15);
+                    let (qb, _) = hull.point3(zb, sx, ub + 0.15);
+                    let (ea, eb) = ((qa - pa).normalize_or_zero() * hw, (qb - pb).normalize_or_zero() * hw);
+                    let (pa, pb) = (pa + na * 0.034, pb + nb * 0.034);
+                    m.quad(pa - ea, pb - eb, pb + eb, pa + ea, col);
+                }
+            };
+            for sx in [-1.0f32, 1.0] {
+                // livery: big swept slashes rising towards the tail, thin bright cuts
+                slash(&mut m, sx, -1.45, -0.8, 3.1, 4.4, 0.07, pc);
+                slash(&mut m, sx, 0.0, 0.62, 3.1, 4.6, 0.1, pc);
+                slash(&mut m, sx, 0.2, 0.8, 3.05, 4.3, 0.022, hi);
+                slash(&mut m, sx, 0.75, 1.5, 3.1, 4.6, 0.09, pc);
+                slash(&mut m, sx, 1.0, 1.55, 3.5, 4.7, 0.022, rgb(WHITE));
+                // swept headlights on the nose corners, DRL strip under them
+                h_lamp(&mut m, &mut head, &hull, front + 0.16, sx, 4.4, 0.075, DARK, HEAD_OFF);
+                h_lamp(&mut m, &mut head, &hull, front + 0.3, sx, 4.75, 0.05, DARK, HEAD_OFF);
+                hull.long_strip(&mut m, sx, 3.95, front + 0.12, front + 0.36, 0.012, 0.03, rgb([0.95, 0.92, 0.8]));
+                // fog lamps in the lower intakes
+                h_lamp(&mut m, &mut head, &hull, front + 0.08, sx, 2.1, 0.045, DARK, [0.98, 0.95, 0.85]);
+                {
+                    let (p, _) = hull.point(rear, sx, 4.35);
+                    let hw = 0.16;
+                    let cx = (p.x.abs() - 0.04 - hw).max(hw + 0.2);
+                    rect_lamp(&mut m, &mut brake, Vec3::new(sx * cx, p.y, rear + 0.004), Vec3::Z, Vec3::X * sx, hw, 0.045, TAIL_OFF, LENS);
+                    // wrap-around piece on the rear corner
+                    let (pc, nc) = hull.point3(rear - 0.12, sx, 4.35);
+                    rect_lamp(&mut m, &mut brake, pc + nc * 0.005, nc, Vec3::Z, 0.07, 0.04, TAIL_OFF, LENS);
+                    rect_lamp(&mut m, &mut rev, Vec3::new(sx * 0.5, hull.sec(rear).ybot + 0.17, rear + 0.004), Vec3::Z, Vec3::X * sx, 0.05, 0.022, REV_OFF, LENS);
+                }
+                h_mirror(&mut m, &hull, -0.44, sx, body);
+                h_roundel(&mut m, &hull, -0.3, sx, 3.4, 0.16, look.number);
+                h_seams(&mut m, &hull, sx, &[-0.6, 0.5]);
+                h_handle(&mut m, &hull, -0.1, sx, 4.4);
+                h_handle(&mut m, &hull, 0.88, sx, 4.4);
+                h_flap(&mut m, &hull, sx, spec.half_track, rz + r + 0.12, ground, spec.wheel_width + 0.08, DARK, paint);
+                // vented rear quarter behind the rear arch
+                for k in 0..3 {
+                    hull.strip(&mut m, rz + r + 0.12 + k as f32 * 0.05, sx, 2.4, 3.0, 0.012, 0.03, rgb(DARK));
+                }
+            }
+            // big two-tier roof wing: main plane past the tailgate, upper element, tall end plates
+            let sz0 = 1.24;
+            let ys = hull.top_y(sz0, 0.0);
+            let wing = Vec3::new(0.0, ys + 0.04, sz0 + 0.34);
+            // two swept pylons from the roof's rear edge up to the main plane
+            for sx in [-0.36f32, 0.36] {
+                let base = Vec3::new(sx, hull.top_y(sz0 - 0.08, sx.abs()) - 0.01, sz0 - 0.08);
+                m.plank(base, Vec3::new(sx, wing.y - 0.01, wing.z - 0.04), 0.06, 0.03, Vec3::X, rgb(gloss));
+            }
+            m.bevel_box(trs(wing, Quat::from_rotation_x(-0.12), Vec3::ONE), Vec3::new(0.68, 0.022, 0.2), 0.018, rgb(gloss));
+            m.bevel_box(trs(wing + Vec3::new(0.0, 0.08, 0.1), Quat::from_rotation_x(-0.25), Vec3::ONE), Vec3::new(0.66, 0.016, 0.09), 0.012, rgb(body));
+            m.cube(trs(wing + Vec3::new(0.0, 0.03, -0.1), Quat::from_rotation_x(-0.12), Vec3::ONE), Vec3::new(0.62, 0.006, 0.035), pc);
+            for sx in [-1.0f32, 1.0] {
+                m.bevel_box(trs(wing + Vec3::new(sx * 0.69, 0.03, 0.02), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.018, 0.085, 0.23), 0.01, rgb(gloss));
+            }
+            rect_lamp(&mut m, &mut brake, wing + Vec3::new(0.0, -0.01, 0.205), Vec3::Z, Vec3::X, 0.16, 0.014, TAIL_OFF, LENS);
+            // bonnet: twin vents, paint flash down the centre
+            for x in [-0.3f32, 0.3] {
+                let bz = -1.05;
+                let by = hull.top_y(bz, x.abs());
+                m.bevel_box(trs(Vec3::new(x, by + 0.008, bz), Quat::from_rotation_x(0.08), Vec3::ONE), Vec3::new(0.14, 0.012, 0.16), 0.01, rgb(DARK));
+            }
+            for k in 0..5 {
+                let (z, g) = (-1.55 + k as f32 * 0.18, k as f32 * 0.012);
+                let y = hull.top_y(z, 0.0);
+                m.quad(Vec3::new(-0.05 - g, y + 0.012, z), Vec3::new(0.05 + g, y + 0.012, z), Vec3::new(0.06 + g, y + 0.012, z + 0.18), Vec3::new(-0.06 - g, y + 0.012, z + 0.18), pc);
+            }
+            // wide trapezoid mesh grille, lower intake bars, splitter
+            let gy = hull.sec(front + 0.1).ybot + 0.2;
+            m.bevel_box(trs(Vec3::new(0.0, gy, front + 0.06), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.38, 0.075, 0.05), 0.03, rgb([0.05, 0.05, 0.06]));
+            for k in 0..4 {
+                let y = gy - 0.05 + k as f32 * 0.033;
+                m.cube(trs(Vec3::new(0.0, y, front + 0.012), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.36, 0.005, 0.01), rgb([0.22, 0.22, 0.25]));
+            }
+            let iy = hull.sec(front + 0.1).ybot + 0.08;
+            m.bevel_box(trs(Vec3::new(0.0, iy, front + 0.1), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.5, 0.045, 0.06), 0.02, rgb([0.05, 0.05, 0.06]));
+            for k in 0..3 {
+                m.cube(trs(Vec3::new(0.0, iy - 0.025 + k as f32 * 0.025, front + 0.04), Quat::IDENTITY, Vec3::ONE), Vec3::new(0.48, 0.004, 0.01), rgb([0.28, 0.28, 0.3]));
+            }
+            let yn = hull.sec(front + 0.2).ybot;
+            m.plank(Vec3::new(-0.82, yn - 0.012, front + 0.12), Vec3::new(0.82, yn - 0.012, front + 0.12), 0.26, 0.024, Vec3::Y, rgb(DARK));
+            m.plank(Vec3::new(-0.6, yn - 0.006, front + 0.02), Vec3::new(0.6, yn - 0.006, front + 0.02), 0.04, 0.02, Vec3::Y, pc);
+            h_bumper(&mut m, &hull, 1.0, 0.13, 0.09, body);
+            h_bumper(&mut m, &hull, 1.0, 0.02, 0.035, DARK);
+            plate(&mut m, Vec3::new(0.0, hull.sec(rear).ybot + 0.24, rear), Vec3::Z);
+            exhaust(&mut m, Vec3::new(0.32, hull.sec(rear - 0.1).ybot + 0.04, rear - 0.1), 0.055, 0.24);
+            // rear diffuser fins
+            let yr0 = hull.sec(rear - 0.3).ybot;
+            for k in 0..4 {
+                let x = (k as f32 - 1.5) * 0.18;
+                m.plank(Vec3::new(x, yr0 - 0.015, rear - 0.4), Vec3::new(x, yr0 - 0.015, rear - 0.06), 0.03, 0.04, Vec3::X, rgb([0.2, 0.2, 0.23]));
+            }
+            roundel(&mut m, Vec3::new(0.0, hull.top_y(0.4, 0.0) + 0.012, 0.4), Vec3::Y, Vec3::X, 0.15, look.number, WHITE, INK);
+            let cage = rgb([0.92, 0.92, 0.92]);
+            let cy = hull.top_y(0.8, 0.5) - 0.03;
+            for sx in [-0.54f32, 0.54] {
+                m.beam(Vec3::new(sx, -0.05, 0.85), Vec3::new(sx, cy, 0.8), 0.045, cage);
+            }
+            m.beam(Vec3::new(-0.54, cy, 0.8), Vec3::new(0.54, cy, 0.8), 0.045, cage);
+            driver(&mut m, Vec3::new(-0.32, -0.07, 0.42), look.suit, look.helmet, paint, 1.0);
+            driver(&mut m, Vec3::new(0.32, -0.07, 0.48), [0.95, 0.95, 0.92], look.helmet, body, 1.0);
+            wheel = wheel_mesh(spec, [0.2, 0.21, 0.23], paint, 12, true);
+        }
         5 => {
             // ---------------- Comet (GT): low, wide, smooth fastback; rear-engine; swan-neck wing
             let look = Look { number: 24, helmet: WHITE, suit: [0.3, 0.45, 0.8] };

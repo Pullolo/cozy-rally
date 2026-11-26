@@ -23,6 +23,7 @@ fn biome_of(style: &BiomeStyle) -> Biome {
         "Frosty Peaks" => Biome::Snow,
         "Canyon Dunes" => Biome::Desert,
         "Seaside Cliffs" => Biome::Coast,
+        "Mountain Forest" => Biome::Forest,
         _ => Biome::Meadow,
     }
 }
@@ -231,6 +232,59 @@ fn pine(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
         }
     }
     sway_up(m, mk, f.pos.y, 1.0 * f.s, 3.5 * f.s, 0.4);
+}
+
+/// Tall beech (~16 m): long smooth grey trunk, a few limbs, crown high up
+fn tall_tree(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
+    let bark = rgb(shade(style.trunk, 1.0 + 0.08 * f.r(2.0)));
+    let h = 9.5 + 1.5 * f.r(3.0);
+    m.frustum(f.at(0.0, h * 0.5, 0.0), 0.42, 0.2, h * 0.5, 6, bark, bark);
+    // root flare
+    m.frustum(f.at(0.0, 0.35, 0.0), 0.62, 0.42, 0.35, 6, bark, bark);
+    let lean = if p.variant % 2 == 0 { 1.0 } else { -1.0 };
+    m.beam(f.p(0.0, h * 0.62, 0.0), f.p(1.6 * lean, h * 0.85, 0.5), 0.13, bark);
+    m.beam(f.p(0.0, h * 0.75, 0.0), f.p(-1.3 * lean, h * 0.95, -0.6), 0.11, bark);
+    let c = leaf_c(style, p.variant as usize, f);
+    let mk = m.mark();
+    m.blob(f.at(0.0, h + 1.6, 0.0), Vec3::new(2.6, 2.2, 2.6), 3, 7, rgb(c));
+    m.blob(f.at(1.5 * lean, h + 0.4, 0.5), Vec3::new(1.8, 1.4, 1.8), 2, 7, rgb(shade(c, 0.92)));
+    m.blob(f.at(-1.2 * lean, h + 0.9, -0.7), Vec3::new(1.7, 1.5, 1.7), 2, 7, rgb(shade(c, 1.06)));
+    m.blob(f.at(0.3, h + 3.4, 0.2), Vec3::new(1.5, 1.2, 1.5), 2, 6, rgb(shade(c, 1.12)));
+    sway_up(m, mk, f.pos.y, (h - 1.0) * f.s, 5.0 * f.s, 0.5);
+}
+
+/// Tall narrow spruce (~17 m): bare lower trunk, many drooping tiers
+fn spruce(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
+    let trunk = rgb(shade(style.trunk, 0.85));
+    m.frustum(f.at(0.0, 2.0, 0.0), 0.32, 0.22, 2.0, 5, trunk, trunk);
+    let c = shade(style.leaves[2], 0.9 + 0.1 * (p.variant % 3) as f32);
+    let mk = m.mark();
+    let tiers = 7;
+    for i in 0..tiers {
+        let t = i as f32 / (tiers - 1) as f32;
+        let y = 3.4 + t * 12.0;
+        let r = 2.4 * (1.0 - t) + 0.45;
+        let col = shade(c, 0.92 + t * 0.16);
+        m.frustum(f.at(0.0, y, 0.0), r, 0.0, 1.15, 7, rgb(col), rgb(shade(col, 0.7)));
+    }
+    sway_up(m, mk, f.pos.y, 4.0 * f.s, 12.0 * f.s, 0.35);
+}
+
+/// Stack of felled logs along local X (4 m), cut ends showing
+fn log_pile(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
+    let bark = rgb(shade(style.trunk, 0.95));
+    let cut = rgb([0.86, 0.70, 0.48]);
+    let rot = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+    let rows: &[usize] = if p.variant % 2 == 0 { &[4, 3, 2] } else { &[5, 4] };
+    let r = 0.26;
+    for (row, &n) in rows.iter().enumerate() {
+        for k in 0..n {
+            let z = (k as f32 - (n - 1) as f32 * 0.5) * r * 2.0;
+            let y = r + row as f32 * r * 1.75;
+            let x = f.r(k as f32 + row as f32 * 7.0) * 0.3 - 0.15;
+            m.cylinder(f.atr(x, y, z, rot), r * (0.9 + 0.2 * f.r(k as f32 * 3.0)), 2.0, 7, bark, cut);
+        }
+    }
 }
 
 fn palm(m: &mut MeshBuilder, f: &Frame, style: &BiomeStyle) {
@@ -1741,6 +1795,9 @@ pub fn add_prop(m: &mut MeshBuilder, p: &Prop, style: &BiomeStyle) {
         Birch => birch(m, &f, p, style),
         Blossom => blossom(m, &f, p, style),
         Pine => pine(m, &f, p, style),
+        TallTree => tall_tree(m, &f, p, style),
+        Spruce => spruce(m, &f, p, style),
+        LogPile => log_pile(m, &f, p, style),
         Palm => palm(m, &f, style),
         Bush => bush(m, &f, p, style),
         Rock => rock(m, &f, p, style),
@@ -1818,6 +1875,7 @@ pub fn catalogue_kinds(b: Biome) -> Vec<(PropKind, u8)> {
         Biome::Snow => &[(Pine, 0), (Pine, 1), (Birch, 0), (SkiCabin, 0), (Snowman, 0), (Snowman, 1), (FrozenPond, 0), (Deer, 0)],
         Biome::Desert => &[(Cactus, 0), (Cactus, 1), (Palm, 0), (Mesa, 0), (Tumbleweed, 0), (Adobe, 0), (Cow, 2)],
         Biome::Coast => &[(Palm, 0), (Lighthouse, 0), (BeachUmbrella, 0), (BeachUmbrella, 1), (Boat, 0), (Boat, 1), (Cottage, 2), (Sheep, 0)],
+        Biome::Forest => &[(TallTree, 0), (TallTree, 1), (Spruce, 0), (Spruce, 1), (Birch, 0), (LogPile, 0), (SkiCabin, 0), (Deer, 0)],
     };
     v.extend_from_slice(special);
     v

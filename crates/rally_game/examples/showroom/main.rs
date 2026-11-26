@@ -59,6 +59,7 @@ fn paint_of(car: usize) -> usize {
         5 => 1,
         6 => 6,
         7 => 0,
+        8 => 1,
         _ => car % 4,
     }
 }
@@ -220,7 +221,7 @@ async fn main() {
                 let cars: Vec<usize> = match only {
                     Some(c) => vec![c],
                     None if std::env::var("CIRCUIT").is_ok() => vec![5, 6, 7],
-                    None => (0..5).collect(),
+                    None => vec![0, 1, 2, 3, 4, 8],
                 };
                 let n = cars.len() as f32;
 

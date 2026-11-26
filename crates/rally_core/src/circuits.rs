@@ -35,7 +35,7 @@ fn def(id: &str, name: &str, blurb: &str, seed: u64, biome: Biome, size: u8, dif
 }
 
 pub fn circuits() -> Vec<CircuitDef> {
-    use Biome::{Autumn, Coast, Desert, Meadow};
+    use Biome::{Autumn, Coast, Desert, Forest, Meadow};
     vec![
         def("circuit-meadow-sprint", "Daisy Park", "A short, punchy club circuit between the flower fields.", 7101, Meadow, 0, 1),
         def("circuit-meadow-gp", "Meadowbrook Grand Prix", "Long straights, a tight hairpin and fast esses.", 7102, Meadow, 1, 1),
@@ -47,6 +47,8 @@ pub fn circuits() -> Vec<CircuitDef> {
         def("circuit-meadow-ring", "Hillside Ring", "A rolling old-school ring road over the meadow hills.", 7402, Meadow, 2, 1),
         def("circuit-coast-ring", "Clifftop Ring", "Endless clifftop sweepers and a banked carousel.", 7403, Coast, 2, 2),
         def("circuit-meadow-nordring", "Wolfsthal Nordring", "Twenty kilometres of the green hell: narrow, hilly, blind brows that throw you in the air, two banked carousels and barriers right at the edge. Learn it, or it learns you.", 7501, Meadow, 3, 2),
+        def("circuit-forest-gp", "Sudety Grand Prix", "A mountain GP circuit cut through tall beech and spruce woods, with a dive into the valley.", 7601, Forest, 1, 2),
+        def("circuit-forest-ring", "Black Forest Ring", "Ten kilometres of forest ring: blind crests under the canopy, cambered sweepers and a long valley straight.", 7602, Forest, 2, 2),
     ]
 }
 

@@ -9,9 +9,12 @@ pub enum Biome {
     Snow,
     Desert,
     Coast,
+    /// European mountain forest: narrow tarmac through tall beech and spruce woods
+    Forest,
 }
 
-pub const ALL_BIOMES: [Biome; 5] = [Biome::Meadow, Biome::Autumn, Biome::Snow, Biome::Desert, Biome::Coast];
+/// Random-biome picks (`seed % 5`) only draw from the first five so old seeds keep their biome.
+pub const ALL_BIOMES: [Biome; 6] = [Biome::Meadow, Biome::Autumn, Biome::Snow, Biome::Desert, Biome::Coast, Biome::Forest];
 
 #[derive(Clone, Debug)]
 pub struct BiomeStyle {
@@ -167,6 +170,31 @@ impl Biome {
                 hill_freq: 1.0 / 240.0,
                 has_water: true,
                 tree_density: 0.4,
+            },
+            Biome::Forest => BiomeStyle {
+                name: "Mountain Forest",
+                sky_top: [0.46, 0.58, 0.74],
+                sky_horizon: [0.80, 0.84, 0.86],
+                fog: [0.70, 0.76, 0.78],
+                fog_density: 0.0050,
+                sun_dir: [-0.35, 0.6, -0.5],
+                sun_color: [1.0, 0.95, 0.86],
+                ambient: [0.42, 0.46, 0.50],
+                ground_a: [0.38, 0.55, 0.26],
+                ground_b: [0.40, 0.50, 0.27],
+                cliff: [0.47, 0.45, 0.42],
+                road: [0.30, 0.30, 0.32],
+                road_edge: [0.40, 0.38, 0.34],
+                shoulder: [0.40, 0.40, 0.30],
+                water: [0.28, 0.45, 0.50],
+                leaves: [[0.32, 0.50, 0.22], [0.45, 0.58, 0.26], [0.18, 0.34, 0.24]],
+                trunk: [0.34, 0.30, 0.27],
+                road_surface: Surface::Asphalt,
+                offroad_surface: Surface::Grass,
+                hill_amp: 42.0,
+                hill_freq: 1.0 / 220.0,
+                has_water: true,
+                tree_density: 1.0,
             },
         }
     }

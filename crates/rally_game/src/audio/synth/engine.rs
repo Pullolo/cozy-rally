@@ -134,7 +134,8 @@ pub fn profile(kind: u8) -> Profile {
             blip: 0.3,
         },
         // Blossom: peppy turbo 4-cylinder hot hatch (brighter and smoother than Thistle)
-        4 => Profile {
+        // (Kestrel shares it: turbo 4-cylinder rally hatch)
+        4 | 8 => Profile {
             cyl: 4,
             offsets: even(4),
             amps: cyl_arr([1.0, 0.95, 0.98, 0.93]),

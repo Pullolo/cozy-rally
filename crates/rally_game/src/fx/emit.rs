@@ -934,7 +934,7 @@ impl Fx {
         });
         let style = &world.track.style;
         match best.map(|b| (b.1, b.2, b.3)) {
-            Some((PropKind::Tree | PropKind::Pine | PropKind::Palm | PropKind::Bush, ppos, scale)) => {
+            Some((PropKind::Tree | PropKind::Pine | PropKind::Palm | PropKind::Bush | PropKind::TallTree | PropKind::Spruce, ppos, scale)) => {
                 let bush = matches!(best.unwrap().1, PropKind::Bush);
                 let n = (14.0 + 26.0 * k) as usize;
                 for _ in 0..n {

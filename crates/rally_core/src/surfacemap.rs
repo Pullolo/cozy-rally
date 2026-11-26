@@ -251,7 +251,7 @@ pub fn plan_ex(biome: Biome, mode: SurfaceMode, difficulty: u8, features: &[Feat
         SurfaceMode::Mixed => {
             let loose = match biome {
                 Biome::Meadow | Biome::Coast => Surface::Gravel,
-                Biome::Autumn | Biome::Desert => Surface::Dirt,
+                Biome::Autumn | Biome::Desert | Biome::Forest => Surface::Dirt,
                 Biome::Snow => Surface::Snow,
             };
             let changes = if open.is_some() { ((span_len / 900.0) as usize / 2 * 2).max(4) } else if len > 2200.0 { 6 } else { 4 };
@@ -331,6 +331,8 @@ pub fn plan_ex(biome: Biome, mode: SurfaceMode, difficulty: u8, features: &[Feat
     let patch_surface = match biome {
         Biome::Snow => Surface::Ice,
         Biome::Autumn | Biome::Meadow => Surface::Mud,
+        // corner-cutting dirt dragged onto the tarmac
+        Biome::Forest => Surface::Dirt,
         Biome::Desert | Biome::Coast => Surface::Sand,
     };
     let full = [match biome {
@@ -338,6 +340,7 @@ pub fn plan_ex(biome: Biome, mode: SurfaceMode, difficulty: u8, features: &[Feat
         Biome::Desert => [1, 3, 4],
         Biome::Meadow => [0, 1, 2],
         Biome::Coast => [0, 0, 1],
+        Biome::Forest => [1, 2, 3],
     }][0];
     let mut count = match mode {
         SurfaceMode::BiomeDefault | SurfaceMode::Mixed => full[d],

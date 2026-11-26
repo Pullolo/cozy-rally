@@ -54,13 +54,14 @@ fn population(b: Biome) -> &'static [(Group, u16)] {
         Biome::Snow => &[(Group::Snow, 360), (Group::Diamond, 40)],
         Biome::Desert => &[(Group::Mote, 70), (Group::Tumbleweed, 5), (Group::Butterfly, 2)],
         Biome::Coast => &[(Group::Sparkle, 120), (Group::Gull, 8), (Group::Petal, 30), (Group::Butterfly, 4)],
+        Biome::Forest => &[(Group::Leaf, 60), (Group::Firefly, 10), (Group::Butterfly, 2), (Group::Sparkle, 6)],
     }
 }
 
 fn near_tree(track: &Track, p: Vec3, r: f32) -> Option<Vec3> {
     let mut best: Option<(f32, Vec3)> = None;
     track.for_each_prop_near(p, r, |pr| {
-        if matches!(pr.kind, PropKind::Tree | PropKind::Pine | PropKind::Bush | PropKind::Palm) {
+        if matches!(pr.kind, PropKind::Tree | PropKind::Pine | PropKind::Bush | PropKind::Palm | PropKind::TallTree | PropKind::Spruce) {
             let d = pr.pos.distance_squared(p);
             if best.is_none_or(|b| d < b.0) {
                 best = Some((d, pr.pos));

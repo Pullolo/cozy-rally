@@ -97,8 +97,8 @@ Online test: run `rally_server --port 27999`, then two game instances with
 `COZY_ONLINE=127.0.0.1:27999 COZY_NAME=Alice COZY_ONLINE_LEAD=2` (leader: picks a 1-lap race and
 starts once 2 are in) and `COZY_ONLINE=127.0.0.1:27999 COZY_NAME=Bob`, plus `COZY_AUTOPLAY=1`
 and separate `COZY_SETTINGS` files.
-Other env hooks: `COZY_SPLIT=1` (2 players), `COZY_BIOME=0..5` (0 random, 1 Meadow, 2 Autumn,
-3 Snow, 4 Desert, 5 Coast), `COZY_SCREEN=title|setup|help|race`, `COZY_MSAA=1`.
+Other env hooks: `COZY_SPLIT=1` (2 players), `COZY_BIOME=0..6` (0 random, 1 Meadow, 2 Autumn,
+3 Snow, 4 Desert, 5 Coast, 6 Mountain Forest), `COZY_SCREEN=title|setup|help|race`, `COZY_MSAA=1`.
 Software GL (llvmpipe) is slow — a few FPS is normal under Xvfb. **Look at your screenshots**
 (open the PNGs) to judge visual work; it's the only way to know it looks good.
 

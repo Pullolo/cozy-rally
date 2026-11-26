@@ -501,6 +501,56 @@ pub fn car_specs() -> Vec<CarSpec> {
             class: CarClass::Circuit,
             tyre: TyreType::Slick,
         },
+        CarSpec {
+            id: 8,
+            name: "Kestrel",
+            blurb: "Wide-body turbo rally hatch. Sharp turn-in, huge grip, a proper works car.",
+            mass: 1190.0,
+            half_extents: Vec3::new(0.9, 0.6, 2.0),
+            inertia_scale: Vec3::new(1.0, 0.92, 1.0),
+            cg_to_front: 1.2,
+            cg_to_rear: 1.28,
+            half_track: 0.82,
+            mount_height: -0.03,
+            wheel_radius: 0.32,
+            wheel_width: 0.23,
+            susp_rest: 0.40,
+            susp_travel: 0.29,
+            spring_k: 37000.0,
+            damp_bump: 3000.0,
+            damp_rebound: 4000.0,
+            arb_front: 10000.0,
+            arb_rear: 9500.0,
+            tire_grip: 1.15,
+            peak_slip_angle: 0.15,
+            rear_grip_bias: 0.99,
+            max_steer: 0.62,
+            drivetrain: Drivetrain::Awd,
+            awd_front_split: 0.3,
+            // 1.6 turbo with a restrictor: big mid-range torque
+            peak_torque: 330.0,
+            peak_rpm: 4200.0,
+            idle_rpm: 950.0,
+            redline: 7300.0,
+            gears: &[2.8, 1.95, 1.48, 1.18, 0.97, 0.82],
+            final_drive: 4.6,
+            reverse_ratio: 3.2,
+            engine_inertia: 0.13,
+            lsd: 0.4,
+            ai_grip: 0.89,
+            aero_front: 0.5,
+            shift_time: 0.15,
+            brake_force: 15500.0,
+            brake_bias_front: 0.63,
+            handbrake_force: 7000.0,
+            drag: 0.7,
+            // big roof wing and splitter
+            downforce: 2.0,
+            assist: 0.62,
+            color: [0.35, 0.62, 0.95],
+            class: CarClass::Rally,
+            tyre: TyreType::Rally,
+        },
     ]
 }
 
@@ -1470,7 +1520,7 @@ pub fn tyre_surface_factor(tyre: TyreType, p: &SurfaceProps, wetness: f32) -> f3
     match tyre {
         TyreType::Rally => 1.0,
         TyreType::Slick => {
-            let loose = (p.bumpiness / 0.01).clamp(0.0, 1.0);
+            let loose = p.looseness();
             let icy = ((0.5 - p.grip) / 0.2).clamp(0.0, 1.0);
             (1.0 - 0.68 * loose - 0.4 * icy).max(0.28) * (1.0 - 0.24 * wetness.clamp(0.0, 1.0))
         }
@@ -1530,7 +1580,7 @@ pub fn wheel_ground(track: &Track, contact: Vec3, hint: Option<usize>) -> (Surfa
 /// (so it blends across surface transitions): ~0.10 on tarmac, ~0.15 on loose surfaces where
 /// the tyre digs in, lower on ice.
 pub fn peak_slip_ratio(p: &SurfaceProps) -> f32 {
-    let loose = (p.bumpiness / 0.01).clamp(0.0, 1.0);
+    let loose = p.looseness();
     let icy = ((0.5 - p.grip) / 0.2).clamp(0.0, 1.0);
     0.10 + 0.05 * loose - 0.02 * icy
 }

@@ -65,6 +65,7 @@ pub fn generate(inp: &ConditionsInput) -> (StageConditions, Vec<(f32, f32, Weath
         Biome::Snow => 0.45,
         Biome::Desert => 0.05,
         Biome::Coast => 0.25,
+        Biome::Forest => 0.4,
     };
     let base_wind = match inp.biome {
         Biome::Coast => rng.range(4.0, 6.5),
@@ -165,7 +166,7 @@ pub fn generate(inp: &ConditionsInput) -> (StageConditions, Vec<(f32, f32, Weath
     let count = (road_len / step).ceil() as usize + 1;
     let mut keys: Vec<ConditionsKey> = Vec::with_capacity(count);
     let mut wet: f32 = match inp.biome {
-        Biome::Autumn => rng.range(0.0, 0.25), // damp woods
+        Biome::Autumn | Biome::Forest => rng.range(0.0, 0.25), // damp woods
         Biome::Coast => rng.range(0.0, 0.15),
         _ => 0.0,
     };
