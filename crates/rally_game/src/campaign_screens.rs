@@ -297,8 +297,44 @@ fn surface_name(def: &StageDef) -> &'static str {
     ["Biome mix", "Gravel", "Tarmac", "Snow", "Mixed"][i.min(4)]
 }
 
+/// Small track silhouette (setup screen card): road line, start (and finish) dot. `alpha`
+/// fades a stale preview while the new one is built.
+pub(crate) fn draw_mini_map(track: &Track, x: f32, y: f32, w: f32, h: f32, alpha: f32) {
+    let s = scale();
+    let looped = track.is_loop();
+    let i0 = track.start_index();
+    let i1 = if looped { track.samples.len() } else { track.finish_index() };
+    if i1 <= i0 + 2 {
+        return;
+    }
+    let pts: Vec<Vec2> = (i0..=i1).step_by(3).map(|i| i % track.samples.len()).map(|i| vec2(track.samples[i].pos.x, track.samples[i].pos.z)).collect();
+    let (mut min, mut max) = (vec2(f32::MAX, f32::MAX), vec2(f32::MIN, f32::MIN));
+    for p in &pts {
+        min = min.min(*p);
+        max = max.max(*p);
+    }
+    let ext = max - min;
+    let pad = 12.0 * s;
+    let sc = ((w - 2.0 * pad) / ext.x.max(1.0)).min((h - 2.0 * pad) / ext.y.max(1.0));
+    let off = vec2(x + (w - ext.x * sc) * 0.5, y + (h - ext.y * sc) * 0.5);
+    let to = |p: Vec2| off + (p - min) * sc;
+    for (wd, col) in [(5.0 * s, with_alpha(INK, 0.55 * alpha)), (2.6 * s, with_alpha(Color::new(1.0, 0.96, 0.88, 1.0), alpha))] {
+        for i in 1..pts.len() {
+            let (a, b) = (to(pts[i - 1]), to(pts[i]));
+            draw_line(a.x, a.y, b.x, b.y, wd, col);
+            circle(b.x, b.y, wd * 0.5, col);
+        }
+    }
+    let a = to(pts[0]);
+    circle(a.x, a.y, 5.0 * s, with_alpha(MINT, alpha));
+    if !looped {
+        let b = to(pts[pts.len() - 1]);
+        circle(b.x, b.y, 5.0 * s, with_alpha(PEACH, alpha));
+    }
+}
+
 /// Top-down stage silhouette from start to finish, tinted by weather, with split markers
-fn draw_stage_map(track: &Track, x: f32, y: f32, w: f32, h: f32, reveal: f32) {
+pub(crate) fn draw_stage_map(track: &Track, x: f32, y: f32, w: f32, h: f32, reveal: f32) {
     let s = scale();
     // circuits: the whole loop, closed back to the start line
     let looped = track.is_loop();
@@ -360,7 +396,7 @@ fn draw_stage_map(track: &Track, x: f32, y: f32, w: f32, h: f32, reveal: f32) {
 }
 
 /// Elevation profile + weather timeline under the map
-fn draw_profile(track: &Track, x: f32, y: f32, w: f32, h: f32) {
+pub(crate) fn draw_profile(track: &Track, x: f32, y: f32, w: f32, h: f32) {
     let s = scale();
     let i0 = track.start_index();
     let i1 = if track.is_loop() { track.samples.len() - 1 } else { track.finish_index().max(i0 + 2) };

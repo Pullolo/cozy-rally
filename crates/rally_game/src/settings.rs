@@ -59,10 +59,16 @@ pub struct Settings {
     pub car_circuit: usize,
     /// On-screen steering style on phones (index into touch::STEER_NAMES)
     pub touch_steer: usize,
+    /// Rally route: 0 = loop (laps), 1 = stage A to B
+    pub rally_route: usize,
+    /// Stage length (index into main.rs STAGE_KM)
+    pub stage_len: usize,
+    /// Race weather (index into main.rs WEATHERS)
+    pub weather: usize,
 }
 
 impl Settings {
-    pub const DEFAULT: Settings = Settings { master: 0.8, music: 0.7, sfx: 0.9, assists: 1, camera: 0, fullscreen: false, show_fps: false, quality: if crate::platform::MOBILE { Quality::Low } else { Quality::High }, show_traction: !crate::platform::MOBILE, pace_notes: true, racing_line: 0, pace_notes_circuit: false, discipline: 0, circuit: 1, circuit_size: 1, car_rally: 2, car_circuit: 5, touch_steer: 0 };
+    pub const DEFAULT: Settings = Settings { master: 0.8, music: 0.7, sfx: 0.9, assists: 1, camera: 0, fullscreen: false, show_fps: false, quality: if crate::platform::MOBILE { Quality::Low } else { Quality::High }, show_traction: !crate::platform::MOBILE, pace_notes: true, racing_line: 0, pace_notes_circuit: false, discipline: 0, circuit: 1, circuit_size: 1, car_rally: 2, car_circuit: 5, touch_steer: 0, rally_route: 0, stage_len: 1, weather: 0 };
 }
 
 impl Default for Settings {
@@ -155,6 +161,9 @@ fn parse(text: &str) -> Settings {
             "racing_line" => s.racing_line = v.parse::<usize>().unwrap_or(s.racing_line).min(RACING_LINE_NAMES.len() - 1),
             "touch_steer" => s.touch_steer = v.parse::<usize>().unwrap_or(0).min(crate::touch::STEER_NAMES.len() - 1),
             "quality" => s.quality = if v.eq_ignore_ascii_case("low") { Quality::Low } else { Quality::High },
+            "rally_route" => s.rally_route = v.parse::<usize>().unwrap_or(0).min(1),
+            "stage_len" => s.stage_len = v.parse::<usize>().unwrap_or(s.stage_len),
+            "weather" => s.weather = v.parse::<usize>().unwrap_or(0),
             _ => {}
         }
     }
@@ -163,7 +172,7 @@ fn parse(text: &str) -> Settings {
 
 fn serialize(s: &Settings) -> String {
     format!(
-        "# Cozy Rally settings\nmaster={:.2}\nmusic={:.2}\nsfx={:.2}\nassists={}\ncamera={}\nfullscreen={}\nshow_fps={}\nshow_traction={}\npace_notes={}\nracing_line={}\npace_notes_circuit={}\ndiscipline={}\ncircuit={}\ncircuit_size={}\ncar_rally={}\ncar_circuit={}\ntouch_steer={}\nquality={}\n",
+        "# Cozy Rally settings\nmaster={:.2}\nmusic={:.2}\nsfx={:.2}\nassists={}\ncamera={}\nfullscreen={}\nshow_fps={}\nshow_traction={}\npace_notes={}\nracing_line={}\npace_notes_circuit={}\ndiscipline={}\ncircuit={}\ncircuit_size={}\ncar_rally={}\ncar_circuit={}\ntouch_steer={}\nquality={}\nrally_route={}\nstage_len={}\nweather={}\n",
         s.master,
         s.music,
         s.sfx,
@@ -181,7 +190,10 @@ fn serialize(s: &Settings) -> String {
         s.car_rally,
         s.car_circuit,
         s.touch_steer,
-        s.quality.name().to_lowercase()
+        s.quality.name().to_lowercase(),
+        s.rally_route,
+        s.stage_len,
+        s.weather
     )
 }
 
@@ -212,7 +224,7 @@ mod tests {
     use super::*;
     #[test]
     fn roundtrip() {
-        let s = Settings { master: 0.3, music: 0.0, sfx: 1.0, assists: 3, camera: 2, fullscreen: true, show_fps: true, quality: Quality::Low, show_traction: false, pace_notes: false, racing_line: 2, pace_notes_circuit: true, discipline: 1, circuit: 3, circuit_size: 2, car_rally: 1, car_circuit: 7, touch_steer: 1 };
+        let s = Settings { master: 0.3, music: 0.0, sfx: 1.0, assists: 3, camera: 2, fullscreen: true, show_fps: true, quality: Quality::Low, show_traction: false, pace_notes: false, racing_line: 2, pace_notes_circuit: true, discipline: 1, circuit: 3, circuit_size: 2, car_rally: 1, car_circuit: 7, touch_steer: 1, rally_route: 1, stage_len: 2, weather: 5 };
         assert_eq!(parse(&serialize(&s)), s);
         assert_eq!(parse("garbage\nmaster=nan\nassists=99"), Settings { assists: 3, ..Settings::DEFAULT });
     }

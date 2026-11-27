@@ -73,7 +73,11 @@ crates/rally_game/   macroquad app
   audio.rs         audio facade (API used by the game)
   fx.rs            particle/effects system (owned by RaceSession)
   online.rs        Online screen (connect form + lobby), OnlineRace: feeds NetEvents into the
-                   RaceSession (pre_update / post_update around RaceSession::update)
+                   RaceSession (pre_update / post_update around RaceSession::update). The leader
+                   picks the race in the Setup screen in its online mode (`setup_for_online`:
+                   rules column, big map, "Set race"); RaceSettings carries the rules (contact,
+                   forced assists, same car) that `take_config` applies on every client
+  track_preview.rs background Track::generate of the setup screen's options (setup map/card)
   (circuits)       floodlit zones: PropKind::LampPost placed by track.rs `lamp_zones` (pit straight +
                    slow corners), lit by night.rs (nearest masts become spot lights, faded by rank)
   night.rs         night races: per-car headlamps -> gpu.set_lights (MAX_LIGHTS spot lights,
@@ -115,7 +119,9 @@ Online test: run `rally_server --port 27999`, then two game instances with
 starts once 2 are in) and `COZY_ONLINE=127.0.0.1:27999 COZY_NAME=Bob`, plus `COZY_AUTOPLAY=1`
 and separate `COZY_SETTINGS` files.
 Other env hooks: `COZY_SPLIT=1` (2 players), `COZY_NO_HUD=1` (clean frames for screenshots: no HUD, touch widgets or racing line), `COZY_BIOME=0..7` (0 random, 1 Meadow, 2 Autumn,
-3 Snow, 4 Desert, 5 Coast, 6 Mountain Forest, 7 Snowy Taiga), `COZY_SCREEN=title|setup|help|race|campaign|stage_intro|stage`, `COZY_MSAA=1`,
+3 Snow, 4 Desert, 5 Coast, 6 Mountain Forest, 7 Snowy Taiga), `COZY_SCREEN=title|setup|online_setup|help|race|campaign|stage_intro|stage`, `COZY_MSAA=1`,
+`COZY_ROUTE=stage|loop` + `COZY_STAGE_LEN=0..2` (quick-race rally route), `COZY_ONLINE_PICK=1` (the
+`COZY_ONLINE_LEAD` leader only sets the race), `COZY_ONLINE_RULES=1` (that race: Sim assists, same car),
 `COZY_CAMPAIGN=circuit` (campaign screen on the circuit season), `COZY_CAMPAIGN_STAGE=<event id>`,
 `COZY_UNLOCK_ALL=1`, `COZY_WEATHER_CLOCK=<s>` (start time-based weather that far in, e.g. a mid-race
 downpour), `COZY_WEATHER=...|downpour|thickfog|blackice`.

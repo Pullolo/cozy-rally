@@ -134,7 +134,15 @@ impl Online {
     pub fn take_config(&mut self, assist_level: f32) -> Option<SessionConfig> {
         let s = self.pending_start.take()?;
         let my_id = self.client.as_ref()?.my_id;
-        let me = s.grid.iter().find(|g| g.id == my_id)?;
+        // race rules: same car for everyone, assists the leader fixed for everyone
+        let mut grid = s.grid.clone();
+        if let Some(c) = s.settings.same_car.filter(|c| (*c as usize) < rally_core::vehicle::car_specs().len()) {
+            for g in grid.iter_mut() {
+                g.car = c;
+            }
+        }
+        let assist_level = s.settings.assists.and_then(|a| crate::ASSISTS.get(a as usize)).map_or(assist_level, |a| a.1);
+        let me = grid.iter().find(|g| g.id == my_id)?;
         let player = PlayerSlot { car: me.car as usize, paint: me.paint as usize, scheme: Scheme::Both, name: me.name.clone() };
         let slots: Vec<PlayerId> = s.grid.iter().map(|g| g.id).collect();
         self.race = Some(OnlineRace { race_id: s.race_id, my_id, remotes: slots.iter().map(|&id| if id == my_id { None } else { Some(RemoteCar::default()) }).collect(), slots, go: false, sent_finish: false, send_acc: 0.0, official: None });
@@ -146,7 +154,7 @@ impl Online {
             ai_skill: 0.7,
             assist_level,
             mode: crate::gameplay::GameMode::Race,
-            online: Some(OnlineGrid { entries: s.grid.clone(), my_id, contact: s.settings.contact }),
+            online: Some(OnlineGrid { entries: grid, my_id, contact: s.settings.contact }),
         })
     }
 
@@ -277,12 +285,41 @@ fn car_name(car: u8) -> &'static str {
     rally_core::vehicle::car_specs().get(car as usize).map_or("?", |c| c.name)
 }
 
-pub fn race_summary(s: &RaceSettings) -> String {
+/// Lobby summary of the picked race: (the track, the rules)
+pub fn race_summary(s: &RaceSettings) -> (String, String) {
+    use rally_core::track::{Discipline, LayoutKind};
     let t = &s.track;
-    let kind = if t.discipline == rally_core::track::Discipline::Circuit { "Circuit" } else { "Rally" };
-    let biome = t.biome.map_or("Random scenery".to_string(), |b| format!("{b:?}"));
-    let kind = if t.night { format!("Night {}", kind.to_lowercase()) } else { kind.to_string() };
-    format!("{kind}  -  {biome}  -  {} lap{}  -  seed {}  -  {}", s.laps, if s.laps == 1 { "" } else { "s" }, t.seed, if s.contact { "contact on" } else { "ghost cars" })
+    let kind = match (t.discipline, t.layout) {
+        (Discipline::Circuit, _) => format!("Circuit, {} lap{}", s.laps, if s.laps == 1 { "" } else { "s" }),
+        (_, LayoutKind::PointToPoint { length_m }) => format!("Rally stage A to B, {:.0} km", length_m / 1000.0),
+        _ => format!("Rally loop, {} lap{}", s.laps, if s.laps == 1 { "" } else { "s" }),
+    };
+    let biome = t.biome.map_or("surprise scenery".to_string(), |b| b.style().name.to_string());
+    let weather = crate::WEATHERS.iter().find(|w| w.1 == t.conditions).map_or("", |w| w.0);
+    let mut track = format!("{kind}  -  {biome}");
+    if !weather.is_empty() && t.conditions != rally_core::weather::ConditionsSpec::BiomeDefault {
+        track += &format!("  -  {}", weather.to_lowercase());
+    }
+    if t.night {
+        track += "  -  night";
+    }
+    let mut rules = vec![if s.contact { "Contact on".to_string() } else { "Ghost cars".to_string() }];
+    rules.push(match s.assists.and_then(|a| crate::ASSISTS.get(a as usize)) {
+        Some(a) => format!("everyone on {} assists", a.0),
+        None => "own assists".to_string(),
+    });
+    rules.push(match s.same_car {
+        Some(c) => format!("everyone in a {}", car_name(c)),
+        None => "free car choice".to_string(),
+    });
+    rules.push(format!("seed {}", t.seed));
+    (track, rules.join("  -  "))
+}
+
+/// Centred text shrunk to fit `w`
+fn text_mid_fit(t: &str, cx: f32, cy: f32, size: f32, w: f32, col: Color) {
+    let fs = size.min(w / text_size(t, size).x.max(1.0) * size);
+    text_mid(t, cx, cy, fs, col);
 }
 
 /// Single-line text box. Click (or Enter on it) to type; Enter / Esc / click outside to finish.
@@ -429,24 +466,33 @@ impl Online {
         let my_ready = c.me().is_some_and(|m| m.ready);
         let all_ready = c.players.iter().all(|p| p.ready || p.id == c.leader);
         let mut fy = y + 100.0 * s + row * MAX_PLAYERS as f32 + 8.0 * s;
-        let line = match &settings {
+        let (line, rules) = match &settings {
             Some(st) => race_summary(st),
-            None if leader => "Pick the race with \"Race setup\"".into(),
-            None => "Waiting for the leader to pick a race".into(),
+            None if leader => ("Pick the track and rules with \"Choose race\"".into(), String::new()),
+            None => ("Waiting for the leader to pick a race".into(), String::new()),
         };
-        text_mid(&line, cx, fy + 8.0 * s, 17.0 * s, INK);
-        if race_running {
-            text_mid("A race is running - you'll join the next one", cx, fy + 32.0 * s, 17.0 * s, BERRY);
+        text_mid_fit(&line, cx, fy + 8.0 * s, 18.0 * s, iw, INK);
+        if !rules.is_empty() {
+            text_mid_fit(&rules, cx, fy + 31.0 * s, 16.0 * s, iw, INK_SOFT);
         }
-        fy += 46.0 * s;
+        if race_running {
+            text_mid("A race is running - you'll join the next one", cx, fy + 54.0 * s, 17.0 * s, BERRY);
+        }
+        fy += if race_running { 70.0 } else { 52.0 } * s;
+        // the leader's rules can fix the car for everyone
+        let same_car = settings.as_ref().and_then(|st| st.same_car).map(|c| c as usize);
         // the car list depends on the race (rally cars or circuit cars): only once it is picked
         let has_race = settings.is_some();
         focus.begin(if has_race { 2 } else { 0 } + if leader { 2 } else { 0 } + if leader || has_race { 2 } else { 1 });
         let half = (iw - 16.0 * s) * 0.5;
         if has_race {
             let pos = allowed.iter().position(|x| x == car).unwrap_or(0);
-            let d = selector(focus, "Car", car_name(*car as u8), ix, fy, half, rh, PEACH);
-            if d != 0 && !allowed.is_empty() {
+            if let Some(c) = same_car {
+                *car = c;
+            }
+            let label = if same_car.is_some() { format!("{} (all)", car_name(*car as u8)) } else { car_name(*car as u8).to_string() };
+            let d = selector(focus, "Car", &label, ix, fy, half, rh, PEACH);
+            if d != 0 && !allowed.is_empty() && same_car.is_none() {
                 *car = allowed[(pos as i32 + d).rem_euclid(allowed.len() as i32) as usize];
             }
             let d = selector_swatch(focus, "Paint", "", Some(rgb3(PAINTS[*paint % PAINTS.len()])), ix + half + 16.0 * s, fy, half, rh, PEACH);
@@ -458,10 +504,10 @@ impl Online {
         fy += rh + 12.0 * s;
         let mut action = LobbyAction::None;
         if leader {
-            if button(focus, "Race setup", ix, fy, half, rh, SKY) {
+            if button(focus, if has_race { "Change race" } else { "Choose race" }, ix, fy, half, rh, SKY) {
                 action = LobbyAction::PickRace;
             }
-            let d = selector(focus, "Cars", if self.contact { "Contact" } else { "Ghosts" }, ix + half + 16.0 * s, fy, half, rh, SKY);
+            let d = selector(focus, "Collisions", if self.contact { "Contact" } else { "Ghosts" }, ix + half + 16.0 * s, fy, half, rh, SKY);
             if d != 0 {
                 self.contact = !self.contact;
                 if let Some(mut st) = settings.clone() {

@@ -52,7 +52,7 @@ fn full_race_flow() {
         }
         (lead.unwrap(), others)
     };
-    let settings = RaceSettings { track: rally_core::track::TrackParams::default(), laps: 2, contact: false };
+    let settings = RaceSettings { track: rally_core::track::TrackParams::default(), laps: 2, contact: false, assists: Some(3), same_car: Some(1) };
     // non-leaders can't start or change settings
     let mut others = others;
     others[0].send(&ClientMsg::SetSettings(settings.clone()));

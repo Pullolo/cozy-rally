@@ -16,7 +16,7 @@ use rally_core::track::TrackParams;
 use serde::{Deserialize, Serialize};
 
 /// Bump whenever a message layout changes; mismatching clients are refused with a clear reason.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 pub const DEFAULT_PORT: u16 = 27420;
 pub const MAX_PLAYERS: usize = 4;
 /// Snapshot send rate per client
@@ -48,6 +48,11 @@ pub struct RaceSettings {
     pub laps: u32,
     /// Cars collide with each other (false = ghosts: never unfair with lag)
     pub contact: bool,
+    /// Assist preset everyone races with (index: Cozy, Normal, Sport, Sim); None = each
+    /// player's own setting
+    pub assists: Option<u8>,
+    /// Everyone drives this car id (paint stays free); None = free choice
+    pub same_car: Option<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
