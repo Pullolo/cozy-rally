@@ -450,7 +450,7 @@ impl PlayerInput {
         };
         ramp(&mut self.throttle, up, 6.0);
         ramp(&mut self.brake, dn, 8.0);
-        let mut out = CarInput { throttle: self.throttle, brake: self.brake, steer: self.steer, handbrake: if hb { 1.0 } else { 0.0 }, reset };
+        let mut out = CarInput { throttle: self.throttle, brake: self.brake, steer: self.steer, handbrake: if hb { 1.0 } else { 0.0 }, reset, ai: false };
         // gamepad
         if let Some(p) = self.pad_state() {
             let mut s = shape_stick(p.lx);

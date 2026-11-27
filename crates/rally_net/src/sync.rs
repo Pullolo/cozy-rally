@@ -58,7 +58,7 @@ impl RemoteCar {
 
     /// Inputs the remote driver is holding
     pub fn input(&self) -> Option<CarInput> {
-        self.last.map(|s| CarInput { throttle: s.throttle, brake: s.brake, steer: s.steer, handbrake: s.handbrake, reset: false })
+        self.last.map(|s| CarInput { throttle: s.throttle, brake: s.brake, steer: s.steer, handbrake: s.handbrake, reset: false, ai: false })
     }
 
     /// Pull `car` toward the predicted remote state. `latency` = one-way delay estimate (s).

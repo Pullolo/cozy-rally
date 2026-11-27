@@ -13,4 +13,8 @@ pub struct CarInput {
     pub handbrake: f32,
     /// Request respawn on track
     pub reset: bool,
+    /// Produced by the AI driver: stability control catches slides early (the AI drives
+    /// clean lines and doesn't drift). Human inputs leave drifting to the driver.
+    #[serde(default)]
+    pub ai: bool,
 }

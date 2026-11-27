@@ -205,7 +205,7 @@ pub fn sample(dt: f32, steer_mode: usize) -> Option<CarInput> {
         ramp(&mut t.throttle, held.gas, 6.0);
         ramp(&mut t.brake, held.brake, 8.0);
         t.held = held;
-        Some(CarInput { throttle: t.throttle, brake: t.brake, steer: t.steer, handbrake: if held.handbrake { 1.0 } else { 0.0 }, reset: held.reset })
+        Some(CarInput { throttle: t.throttle, brake: t.brake, steer: t.steer, handbrake: if held.handbrake { 1.0 } else { 0.0 }, reset: held.reset, ai: false })
     })
 }
 

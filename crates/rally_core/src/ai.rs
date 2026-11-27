@@ -652,7 +652,7 @@ impl AiDriver {
         if reset {
             self.last_s = None;
             self.avoid = 0.0;
-            return CarInput { throttle: 0.0, brake: 0.0, steer: 0.0, handbrake: 0.0, reset: true };
+            return CarInput { throttle: 0.0, brake: 0.0, steer: 0.0, handbrake: 0.0, reset: true, ai: true };
         }
         if self.recover_timer > 0.0 {
             self.recover_timer -= dt;
@@ -660,14 +660,14 @@ impl AiDriver {
                 // give it a chance to drive off before judging again
                 self.no_progress = 0.0;
             }
-            return CarInput { throttle: 0.0, brake: 1.0, steer: self.recover_steer, handbrake: 0.0, reset: false };
+            return CarInput { throttle: 0.0, brake: 1.0, steer: self.recover_steer, handbrake: 0.0, reset: false, ai: true };
         }
         if car.gear < 0 {
             // got into reverse somehow: drive forward
             throttle = throttle.max(0.6);
             brake = 0.0;
         }
-        CarInput { throttle, brake, steer, handbrake: 0.0, reset: false }
+        CarInput { throttle, brake, steer, handbrake: 0.0, reset: false, ai: true }
     }
 }
 
