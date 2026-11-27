@@ -594,6 +594,9 @@ pub struct WheelState {
     pub peak_slip_angle: f32,
     /// Current ABS brake release on this wheel (0..1)
     pub abs_cut: f32,
+    /// Friction of the ground under the tyre relative to dry tarmac-ish (surface x weather x
+    /// compound x aquaplaning): ~1 dry tarmac, ~0.75 wet, ~0.3 ice
+    pub friction: f32,
 }
 
 impl WheelState {
@@ -622,6 +625,14 @@ impl WheelState {
         let lat = (loss * lat_share + scrub).min(1.0);
         let long = loss * long_share;
         if self.slip_ratio >= 0.0 { (lat, long, 0.0) } else { (lat, 0.0, long) }
+    }
+
+    /// 0..1 how much a slide on this ground heats the rubber: tyre smoke and squeal come
+    /// from friction heat, so they fade out on low-friction ground (ice, black ice, standing
+    /// water) where a sliding tyre just glides quietly
+    pub fn squeal_heat(&self) -> f32 {
+        let t = ((self.friction - 0.5) / 0.35).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
     }
 }
 
@@ -1097,6 +1108,7 @@ impl Car {
             let fz_nom = spec.mass * GRAVITY * 0.25;
             let load_k = (1.0 - load_sensitivity(spec.tyre) * (fz / fz_nom - 1.0)).clamp(0.55, 1.1);
             let mu = spec.tire_grip * props.grip * grip_bias * compound * load_k;
+            w.friction = props.grip * compound;
             let max_f = mu * fz;
             let tyre = Tyre { max_f, peak_alpha: spec.peak_slip_angle, peak_kappa: peak_slip_ratio(&props), slide: props.slide_grip, slide_long: props.slide_grip * 0.94 };
             let alpha = v_lat.atan2(v_long.abs().max(3.5));

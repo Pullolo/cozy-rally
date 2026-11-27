@@ -34,14 +34,18 @@ pub fn look_at(track: &Track, s: f32, time: f32) -> WeatherLook {
     }
     let w = track.weather_at(s);
     let snowing = if w.snow { w.precipitation } else { 0.0 };
+    // black ice: a thin white frost on the grass and a glassy sheen on the road
+    let frost = (w.ice * 0.45).min(0.4);
+    let timed = track.conditions.is_timed();
     WeatherLook {
         overcast: w.overcast.clamp(0.0, 1.0),
         fog: w.fog.clamp(0.0, 1.0),
         precip: w.precipitation.clamp(0.0, 1.0),
-        wetness: if w.snow { 0.0 } else { w.wetness.clamp(0.0, 1.0) },
+        wetness: if w.snow { 0.0 } else { w.wetness.max(w.ice * 0.8).clamp(0.0, 1.0) },
         // snowfall whitens the world (biome snow already is white)
-        snow: if track.biome == Biome::Snow { snowing * 0.35 } else { (snowing * 1.3).min(0.85) },
+        snow: (if track.biome == Biome::Snow { snowing * 0.35 } else { (snowing * 1.3).min(0.85) }).max(frost),
         flash: lightning(&w, time),
         dusty: track.biome == Biome::Desert && w.precipitation < 0.1,
+        wet_roads: timed || w.ice > 0.0,
     }
 }

@@ -168,10 +168,18 @@ void main() {
             float up = smoothstep(0.45, 0.92, v_normal.y);
             base = mix(base, vec3(0.94, 0.96, 1.0), params5.x * up * (road ? 0.45 : 0.85));
         }
-        // rain: everything darker and a little shiny (roads carry baked wetness/puddles)
-        if (params5.y > 0.0 && !road) {
-            base *= 1.0 - 0.2 * params5.y;
-            wet_gloss = params5.y * 0.3 * smoothstep(0.3, 0.9, v_normal.y);
+        // rain: everything darker and a little shiny (roads carry baked wetness/puddles;
+        // y > 1.5 = time-based weather, roads are baked dry and get wet here)
+        float wet = params5.y;
+        bool wet_roads = wet > 1.5;
+        if (wet_roads) { wet -= 2.0; }
+        if (wet > 0.0 && !road) {
+            base *= 1.0 - 0.2 * wet;
+            wet_gloss = wet * 0.3 * smoothstep(0.3, 0.9, v_normal.y);
+        }
+        if (wet > 0.0 && road && wet_roads) {
+            base *= 1.0 - 0.32 * wet;
+            wet_gloss = wet * 0.55;
         }
     }
     vec3 to_cam = cam_pos - v_world;

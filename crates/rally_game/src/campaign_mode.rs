@@ -19,7 +19,7 @@ use crate::gameplay::GameMode;
 use crate::input::Scheme;
 use crate::ui::*;
 use macroquad::prelude::*;
-use rally_core::campaign::{campaign, find_stage, LeaderboardBackend, LeaderboardEntry, Medal, MedalTimes, CAMPAIGN_VERSION};
+use rally_core::campaign::{campaign_of, find_stage, CampaignKind, EventKind, LeaderboardBackend, LeaderboardEntry, Medal, MedalTimes, StageDef, CAMPAIGN_VERSION};
 use rally_core::campaign_run::{medal_times as medals_from_reference, reference_run, replay_hash, LocalLeaderboard, REFERENCE_VERSION};
 use rally_core::race::{format_time, RaceEvent};
 use rally_core::world::WorldEvent;
@@ -45,8 +45,17 @@ pub struct StageView {
     pub locked: bool,
     pub medal: Medal,
     pub best: Option<f32>,
-    /// None until computed (call `medal_times(id)`; takes ~0.2-1 s the first time)
+    /// None until computed (call `medal_times(id)`; takes ~0.2-1 s the first time).
+    /// Always None for race events (medals by place)
     pub medal_times: Option<MedalTimes>,
+    /// Race against AI rivals (medals by place) instead of a time trial
+    pub race: bool,
+    pub laps: u32,
+    pub rivals: u8,
+    /// Winning margin a race needs for platinum (s)
+    pub platinum_margin: f32,
+    /// Night event
+    pub night: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -79,6 +88,10 @@ struct Active {
     splits: Vec<f32>,
     flash: Option<(usize, Option<f32>, f64)>,
     done: bool,
+    /// Race events: the event (medal by place)
+    race: Option<StageDef>,
+    /// Won a race: finish time, waiting for second place to cross the line (platinum margin)
+    won_at: Option<f32>,
 }
 
 #[derive(Default)]
@@ -191,8 +204,12 @@ pub fn active_ghost_file() -> Option<PathBuf> {
     dir().map(|d| d.join(format!("ghost_{id}_v{CAMPAIGN_VERSION}.bin")))
 }
 
-/// Medal thresholds for a stage (headless reference run on first use, then cached on disk)
+/// Medal thresholds for a stage (headless reference run on first use, then cached on disk).
+/// None for race events (medals by place).
 pub fn medal_times(id: &str) -> Option<MedalTimes> {
+    if find_stage(id).is_some_and(|s| s.is_race()) {
+        return None;
+    }
     let cached = STATE.with(|s| {
         let mut s = s.borrow_mut();
         ensure_loaded(&mut s);
@@ -226,14 +243,15 @@ fn golds(st: &State, ids: &[String]) -> u32 {
     ids.iter().filter(|id| st.progress.get(*id).is_some_and(|p| p.medal >= Medal::Gold)).count() as u32
 }
 
-/// All chapters with lock state, medals and best times
-pub fn chapters() -> Vec<ChapterView> {
+/// All chapters of a campaign with lock state, medals and best times (golds unlock
+/// chapters within the same campaign)
+pub fn chapters_of(kind: CampaignKind) -> Vec<ChapterView> {
     STATE.with(|s| {
         let mut st = s.borrow_mut();
         ensure_loaded(&mut st);
         let mut out = Vec::new();
         let mut earlier: Vec<String> = Vec::new();
-        for ch in campaign() {
+        for ch in campaign_of(kind) {
             let have = golds(&st, &earlier);
             let unlocked = have >= ch.unlock_golds;
             let stages = ch
@@ -245,14 +263,19 @@ pub fn chapters() -> Vec<ChapterView> {
                         id: sd.id.clone(),
                         name: sd.name.clone(),
                         blurb: sd.blurb.clone(),
-                        km: match sd.params.layout {
-                            rally_core::track::LayoutKind::PointToPoint { length_m } => length_m / 1000.0,
-                            _ => 0.0,
-                        },
+                        km: sd.distance_km(),
                         locked: !unlocked,
                         medal: p.map(|p| p.medal).unwrap_or(Medal::None),
                         best: p.map(|p| p.best_ms as f32 / 1000.0),
-                        medal_times: st.medals.get(&sd.id).map(|r| medals_from_reference(*r)),
+                        medal_times: if sd.is_race() { None } else { st.medals.get(&sd.id).map(|r| medals_from_reference(*r)) },
+                        race: sd.is_race(),
+                        laps: sd.laps,
+                        rivals: match sd.kind {
+                            EventKind::Race { rivals, .. } => rivals,
+                            EventKind::TimeTrial => 0,
+                        },
+                        platinum_margin: sd.platinum_margin(),
+                        night: sd.params.night,
                     }
                 })
                 .collect();
@@ -268,12 +291,16 @@ pub fn start_stage(id: &str, car: usize, paint: usize, assists: (&str, f32)) -> 
     let stage = find_stage(id)?;
     let medals = medal_times(id);
     let car = if stage.cars.is_empty() || stage.cars.contains(&(car as u8)) { car } else { stage.cars[0] as usize };
+    let (ai_count, ai_skill) = match stage.kind {
+        EventKind::Race { rivals, skill } => (rivals as usize, skill),
+        EventKind::TimeTrial => (0, 0.7),
+    };
     let cfg = SessionConfig {
         track: stage.params.clone(),
-        laps: 1,
+        laps: stage.laps.max(1),
         players: vec![PlayerSlot { car, paint, scheme: Scheme::Both, name: "Player 1".into() }],
-        ai_count: 0,
-        ai_skill: 0.7,
+        ai_count,
+        ai_skill,
         assist_level: assists.1,
         mode: GameMode::Campaign,
         online: None,
@@ -282,7 +309,8 @@ pub fn start_stage(id: &str, car: usize, paint: usize, assists: (&str, f32)) -> 
         let mut st = s.borrow_mut();
         ensure_loaded(&mut st);
         let best_splits = st.progress.get(id).map(|p| p.splits_ms.iter().map(|v| *v as f32 / 1000.0).collect()).unwrap_or_default();
-        st.active = Some(Active { id: id.to_string(), assists: assists.0.to_string(), medals, best_splits, splits: Vec::new(), flash: None, done: false });
+        let race = stage.is_race().then(|| stage.clone());
+        st.active = Some(Active { id: id.to_string(), assists: assists.0.to_string(), medals, best_splits, splits: Vec::new(), flash: None, done: false, race, won_at: None });
         st.pending = Some(cfg.clone());
         st.last_result = None;
     });
@@ -311,6 +339,7 @@ pub fn take_restart(current: &SessionConfig) -> bool {
             a.splits.clear();
             a.flash = None;
             a.done = false;
+            a.won_at = None;
         }
         st.pending = Some(current.clone());
         true
@@ -330,11 +359,13 @@ fn now_secs() -> u64 {
 }
 
 /// Record a finished run: progress, leaderboard, result. Returns the result.
-pub fn record_finish(id: &str, assists: &str, car: u8, time: f32, splits: &[f32], medals: Option<MedalTimes>, replay: &[u8]) -> StageResult {
+/// `place_medal`: race events (medal by finishing place) instead of the medal times.
+#[allow(clippy::too_many_arguments)]
+pub fn record_finish(id: &str, assists: &str, car: u8, time: f32, splits: &[f32], medals: Option<MedalTimes>, place_medal: Option<Medal>, replay: &[u8]) -> StageResult {
     STATE.with(|s| {
         let mut st = s.borrow_mut();
         ensure_loaded(&mut st);
-        let medal = medals.map(|m| m.medal_for(time)).unwrap_or(Medal::None);
+        let medal = place_medal.unwrap_or_else(|| medals.map(|m| m.medal_for(time)).unwrap_or(Medal::None));
         let prev = st.progress.get(id).cloned();
         let ms = (time * 1000.0).round() as u32;
         let new_best = prev.as_ref().is_none_or(|p| ms < p.best_ms);
@@ -366,6 +397,20 @@ pub fn record_finish(id: &str, assists: &str, car: u8, time: f32, splits: &[f32]
     })
 }
 
+/// A won race turned out to be won by enough for platinum: upgrade the stored medal
+fn upgrade_medal(id: &str, medal: Medal) {
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        if let Some(p) = st.progress.get_mut(id) {
+            p.medal = p.medal.max(medal);
+        }
+        if let Some(r) = st.last_result.as_mut().filter(|r| r.stage_id == id) {
+            r.medal = r.medal.max(medal);
+        }
+        save(&st);
+    });
+}
+
 /// Per-frame stage logic (from gameplay::frame): splits, finish, restart key
 pub fn frame(sess: &mut RaceSession) {
     if sess.config.mode != GameMode::Campaign || sess.players.is_empty() {
@@ -376,7 +421,8 @@ pub fn frame(sess: &mut RaceSession) {
     }
     let car = sess.players[0].car;
     let clock = sess.world.race.clock;
-    let mut finished: Option<f32> = None;
+    let mut finished: Option<(f32, usize)> = None;
+    let mut second: Option<f32> = None;
     for e in &sess.frame_events {
         match *e {
             WorldEvent::Race(RaceEvent::Checkpoint { car: c }) if c == car => STATE.with(|s| {
@@ -390,18 +436,44 @@ pub fn frame(sess: &mut RaceSession) {
                     }
                 }
             }),
-            WorldEvent::Race(RaceEvent::Finish { car: c, time, .. }) if c == car => finished = Some(time),
+            WorldEvent::Race(RaceEvent::Finish { car: c, time, place }) if c == car => finished = Some((time, place)),
+            WorldEvent::Race(RaceEvent::Finish { car: c, time, place: 2 }) if c != car => second = Some(time),
             _ => {}
         }
     }
-    if let Some(time) = finished {
+    // a won race: platinum once second place is far enough behind (or never arrives)
+    let won = STATE.with(|s| s.borrow().active.as_ref().and_then(|a| a.won_at.map(|t| (a.id.clone(), t, a.race.clone()))));
+    if let Some((id, t_win, Some(def))) = won {
+        let margin = match second {
+            Some(t2) => Some(t2 - t_win),
+            None if sess.is_over() => Some(f32::INFINITY),
+            None => (clock - t_win >= def.platinum_margin()).then_some(clock - t_win),
+        };
+        if let Some(m) = margin {
+            STATE.with(|s| {
+                if let Some(a) = s.borrow_mut().active.as_mut() {
+                    a.won_at = None;
+                }
+            });
+            let medal = def.race_medal(1, m);
+            if medal == Medal::Platinum {
+                upgrade_medal(&id, medal);
+                crate::audio::medal_jingle(medal);
+            }
+        }
+    }
+    if let Some((time, place)) = finished {
         let info = STATE.with(|s| s.borrow_mut().active.as_mut().filter(|a| !a.done).map(|a| {
             a.done = true;
-            (a.id.clone(), a.assists.clone(), a.splits.clone(), a.medals)
+            if a.race.is_some() && place == 1 {
+                a.won_at = Some(time);
+            }
+            (a.id.clone(), a.assists.clone(), a.splits.clone(), a.medals, a.race.clone())
         }));
-        if let Some((id, assists, splits, medals)) = info {
+        if let Some((id, assists, splits, medals, race)) = info {
             let replay = sess.tt.as_ref().and_then(|t| t.tt.last_ghost.as_ref()).map(|g| g.to_bytes()).unwrap_or_default();
-            let r = record_finish(&id, &assists, sess.world.cars[car].spec.id, time, &splits, medals, &replay);
+            let place_medal = race.as_ref().map(|d| d.race_medal(place, 0.0));
+            let r = record_finish(&id, &assists, sess.world.cars[car].spec.id, time, &splits, medals, place_medal, &replay);
             // [audio] medal jingle, then the record fanfare when an earlier best was beaten
             crate::audio::medal_jingle(r.medal);
             if r.new_best && r.previous_best.is_some() {
@@ -421,6 +493,21 @@ pub fn draw_hud(sess: &RaceSession, player: usize, vp: &Viewport) {
     STATE.with(|s| {
         let s = s.borrow();
         let Some(a) = s.active.as_ref() else { return };
+        if let Some(def) = a.race.as_ref() {
+            // race events: what the next medal needs
+            let place = sess.world.race.racers[sess.players[0].car].place.max(1);
+            let (txt, col) = match place {
+                1 => (format!("Platinum: win by {:.0}s", def.platinum_margin()), LAVENDER),
+                2 => ("Gold: win".to_string(), BUTTER),
+                3 => ("Silver: 2nd".to_string(), SKY),
+                _ => ("Bronze: 3rd".to_string(), PEACH),
+            };
+            let w = 210.0 * k;
+            let x = vp.x + vp.w - w - 16.0 * k;
+            let y = vp.y + 16.0 * k + 96.0 * k + 62.0 * k;
+            rounded_rect(x, y, w, 30.0 * k, 10.0 * k, Color::new(col.r, col.g, col.b, 0.85));
+            text_centered(&txt, x + w * 0.5, y + 21.0 * k, 20.0 * k, INK);
+        }
         if let Some(m) = a.medals {
             let target = [(Medal::Platinum, m.platinum, LAVENDER), (Medal::Gold, m.gold, BUTTER), (Medal::Silver, m.silver, SKY), (Medal::Bronze, m.bronze, PEACH)]
                 .into_iter()

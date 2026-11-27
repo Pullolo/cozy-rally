@@ -236,6 +236,8 @@ pub struct WeatherLook {
     pub flash: f32,
     /// fog tints towards dusty sand instead of grey (desert haze)
     pub dusty: bool,
+    /// Roads get wet in the shader too (time-based weather: the baked road is dry)
+    pub wet_roads: bool,
 }
 
 impl WeatherLook {
@@ -270,7 +272,11 @@ impl WeatherLook {
         let grey = dk(grey);
         let murk = (self.fog * 0.95 + oc * 0.5 + self.precip * 0.3).min(1.0);
         e.fog_color = mix3(env.fog_color, grey, murk);
-        e.fog_density = env.fog_density * (1.0 + 7.5 * self.fog + 1.8 * self.precip);
+        // beyond ~0.85 the fog closes in hard: ~25 m at 1 (a race by memory)
+        let thick = ((self.fog - 0.85) / 0.15).clamp(0.0, 1.0);
+        let thick = thick * thick * (3.0 - 2.0 * thick);
+        // (an absolute floor: circuits have much clearer base air than rally stages)
+        e.fog_density = (env.fog_density * (1.0 + 7.5 * self.fog + 1.8 * self.precip + 16.0 * thick)).max(0.1 * thick);
         if self.flash > 0.0 {
             let f = self.flash;
             e.ambient = [e.ambient[0] + 0.55 * f, e.ambient[1] + 0.57 * f, e.ambient[2] + 0.65 * f];
@@ -287,7 +293,16 @@ impl WeatherLook {
         let top_oc = mix3([0.55, 0.59, 0.66], [0.36, 0.39, 0.45], self.precip).map(|c| c * dark);
         let t = mix3(top, top_oc, oc);
         let h = mix3(horizon, env_w.fog_color, (oc * 0.85 + self.fog * 0.6).min(1.0));
-        (t, h)
+        // thick fog: no sky at all, just the murk
+        let m = self.murk();
+        (mix3(t, env_w.fog_color, m), mix3(h, env_w.fog_color, m))
+    }
+
+    /// 0..1 how far fog has closed in beyond normal fog (thick fog / cloudburst spray):
+    /// hides the far hills and the sky too
+    pub fn murk(&self) -> f32 {
+        let t = ((self.fog - 0.8) / 0.2).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
     }
 }
 
@@ -811,7 +826,8 @@ impl Gpu {
             params2: [p.gloss, if blended || p.vertex_gloss { 0.0 } else { 1.0 }, shadow_on * (1.0 - 0.72 * wl.overcast.clamp(0.0, 1.0)), if ao { p.ao_y[1] } else { 0.0 }],
             params3: [p.depth_bias, out_mode, texel_uv, p.ao_y[0]],
             params4: [texel_world, sbias, if p.vertex_gloss && !blended { 1.0 } else { 0.0 }, p.fog_max],
-            params5: [wl.snow, wl.wetness, wl.flash, wl.overcast],
+            // wetness + 2 = roads take it as well (see shader)
+            params5: [wl.snow, wl.wetness + if wl.wet_roads { 2.0 } else { 0.0 }, wl.flash, wl.overcast],
             params6: [if p.unlit > 0.5 { 0.0 } else { self.lights.len() as f32 }, env.night, 0.0, 0.0],
             light_pos: std::array::from_fn(|i| self.lights.get(i).map_or([0.0; 4], |l| [l.pos.x, l.pos.y, l.pos.z, l.range])),
             light_dir: std::array::from_fn(|i| self.lights.get(i).map_or([0.0, -1.0, 0.0, 1.0], |l| [l.dir.x, l.dir.y, l.dir.z, l.cos_outer])),
@@ -954,7 +970,7 @@ impl Gpu {
             fog_color: env.fog_color,
             sun_dir: env.sun_dir.to_array(),
             sun_color: env.sun_color,
-            params: [if self.target == Target::Scene { 1.0 } else { 0.0 }, 0.0011, (1.0 - 0.95 * wl.overcast).max(0.0), env.time],
+            params: [if self.target == Target::Scene { 1.0 } else { 0.0 }, 0.0011, (1.0 - 0.95 * wl.overcast).max(0.0) * (1.0 - wl.murk()), env.time],
             params2: [wl.overcast, wl.flash, wl.precip, env.night],
         };
         ctx.apply_uniforms(UniformsSource::table(&u));

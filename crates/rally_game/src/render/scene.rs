@@ -661,7 +661,8 @@ fn road_vertex_color(look: &RoadLook, kind: StripKind, s: f32, lat: f32, hw: f32
 /// Rain on the road (baked: stage weather depends only on arc length): darker albedo, a wet
 /// sheen, and glossy puddles in the ruts where `Track::puddle_at` says water collects.
 fn wet_road(track: &Track, s: f32, lat: f32, (c, g): ([f32; 3], f32)) -> ([f32; 3], f32) {
-    if track.conditions.keys.is_empty() {
+    // time-based weather changes during the race: the shader wets the road instead
+    if track.conditions.keys.is_empty() || track.conditions.is_timed() {
         return (c, g);
     }
     let w = track.weather_at(s);
@@ -1688,7 +1689,9 @@ impl Scene {
             }
         }
         if !skip("hills") {
-            gpu.draw(&self.hills, view, &env, Mat4::IDENTITY, &DrawParams { unlit: 0.6 * (1.0 - 0.85 * env.night), fog: true, fog_max: 0.62, ..far }, false);
+            // the far hills always show through normal haze, but not through thick fog
+            let fog_max = 0.62 + 0.38 * gpu.weather().murk();
+            gpu.draw(&self.hills, view, &env, Mat4::IDENTITY, &DrawParams { unlit: 0.6 * (1.0 - 0.85 * env.night), fog: true, fog_max, ..far }, false);
         }
         let ground = DrawParams { cast_shadow: false, ..Default::default() };
         if let Some(a) = &self.apron {

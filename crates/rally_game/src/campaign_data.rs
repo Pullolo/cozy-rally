@@ -3,20 +3,32 @@
 //! The screens only talk to this module: stage definitions from `rally_core::campaign`,
 //! progress / medals / boards from the gameplay team's `campaign_mode` (single storage),
 //! plus UI-only helpers (forecast text, weather classification).
-use rally_core::campaign::{campaign, Chapter, Medal, StageDef};
+use rally_core::campaign::{campaign_of, CampaignKind, Chapter, Medal, StageDef};
 use rally_core::conditions::WeatherEvent;
-use rally_core::track::LayoutKind;
 use rally_core::weather::{ConditionsSpec, Weather, WeatherPreset};
+use std::cell::Cell;
 
-pub fn chapters() -> Vec<Chapter> {
-    campaign()
+thread_local! {
+    /// Campaign the screens are showing (Rally stages or the Circuit season)
+    static KIND: Cell<CampaignKind> = const { Cell::new(CampaignKind::Rally) };
 }
 
+/// Campaign the screens show (chapters / views / unlock state follow it)
+pub fn kind() -> CampaignKind {
+    KIND.with(|k| k.get())
+}
+
+pub fn set_kind(k: CampaignKind) {
+    KIND.with(|c| c.set(k));
+}
+
+pub fn chapters() -> Vec<Chapter> {
+    campaign_of(kind())
+}
+
+/// Stage length, or the whole race distance (laps x lap) on circuits
 pub fn stage_length_m(def: &StageDef) -> f32 {
-    match def.params.layout {
-        LayoutKind::PointToPoint { length_m } => length_m,
-        _ => 3000.0,
-    }
+    def.distance_km() * 1000.0
 }
 
 pub fn difficulty_name(d: u8) -> &'static str {
@@ -36,6 +48,10 @@ pub enum WxKind {
     Fog,
     Snow,
     Sand,
+    /// Cloudburst: standing water, spray, aquaplaning
+    Downpour,
+    /// Black ice / frost
+    Ice,
 }
 
 impl WxKind {
@@ -50,13 +66,19 @@ impl WxKind {
             WxKind::Fog => "Fog",
             WxKind::Snow => "Snowfall",
             WxKind::Sand => "Sand storm",
+            WxKind::Downpour => "Downpour",
+            WxKind::Ice => "Black ice",
         }
     }
 }
 
 /// Classify the weather at a point for the HUD chip
 pub fn classify(w: &Weather) -> WxKind {
-    if w.snow && w.precipitation > 0.15 {
+    if w.ice > 0.25 {
+        WxKind::Ice
+    } else if w.water > 0.45 && w.precipitation > 0.6 {
+        WxKind::Downpour
+    } else if w.snow && w.precipitation > 0.15 {
         WxKind::Snow
     } else if w.precipitation > 0.8 {
         WxKind::Storm
@@ -90,12 +112,15 @@ pub fn event_kind(e: WeatherEvent) -> WxKind {
 pub fn forecast(def: &StageDef) -> (WxKind, String) {
     let p = &def.params;
     let biome = p.biome.unwrap_or(rally_core::biome::Biome::Meadow);
+    let night = |t: String| if p.night { format!("Night, {}", t.to_lowercase()) } else { t };
     match p.conditions {
         ConditionsSpec::Fixed(preset) => {
             let k = classify(&preset.weather());
-            (k, if preset == WeatherPreset::Clear { "Fair weather".into() } else { format!("{} all day", k.label()) })
+            (k, night(if preset == WeatherPreset::Clear { if p.night { "Clear skies".into() } else { "Sunny".into() } } else { format!("{} all race", k.label()) }))
         }
-        ConditionsSpec::BiomeDefault => (WxKind::Clear, "Fair weather".into()),
+        // a weather turn is a surprise: the forecast only says it might change
+        ConditionsSpec::Timeline(t) => (classify(&t.from.weather()), night(format!("{}, changeable", if p.night && t.from == WeatherPreset::Clear { "Clear" } else { t.from.name() }))),
+        ConditionsSpec::BiomeDefault => (WxKind::Clear, night("Fair weather".into())),
         ConditionsSpec::Dynamic | ConditionsSpec::Storm => {
             let len = stage_length_m(def);
             let spacing = 20.0;
@@ -131,7 +156,7 @@ pub use crate::campaign_mode::{ChapterView, StageView};
 
 /// Chapters with lock state, medals, best times and (cached) medal targets
 pub fn views() -> Vec<ChapterView> {
-    crate::campaign_mode::chapters()
+    crate::campaign_mode::chapters_of(kind())
 }
 
 /// Gold-or-better medals across the campaign

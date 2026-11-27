@@ -112,7 +112,8 @@ impl TimeTrialState {
 
 /// Create the per-session gameplay state (called from RaceSession::new)
 pub fn session_start(cfg: &SessionConfig, player_cars: &[usize], gpu: &mut Gpu) -> Option<TimeTrialState> {
-    matches!(cfg.mode, GameMode::TimeTrial | GameMode::Campaign).then(|| TimeTrialState::new(cfg, player_cars, gpu))
+    // (campaign races against AI rivals have no ghost)
+    (cfg.mode == GameMode::TimeTrial || (cfg.mode == GameMode::Campaign && cfg.ai_count == 0)).then(|| TimeTrialState::new(cfg, player_cars, gpu))
 }
 
 thread_local! {

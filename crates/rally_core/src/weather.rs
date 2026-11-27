@@ -318,3 +318,36 @@ impl StageConditions {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeline_turns_and_clears() {
+        let c = StageConditions::timeline(WeatherTurn { from: WeatherPreset::Clear, to: WeatherPreset::ThickFog, at: 75, lasts: 0, ramp: 40 });
+        assert!(c.is_timed());
+        assert_eq!(c.at_time(0.0).fog, 0.0);
+        assert!((c.at_time(130.0).fog - 1.0).abs() < 1e-3, "{}", c.at_time(130.0).fog);
+        assert!(c.at_time(2000.0).fog > 0.99, "stays");
+        c.set_clock(130.0);
+        assert!((c.at(5.0).fog - 1.0).abs() < 1e-3);
+        // a passing downpour floods the road, then it drains and dries
+        let d = StageConditions::timeline(WeatherTurn { from: WeatherPreset::Clear, to: WeatherPreset::Downpour, at: 100, lasts: 60, ramp: 20 });
+        assert!(d.at_time(150.0).water > 0.6 && d.at_time(150.0).wetness > 0.9);
+        assert!(d.at_time(400.0).water < 0.05 && d.at_time(400.0).precipitation < 0.01);
+        assert!(d.at_time(230.0).wetness > 0.3, "still wet right after");
+        assert!(d.keys[0].weather.precipitation == 0.0);
+        for k in &d.time_keys {
+            assert!(k.fog.is_finite() && k.wetness.is_finite() && k.water.is_finite());
+        }
+    }
+
+    #[test]
+    fn aquaplaning_bites_at_speed() {
+        assert_eq!(aquaplane_grip(1.0, 10.0, true), 1.0);
+        assert!(aquaplane_grip(1.0, 45.0, true) < 0.3);
+        assert!(aquaplane_grip(1.0, 45.0, false) > aquaplane_grip(1.0, 45.0, true));
+        assert_eq!(aquaplane_grip(0.0, 80.0, true), 1.0);
+    }
+}

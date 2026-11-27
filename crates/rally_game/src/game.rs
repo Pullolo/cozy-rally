@@ -134,6 +134,8 @@ impl RaceSession {
         }
         let mut world = World::new(track.clone(), &racers, config.laps);
         world.remote_contact = config.online.as_ref().is_some_and(|g| g.contact);
+        // COZY_WEATHER_CLOCK=<s>: start time-based weather that far in (screenshots / testing)
+        world.weather_clock_offset = std::env::var("COZY_WEATHER_CLOCK").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
         let local_cars: Vec<usize> = world.controllers.iter().enumerate().filter(|(_, c)| matches!(c, Controller::Local(_))).map(|(i, _)| i).collect();
         for (i, c) in world.cars.iter_mut().enumerate() {
             if matches!(world.controllers[i], Controller::Local(_)) {

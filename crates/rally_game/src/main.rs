@@ -1864,12 +1864,19 @@ async fn main() {
     }
     // COZY_CAMPAIGN_STAGE=<stage id> preselects a campaign stage (for stage_intro / stage / stage_results)
     if let Ok(id) = std::env::var("COZY_CAMPAIGN_STAGE") {
+        if let Some(k) = rally_core::campaign::campaign_kind_of(&id) {
+            app.camp.set_kind(k);
+        }
         for (ci, c) in campaign_data::chapters().iter().enumerate() {
             if let Some(si) = c.stages.iter().position(|st| st.id == id) {
                 app.camp.chapter = ci;
                 app.camp.stage = si;
             }
         }
+    }
+    // COZY_CAMPAIGN=circuit opens the circuit season on the campaign screen
+    if std::env::var("COZY_CAMPAIGN").is_ok_and(|v| v.eq_ignore_ascii_case("circuit")) {
+        app.camp.set_kind(rally_core::campaign::CampaignKind::Circuit);
     }
     if let Ok(scr) = std::env::var("COZY_SCREEN") {
         app.screen = match scr.as_str() {

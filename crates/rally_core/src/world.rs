@@ -40,6 +40,8 @@ pub struct World {
     collision_cooldown: Vec<f32>,
     /// Online: remote cars collide with local ones (false = remote cars are ghosts)
     pub remote_contact: bool,
+    /// Added to the race clock for time-based weather (test hook COZY_WEATHER_CLOCK)
+    pub weather_clock_offset: f32,
 }
 
 pub struct RacerSetup {
@@ -74,6 +76,7 @@ impl World {
             pending_resets: vec![false; n],
             collision_cooldown: vec![0.0; n],
             remote_contact: false,
+            weather_clock_offset: 0.0,
         };
         // settle suspensions before the countdown
         for _ in 0..120 {
@@ -103,7 +106,7 @@ impl World {
     pub fn tick(&mut self) {
         let dt = TICK;
         // time-based (circuit) weather follows the race clock
-        self.track.conditions.set_clock(self.race.clock);
+        self.track.conditions.set_clock(self.race.clock + self.weather_clock_offset);
         for (i, c) in self.cars.iter_mut().enumerate() {
             c.input = self.inputs[i];
             c.prev_pos = c.pos;

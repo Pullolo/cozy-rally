@@ -172,6 +172,9 @@ impl Fx {
                 let roll = (speed / 26.0).clamp(0.0, 1.0);
                 let in_water = water.is_some_and(|wl| cp.y < wl + 0.12);
                 let props = surface.props();
+                // sliding on ice / black ice / standing water: no friction heat, so no smoke
+                // and no dark rubber, just a faint scratch
+                let heat = w.squeal_heat();
                 // grass and mud don't raise dust clouds
                 if props.loose && !in_water && !matches!(surface, Surface::Grass | Surface::Mud) && (rear || trail_surf.is_none()) {
                     trail_surf = Some(surface);
@@ -187,6 +190,9 @@ impl Fx {
                 let dark = ((tr.lock.max(tr.spin) - 0.15) / 0.6).clamp(0.0, 1.0);
                 if in_water {
                     strength = 0.0;
+                }
+                if !props.loose {
+                    strength *= 0.25 + 0.75 * heat;
                 }
                 // slicks leave narrower, darker rubber lines on tarmac
                 let slick_tarmac = slick && !props.loose;
@@ -281,7 +287,7 @@ impl Fx {
                 if tr.spin > 0.05 {
                     let back = -tr.fwd * tr.surf_sign;
                     let acc = &mut self.cars[ci].acc[wi][0];
-                    *acc += if hard { 22.0 } else { 20.0 } * tr.spin * dt * lod;
+                    *acc += if hard { 22.0 * heat } else { 20.0 } * tr.spin * dt * lod;
                     let n = acc.floor() as usize;
                     *acc -= n as f32;
                     for _ in 0..n.min(8) {
@@ -312,7 +318,7 @@ impl Fx {
                 // ---- SLIDE: a sideways fan of spray (or smoke) from the sliding tyres
                 if tr.slide > 0.05 {
                     let acc = &mut self.cars[ci].acc[wi][2];
-                    *acc += if hard { 22.0 } else { 28.0 } * tr.slide * dt * lod;
+                    *acc += if hard { 22.0 * heat } else { 28.0 } * tr.slide * dt * lod;
                     let n = acc.floor() as usize;
                     *acc -= n as f32;
                     for _ in 0..n.min(8) {
@@ -341,7 +347,7 @@ impl Fx {
                 // ---- LOCK-UP: bursts of smoke/dust boiling up around the locked tyre
                 if tr.lock > 0.05 {
                     let acc = &mut self.cars[ci].acc[wi][4];
-                    *acc += 26.0 * tr.lock * dt * lod;
+                    *acc += 26.0 * tr.lock * if hard { heat } else { 1.0 } * dt * lod;
                     let n = acc.floor() as usize;
                     *acc -= n as f32;
                     for _ in 0..n.min(8) {

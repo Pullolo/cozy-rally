@@ -26,9 +26,21 @@ crates/rally_core/   headless simulation (no graphics). glam 0.27 shared with ma
   biome.rs     5 biomes: palette + surfaces + terrain character
   race.rs      countdown, checkpoints, laps, placings, respawns
   world.rs     fixed 120 Hz tick (2 physics substeps), collisions, WorldEvent stream
-  ai.rs        AI driver
+  ai.rs        AI driver (follows the grip there is now under time-based weather / standing water)
+  weather.rs   Weather (+ standing `water`, black `ice`), presets (Downpour / ThickFog / BlackIce),
+               StageConditions: position keys (rally stages) or a race-TIME timeline
+               (ConditionsSpec::Timeline, circuits; World sets the clock each tick), aquaplane_grip
+  campaign.rs  CampaignKind Rally / Circuit, EventKind TimeTrial / Race (medals by place),
+               rally stages (rally cars only) + circuit_campaign() (circuit cars)
   examples/    sim.rs (AI races, stats), dyno.rs (physics characterisation), trace.rs,
-               stagesim.rs (stats per track difficulty), pacenotes.rs, surfaces.rs, trackstats.rs
+               stagesim.rs (stats per track difficulty), pacenotes.rs, surfaces.rs, trackstats.rs,
+               drifttest.rs (initiate / hold / exit a drift per car and assist level),
+               circuit_season.rs (drives every circuit campaign event headless)
+
+Drift model (vehicle.rs): steering input commands front slip relative to the front axle's
+direction of travel and the released wheel self-aligns with it (caster); the handbrake locks the
+rears and cuts rear drive; ESC / TC only catch spins past `drift_limit` (human inputs) and damp
+the drift-angle *rate*, never a held drift. AI inputs (`CarInput::ai`) keep the early ESC.
 crates/rally_net/    online multiplayer (no graphics; depends on rally_core)
   protocol.rs  ClientMsg / ServerMsg, PROTOCOL_VERSION (bump on any layout change), DEFAULT_PORT 27420
   conn.rs      non-blocking framed TCP (u32 LE length + bincode); UdpMsg datagrams carry the
@@ -98,7 +110,10 @@ Online test: run `rally_server --port 27999`, then two game instances with
 starts once 2 are in) and `COZY_ONLINE=127.0.0.1:27999 COZY_NAME=Bob`, plus `COZY_AUTOPLAY=1`
 and separate `COZY_SETTINGS` files.
 Other env hooks: `COZY_SPLIT=1` (2 players), `COZY_NO_HUD=1` (clean frames for screenshots: no HUD, touch widgets or racing line), `COZY_BIOME=0..6` (0 random, 1 Meadow, 2 Autumn,
-3 Snow, 4 Desert, 5 Coast, 6 Mountain Forest), `COZY_SCREEN=title|setup|help|race`, `COZY_MSAA=1`.
+3 Snow, 4 Desert, 5 Coast, 6 Mountain Forest), `COZY_SCREEN=title|setup|help|race|campaign|stage_intro|stage`, `COZY_MSAA=1`,
+`COZY_CAMPAIGN=circuit` (campaign screen on the circuit season), `COZY_CAMPAIGN_STAGE=<event id>`,
+`COZY_UNLOCK_ALL=1`, `COZY_WEATHER_CLOCK=<s>` (start time-based weather that far in, e.g. a mid-race
+downpour), `COZY_WEATHER=...|downpour|thickfog|blackice`.
 Software GL (llvmpipe) is slow — a few FPS is normal under Xvfb. **Look at your screenshots**
 (open the PNGs) to judge visual work; it's the only way to know it looks good.
 

@@ -93,9 +93,11 @@ pub fn car_params(id: usize, car: &Car) -> EngineParams {
         match c {
             SurfClass::Hard => {
                 counts[0] += 1;
-                p.slip_lat_hard = p.slip_lat_hard.max(s.lat);
-                p.spin_hard = p.spin_hard.max(s.spin);
-                p.lock_hard = p.lock_hard.max(s.lock);
+                // no screech on ice / black ice / standing water (no friction heat)
+                let heat = w.squeal_heat();
+                p.slip_lat_hard = p.slip_lat_hard.max(s.lat * heat);
+                p.spin_hard = p.spin_hard.max(s.spin * heat);
+                p.lock_hard = p.lock_hard.max(s.lock * heat);
             }
             _ => {
                 counts[match c {

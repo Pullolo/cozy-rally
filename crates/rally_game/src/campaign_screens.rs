@@ -4,7 +4,7 @@ use crate::campaign_data::*;
 use crate::ui::*;
 use crate::{audio, hud, models, settings, App, Screen, ASSISTS};
 use macroquad::prelude::*;
-use rally_core::campaign::{Chapter, Medal, MedalTimes, StageDef};
+use rally_core::campaign::{CampaignKind, Chapter, EventKind, Medal, MedalTimes, StageDef};
 use rally_core::race::format_time;
 use rally_core::track::Track;
 use rally_core::vehicle::car_specs;
@@ -21,6 +21,8 @@ pub struct UiResult {
 }
 
 pub struct CampState {
+    /// Rally stages or the circuit season (`campaign_data::set_kind` follows it)
+    pub kind: CampaignKind,
     pub chapter: usize,
     pub stage: usize,
     /// Stage being driven (set when a campaign run starts)
@@ -45,6 +47,7 @@ pub struct CampState {
 impl CampState {
     pub fn new() -> CampState {
         CampState {
+            kind: CampaignKind::Rally,
             chapter: 0,
             stage: 0,
             active: None,
@@ -61,6 +64,17 @@ impl CampState {
             lb_tab: std::env::var("COZY_LB_TAB").ok().and_then(|v| v.parse().ok()).unwrap_or(0).min(1),
             lb_filter: 0,
             lb_from: Screen::Campaign,
+        }
+    }
+
+    /// Switch campaign (Rally / Circuit): back to its first chapter, a car of its class
+    pub fn set_kind(&mut self, k: CampaignKind) {
+        self.kind = k;
+        crate::campaign_data::set_kind(k);
+        self.chapter = 0;
+        self.stage = 0;
+        if car_specs().get(self.car).is_none_or(|c| c.class != k.car_class()) {
+            self.car = rally_core::campaign::class_cars(k.car_class()).first().copied().unwrap_or(0) as usize;
         }
     }
 
@@ -237,7 +251,44 @@ fn chip(x: f32, cy: f32, label: &str, size: f32, bg: Color, icon: Option<WxKind>
 }
 
 fn km(def: &StageDef) -> String {
-    format!("{:.1} km", stage_length_m(def) / 1000.0)
+    if def.laps > 1 {
+        format!("{} laps  -  {:.1} km", def.laps, stage_length_m(def) / 1000.0)
+    } else {
+        format!("{:.1} km", stage_length_m(def) / 1000.0)
+    }
+}
+
+/// Info chips of an event card (after the distance): surface + difficulty for rally stages,
+/// format (race / hot laps) + night for circuit events
+fn event_chips(def: &StageDef) -> Vec<(String, Color)> {
+    match def.kind {
+        EventKind::Race { rivals, .. } => {
+            let mut v = vec![(format!("Race  -  {rivals} rivals"), with_alpha(PEACH, 0.55))];
+            if def.params.night {
+                v.push(("Night".to_string(), with_alpha(LAVENDER, 0.6)));
+            }
+            v
+        }
+        EventKind::TimeTrial if def.params.discipline == rally_core::track::Discipline::Circuit => {
+            let car = car_specs().get(def.cars.first().copied().unwrap_or(0) as usize).map(|c| c.name).unwrap_or("");
+            let mut v = vec![(format!("Hot laps  -  {car}"), with_alpha(MINT, 0.55))];
+            if def.params.night {
+                v.push(("Night".to_string(), with_alpha(LAVENDER, 0.6)));
+            }
+            v
+        }
+        EventKind::TimeTrial => vec![(surface_name(def).to_string(), with_alpha(MINT, 0.55)), (difficulty_name(def.params.difficulty).to_string(), with_alpha(LAVENDER, 0.55))],
+    }
+}
+
+/// What a medal needs in a race event
+fn race_target(md: Medal, margin: f32) -> String {
+    match md {
+        Medal::Platinum => format!("win by {margin:.0}s"),
+        Medal::Gold => "win".into(),
+        Medal::Silver => "2nd".into(),
+        _ => "3rd".into(),
+    }
 }
 
 fn surface_name(def: &StageDef) -> &'static str {
@@ -248,12 +299,14 @@ fn surface_name(def: &StageDef) -> &'static str {
 /// Top-down stage silhouette from start to finish, tinted by weather, with split markers
 fn draw_stage_map(track: &Track, x: f32, y: f32, w: f32, h: f32, reveal: f32) {
     let s = scale();
+    // circuits: the whole loop, closed back to the start line
+    let looped = track.is_loop();
     let i0 = track.start_index();
-    let i1 = track.finish_index();
+    let i1 = if looped { track.samples.len() } else { track.finish_index() };
     if i1 <= i0 + 2 {
         return;
     }
-    let pts: Vec<(Vec2, f32)> = (i0..=i1).step_by(2).map(|i| (vec2(track.samples[i].pos.x, track.samples[i].pos.z), track.samples[i].s)).collect();
+    let pts: Vec<(Vec2, f32)> = (i0..=i1).step_by(2).map(|i| i % track.samples.len()).map(|i| (vec2(track.samples[i].pos.x, track.samples[i].pos.z), track.samples[i].s)).collect();
     let mut min = vec2(f32::MAX, f32::MAX);
     let mut max = vec2(f32::MIN, f32::MIN);
     for (p, _) in &pts {
@@ -296,8 +349,8 @@ fn draw_stage_map(track: &Track, x: f32, y: f32, w: f32, h: f32, reveal: f32) {
     let a = to(pts[0].0);
     circle(a.x, a.y, 14.0 * s, INK);
     circle(a.x, a.y, 11.5 * s, MINT);
-    text_mid("A", a.x, a.y, 14.0 * s, INK);
-    if reveal >= 0.999 {
+    text_mid(if looped { "S" } else { "A" }, a.x, a.y, 14.0 * s, INK);
+    if reveal >= 0.999 && !looped {
         let b = to(pts[pts.len() - 1].0);
         circle(b.x, b.y, 14.0 * s, INK);
         circle(b.x, b.y, 11.5 * s, PEACH);
@@ -309,7 +362,7 @@ fn draw_stage_map(track: &Track, x: f32, y: f32, w: f32, h: f32, reveal: f32) {
 fn draw_profile(track: &Track, x: f32, y: f32, w: f32, h: f32) {
     let s = scale();
     let i0 = track.start_index();
-    let i1 = track.finish_index().max(i0 + 2);
+    let i1 = if track.is_loop() { track.samples.len() - 1 } else { track.finish_index().max(i0 + 2) };
     let hs: Vec<f32> = (i0..=i1).map(|i| track.samples[i].pos.y).collect();
     let lo = hs.iter().cloned().fold(f32::MAX, f32::min);
     let hi = hs.iter().cloned().fold(f32::MIN, f32::max).max(lo + 1.0);
@@ -319,7 +372,7 @@ fn draw_profile(track: &Track, x: f32, y: f32, w: f32, h: f32) {
         let i = ((f * (hs.len() - 1) as f32) as usize).min(hs.len() - 1);
         let v = (hs[i] - lo) / (hi - lo);
         let bh = (h * 0.25 + v * h * 0.55).max(2.0);
-        let sval = track.start_s + f * track.stage_length();
+        let sval = if track.is_loop() { f * track.length } else { track.start_s + f * track.stage_length() };
         let kind = classify(&track.weather_at(sval));
         let col = if kind == WxKind::Clear { with_alpha(MINT, 0.8) } else { mix(with_alpha(MINT, 0.8), hud::weather_color(kind), 0.7) };
         draw_rectangle(x + f * w, y + h - bh, w / cols as f32 + 0.6, bh, col);
@@ -353,7 +406,12 @@ impl App {
         // header
         let m = 24.0 * s;
         text_outlined("Campaign", m + 6.0 * s, m + 46.0 * s, 46.0 * s, CREAM);
-        text("Time-trial stages from A to B. Earn golds to open new chapters.", m + 8.0 * s, m + 76.0 * s, 18.0 * s, INK);
+        let kind = self.camp.kind;
+        let sub = match kind {
+            CampaignKind::Rally => "Time-trial stages from A to B. Earn golds to open new chapters.",
+            CampaignKind::Circuit => "Races and hot laps on the circuits. Win for gold, and keep an eye on the sky.",
+        };
+        text(sub, m + 8.0 * s, m + 76.0 * s, 18.0 * s, INK);
         let tally = format!("{golds}");
         let label = if golds == 1 { "gold medal" } else { "gold medals" };
         let tw = text_size(&tally, 26.0 * s).x + text_size(label, 16.0 * s).x + 80.0 * s;
@@ -363,7 +421,7 @@ impl App {
         text_right(label, sw - m - 18.0 * s, mid_baseline(m + 33.0 * s, 16.0 * s), 16.0 * s, INK_SOFT);
 
         let n_ch = chs.len();
-        self.focus.begin(n_ch + 3 + 1);
+        self.focus.begin(n_ch + 3 + 1 + 1);
         // chapter cards (left)
         let lx = m;
         let lw = (sw * 0.30).clamp(300.0 * s, 380.0 * s);
@@ -405,6 +463,7 @@ impl App {
             if unlocked {
                 for (j, st) in ch.stages.iter().enumerate() {
                     let md = stage_view(&vs, &st.id).map(|v| v.medal).unwrap_or(Medal::None);
+                    let _ = j;
                     draw_medal(tx + 10.0 * s + j as f32 * 26.0 * s, y + ch_h * 0.72, 8.5 * s, md, 1.0);
                 }
             } else {
@@ -418,7 +477,8 @@ impl App {
         let unlocked = unlocked(&vs, self.camp.chapter.min(n_ch - 1));
         let hy = top;
         text_outlined(&ch.name, rx + 4.0 * s, hy + 30.0 * s, 32.0 * s, CREAM);
-        let sub = if unlocked { format!("Chapter {}  -  {} stages", self.camp.chapter + 1, ch.stages.len()) } else { format!("Locked  -  earn {} golds to open ({} so far)", ch.unlock_golds, golds) };
+        let things = if kind == CampaignKind::Circuit { "events" } else { "stages" };
+        let sub = if unlocked { format!("Chapter {}  -  {} {things}", self.camp.chapter + 1, ch.stages.len()) } else { format!("Locked  -  earn {} golds to open ({} so far)", ch.unlock_golds, golds) };
         text(&sub, rx + 6.0 * s, hy + 56.0 * s, 17.0 * s, INK);
         let st_top = hy + 72.0 * s;
         let n_st = ch.stages.len().max(1);
@@ -450,8 +510,9 @@ impl App {
             let mut cx = px;
             let (wx, hint) = forecast(st);
             cx += chip(cx, cy, &km(st), 16.0 * s, with_alpha(BUTTER, 0.6), None) + 8.0 * s;
-            cx += chip(cx, cy, surface_name(st), 16.0 * s, with_alpha(MINT, 0.55), None) + 8.0 * s;
-            cx += chip(cx, cy, difficulty_name(st.params.difficulty), 16.0 * s, with_alpha(LAVENDER, 0.55), None) + 8.0 * s;
+            for (label, col) in event_chips(st) {
+                cx += chip(cx, cy, &label, 16.0 * s, col, None) + 8.0 * s;
+            }
             chip(cx, cy, &hint, 16.0 * s, with_alpha(SKY, 0.45), Some(wx));
             // medal + times on the right
             let mx = rx + rw - 70.0 * s;
@@ -459,7 +520,7 @@ impl App {
             let medal = v.map(|v| v.medal).unwrap_or(Medal::None);
             draw_medal(mx, y + st_h * 0.5 + 6.0 * s, 26.0 * s, medal, a);
             let best = v.and_then(|v| v.best);
-            let gold = v.and_then(|v| v.medal_times).map(|m| format_time(m.gold)).unwrap_or_else(|| "\u{2014}".into());
+            let gold = if st.is_race() { "Win".to_string() } else { v.and_then(|v| v.medal_times).map(|m| format_time(m.gold)).unwrap_or_else(|| "\u{2014}".into()) };
             let tx = mx - 50.0 * s;
             text_right(&format!("Best  {}", best.map(format_time).unwrap_or_else(|| "--:--".into())), tx, y + 46.0 * s, 18.0 * s, INK);
             text_right(&format!("Gold  {gold}"), tx, y + 70.0 * s, 16.0 * s, shade(BUTTER, 0.7));
@@ -468,6 +529,38 @@ impl App {
             }
         }
         let back = button_back(&mut self.focus, "Back", lx, sh - m - back_h, lw, back_h, CREAM);
+        // Rally / Circuit season switch (top right, left of the gold tally)
+        {
+            let tab_w = 128.0 * s;
+            let th = 44.0 * s;
+            let tx0 = sw - m - tw - 2.0 * tab_w - 26.0 * s;
+            let ty = m + 11.0 * s;
+            let (hl, act) = focus_item(&mut self.focus, tx0, ty, tab_w * 2.0 + 8.0 * s, th);
+            let focused = hl > 0.5;
+            let mut pick = None;
+            if act {
+                let (mx, _) = mouse_position();
+                pick = Some(if is_mouse_button_pressed(MouseButton::Left) { if mx < tx0 + tab_w + 4.0 * s { 0 } else { 1 } } else { 1 - (kind as usize) });
+            } else if focused && (self.focus.left || self.focus.right) {
+                pick = Some(1 - (kind as usize));
+            }
+            for (i, k) in CampaignKind::ALL.iter().enumerate() {
+                let x = tx0 + i as f32 * (tab_w + 8.0 * s);
+                let on = *k == kind;
+                soft_shadow(x, ty, tab_w, th, th * 0.5, 0.5);
+                rounded_rect(x, ty, tab_w, th, th * 0.5, if on { if i == 0 { MINT } else { SKY } } else { with_alpha(CREAM, 0.92) });
+                if on && hl > 0.01 {
+                    rounded_rect_outline(x - 2.5 * s, ty - 2.5 * s, tab_w + 5.0 * s, th + 5.0 * s, th * 0.5 + 2.5 * s, 2.5 * s, Color::new(1.0, 1.0, 1.0, hl));
+                }
+                text_mid(k.name(), x + tab_w * 0.5, ty + th * 0.5, 20.0 * s, if on { INK } else { INK_SOFT });
+            }
+            if let Some(i) = pick {
+                if CampaignKind::ALL[i] != kind {
+                    self.camp.set_kind(CampaignKind::ALL[i]);
+                    audio::ui_sound(audio::UiSound::Move);
+                }
+            }
+        }
         if enter_stages && unlocked {
             self.focus.index = n_ch;
         }
@@ -495,7 +588,8 @@ impl App {
         let vs = views();
         let view = stage_view(&vs, &def.id);
         let mt = view.and_then(|v| v.medal_times);
-        self.camp.request_reference(&def, mt.is_some());
+        // races award medals by place: no reference run needed
+        self.camp.request_reference(&def, mt.is_some() || def.is_race());
         let s = scale();
         let sw = screen_width();
         let sh = screen_height();
@@ -508,14 +602,16 @@ impl App {
         let px = lx + 26.0 * s;
         let chs = chapters();
         let ch = &chs[self.camp.chapter];
-        text(&format!("{}  -  Stage {}", ch.name, self.camp.stage + 1), px, m + 34.0 * s, 17.0 * s, INK_SOFT);
+        let what = if def.params.discipline == rally_core::track::Discipline::Circuit { "Event" } else { "Stage" };
+        text(&format!("{}  -  {what} {}", ch.name, self.camp.stage + 1), px, m + 34.0 * s, 17.0 * s, INK_SOFT);
         text(&def.name, px, m + 76.0 * s, 42.0 * s, INK);
         text(&def.blurb, px, m + 104.0 * s, 17.0 * s, INK_SOFT);
         let cy = m + 136.0 * s;
         let mut cx = px;
         cx += chip(cx, cy, &km(&def), 16.0 * s, with_alpha(BUTTER, 0.6), None) + 8.0 * s;
-        cx += chip(cx, cy, surface_name(&def), 16.0 * s, with_alpha(MINT, 0.55), None) + 8.0 * s;
-        chip(cx, cy, difficulty_name(def.params.difficulty), 16.0 * s, with_alpha(LAVENDER, 0.55), None);
+        for (label, col) in event_chips(&def) {
+            cx += chip(cx, cy, &label, 16.0 * s, col, None) + 8.0 * s;
+        }
         let (wx, hint) = forecast(&def);
         chip(px, cy + 36.0 * s, &format!("Forecast: {hint}"), 16.0 * s, with_alpha(SKY, 0.45), Some(wx));
         // medal targets
@@ -540,6 +636,7 @@ impl App {
             draw_medal(rx + 18.0 * s, ry + 19.0 * s, 9.0 * s, *md, 1.0);
             text(medal_name(*md), rx + 36.0 * s, mid_baseline(ry + 17.0 * s, 16.0 * s), 16.0 * s, INK);
             match tm {
+                _ if def.is_race() => text_right(&race_target(*md, def.platinum_margin()), rx + colw - 22.0 * s, mid_baseline(ry + 17.0 * s, 16.0 * s), 16.0 * s, INK),
                 Some(tm) => text_right(&format_time(*tm), rx + colw - 22.0 * s, mid_baseline(ry + 17.0 * s, 16.0 * s), 16.0 * s, INK),
                 None => {
                     let a = get_time() as f32 * 5.0 + i as f32;
@@ -549,7 +646,7 @@ impl App {
         }
         let by0 = my + 104.0 * s;
         text(&format!("Your best:  {}", best.map(format_time).unwrap_or_else(|| "not driven yet".into())), px, by0, 18.0 * s, INK);
-        if mt.is_none() {
+        if mt.is_none() && !def.is_race() {
             text_right("timing the reference run...", px + lw - 52.0 * s, by0, 15.0 * s, INK_SOFT);
         }
         // car / paint / assists
@@ -585,7 +682,7 @@ impl App {
         if mw > 200.0 * s {
             let mx = mx + (1.0 - appear) * 60.0 * s;
             panel(mx, m, mw, h);
-            text("Stage map", mx + 22.0 * s, m + 34.0 * s, 18.0 * s, INK_SOFT);
+            text(if def.params.layout == rally_core::track::LayoutKind::Loop { "Circuit map" } else { "Stage map" }, mx + 22.0 * s, m + 34.0 * s, 18.0 * s, INK_SOFT);
             let prof_h = 70.0 * s;
             let map_h = h - prof_h - 110.0 * s;
             rounded_rect(mx + 16.0 * s, m + 48.0 * s, mw - 32.0 * s, map_h, 16.0 * s, with_alpha(lighten(biome_color(ch), 0.55), 0.8));
@@ -650,6 +747,9 @@ impl App {
         let Some(ui_res) = self.camp.result.clone() else { return };
         let res = &ui_res.r;
         let def = self.camp.active.clone().unwrap_or_else(|| self.camp.selected().unwrap());
+        let me = sess.players.first().map(|p| p.car).unwrap_or(0);
+        let place = sess.world.race.racers.get(me).map(|r| r.place).unwrap_or(1);
+        let field = sess.world.cars.len();
         let s = scale();
         let sw = screen_width();
         let sh = screen_height();
@@ -670,7 +770,8 @@ impl App {
         panel(lx, m, lw, lh);
         let cx = lx + lw * 0.5;
         text_mid(&def.name, cx, m + 40.0 * s, 26.0 * s, INK_SOFT);
-        text_mid("Stage complete", cx, m + 74.0 * s, 20.0 * s, INK_SOFT);
+        let done = if def.is_race() { format!("Finished P{place} of {field}") } else if def.laps > 1 { "Laps complete".to_string() } else { "Stage complete".to_string() };
+        text_mid(&done, cx, m + 74.0 * s, 20.0 * s, INK_SOFT);
         let tp = pop((t - 0.2) * 1.2);
         text_sticker_centered(&format_time(res.time), cx, m + 140.0 * s, (64.0 * s * tp).max(1.0), BUTTER, 1.0);
         // medal drop
@@ -698,7 +799,11 @@ impl App {
             text_mid(&format!("Previous best {}   ({:+.2})", format_time(pb), d), cx, iy, 18.0 * s, col);
         }
         let next = ui_res.medal_times.and_then(|m| [(Medal::Bronze, m.bronze), (Medal::Silver, m.silver), (Medal::Gold, m.gold), (Medal::Platinum, m.platinum)].into_iter().find(|(md, _)| *md > res.medal));
-        if let Some((md, tm)) = next {
+        if def.is_race() {
+            if let Some(md) = [Medal::Bronze, Medal::Silver, Medal::Gold, Medal::Platinum].into_iter().find(|md| *md > res.medal) {
+                text_mid(&format!("{}: {}", medal_name(md), race_target(md, def.platinum_margin())), cx, iy + 26.0 * s, 16.0 * s, INK_SOFT);
+            }
+        } else if let Some((md, tm)) = next {
             text_mid(&format!("{} needs {}  ({:.1}s faster)", medal_name(md), format_time(tm), res.time - tm), cx, iy + 26.0 * s, 16.0 * s, INK_SOFT);
         }
         if (record || first_run) && t > 1.2 {
@@ -761,7 +866,8 @@ impl App {
         let bw = (sw - 2.0 * m - 3.0 * 14.0 * s) / 4.0;
         self.focus.begin(4);
         let retry = button(&mut self.focus, "Retry", m, by, bw, bh, PEACH);
-        let next_st = button(&mut self.focus, "Next stage", m + bw + 14.0 * s, by, bw, bh, MINT);
+        let next_label = if def.params.discipline == rally_core::track::Discipline::Circuit { "Next event" } else { "Next stage" };
+        let next_st = button(&mut self.focus, next_label, m + bw + 14.0 * s, by, bw, bh, MINT);
         let lb = button(&mut self.focus, "Leaderboard", m + 2.0 * (bw + 14.0 * s), by, bw, bh, SKY);
         let camp = button_back(&mut self.focus, "Campaign", m + 3.0 * (bw + 14.0 * s), by, bw, bh, BUTTER);
         if retry && self.camp.begin() {

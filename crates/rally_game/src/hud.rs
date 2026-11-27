@@ -351,11 +351,21 @@ pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
     }
 
     // ---------------------------------------------------------------- standings (left, under the card)
+    // bottom of the left column (the touch minimap goes under it)
+    let left_bottom;
     if stage {
         draw_weather_chip(s, car, r, bx, by + ch + 12.0 * k, k);
+        left_bottom = by + ch + 12.0 * k + 40.0 * k;
         draw_stage_progress(s, player, vp, k, t);
     } else {
-        draw_standings(s, hud, player, bx, by + ch + 12.0 * k, 196.0 * k, k, vp);
+        let bottom = draw_standings(s, hud, player, bx, by + ch + 12.0 * k, 196.0 * k, k, vp);
+        // circuits with weather: what's happening now and the grip it leaves
+        if !s.track().conditions.keys.is_empty() {
+            draw_weather_chip(s, car, r, bx, bottom + 6.0 * k, k);
+            left_bottom = bottom + 46.0 * k;
+        } else {
+            left_bottom = bottom;
+        }
     }
 
     // ---------------------------------------------------------------- timer card (top right)
@@ -457,7 +467,8 @@ pub fn draw_hud(s: &RaceSession, hud: &HudState, player: usize, vp: &Viewport) {
 
     // ---------------------------------------------------------------- minimap (bottom left)
     let ms = if touch { (150.0 * k).min(vp.h * 0.26) } else { (190.0 * k).min(vp.h * 0.36) };
-    let my = if touch { vp.y + 238.0 * k } else { vp.y + vp.h - pad - ms };
+    // touch: under the standings / weather chip, but clear of the steering buttons below
+    let my = if touch { (vp.y + 238.0 * k).max(left_bottom + 10.0 * k).min(vp.y + vp.h - 178.0 * k - ms) } else { vp.y + vp.h - pad - ms };
     draw_minimap(s, player, vp.x + pad, my, ms);
 
     // ---------------------------------------------------------------- pace notes (top centre; N / settings)
@@ -543,12 +554,13 @@ fn panel_hud(x: f32, y: f32, w: f32, h: f32, k: f32) {
     rounded_rect_outline(x, y, w, h, r, 1.5 * k, Color::new(1.0, 1.0, 1.0, 0.6));
 }
 
-fn draw_standings(s: &RaceSession, hud: &HudState, player: usize, x: f32, y: f32, w: f32, k: f32, vp: &Viewport) {
+/// Returns the y below the last row
+fn draw_standings(s: &RaceSession, hud: &HudState, player: usize, x: f32, y: f32, w: f32, k: f32, vp: &Viewport) -> f32 {
     let race = &s.world.race;
     let order = race.standings();
     let n = order.len();
     if n < 2 {
-        return;
+        return y;
     }
     let me = s.players[player].car;
     let rh = 26.0 * k;
@@ -600,6 +612,7 @@ fn draw_standings(s: &RaceSession, hud: &HudState, player: usize, x: f32, y: f32
         }
         yy += rh + 3.0 * k;
     }
+    yy
 }
 
 fn draw_speedo(car: &Car, h: &PlayerHud, cx: f32, cy: f32, r: f32, k: f32, t: f32) {
@@ -870,6 +883,8 @@ pub fn weather_color(kind: crate::campaign_data::WxKind) -> Color {
         Fog => LAVENDER,
         Snow => Color::new(0.95, 0.97, 1.0, 1.0),
         Sand => PEACH,
+        Downpour => Color::new(0.42, 0.5, 0.72, 1.0),
+        Ice => Color::new(0.72, 0.9, 1.0, 1.0),
     }
 }
 
@@ -940,6 +955,27 @@ pub fn weather_icon(kind: crate::campaign_data::WxKind, cx: f32, cy: f32, r: f32
                 arc(cx - r * 0.3 + i as f32 * r * 0.15, y, r * 0.3, r * 0.42, std::f32::consts::PI, std::f32::consts::TAU, shade(PEACH, 0.9));
             }
         }
+        Downpour => {
+            cloud(cx, cy - r * 0.32, Color::new(0.48, 0.52, 0.66, 1.0));
+            for i in 0..4 {
+                let x = cx - r * 0.6 + i as f32 * r * 0.4;
+                draw_line(x + r * 0.1, cy + r * 0.32, x - r * 0.08, cy + r * 0.9, r * 0.12, shade(SKY, 0.8));
+            }
+        }
+        Ice => {
+            // six-armed crystal
+            let col = shade(Color::new(0.72, 0.9, 1.0, 1.0), 0.75);
+            for i in 0..6 {
+                let a = i as f32 / 6.0 * std::f32::consts::TAU;
+                let (dx, dy) = (a.cos(), a.sin());
+                draw_line(cx, cy, cx + dx * r * 0.85, cy + dy * r * 0.85, r * 0.13, col);
+                let (bx, by) = (cx + dx * r * 0.5, cy + dy * r * 0.5);
+                for side in [-1.0f32, 1.0] {
+                    let b = a + side * 0.7;
+                    draw_line(bx, by, bx + b.cos() * r * 0.25, by + b.sin() * r * 0.25, r * 0.1, col);
+                }
+            }
+        }
     }
 }
 
@@ -949,7 +985,11 @@ fn draw_weather_chip(s: &RaceSession, car: &rally_core::vehicle::Car, r: &rally_
     let w = track.weather_at(r.s);
     let kind = crate::campaign_data::classify(&w);
     let (surface, _) = track.surface_at(car.pos, Some(r.track_index));
-    let grip = (w.grip_factor(surface) * 100.0).round();
+    // black ice lies in patches, standing water bites at speed: show what the tyres get now
+    let mut wl = w;
+    wl.ice *= track.ice_patch(r.s, r.lateral);
+    let aqua = rally_core::weather::aquaplane_grip(w.water, car.vel.length(), car.spec.tyre == rally_core::vehicle::TyreType::Slick);
+    let grip = (wl.grip_factor(surface) * aqua * 100.0).round();
     let hh = 40.0 * k;
     let ww = 196.0 * k;
     rounded_rect(x, y + 3.0 * k, ww, hh, hh * 0.5, Color::new(0.2, 0.12, 0.25, 0.14));
