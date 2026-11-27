@@ -924,7 +924,10 @@ impl Car {
         // gears than slicks can put down, so with an on/off keyboard throttle the rear would
         // light up out of every slow corner. Wheel torque is capped near what the driven axle
         // can transmit (incl. downforce and the grip already used for cornering); lower assist
-        // levels leave more surplus so the throttle still has to be respected.
+        // levels leave more surplus so the throttle still has to be respected. Human drivers
+        // also get back part of the torque held back for cornering (`corner_power_slack`):
+        // flooring it at full lock out of a corner then steps the rear out progressively
+        // on Sport / Sim instead of never; the AI keeps the full map.
         if spec.class == CarClass::Circuit && total_drive_torque > 0.0 && !self.frozen {
             let vl = v_long_body.max(0.0);
             let df = spec.downforce * vl * vl;
@@ -941,6 +944,8 @@ impl Car {
             let a_max = mu * (spec.mass * GRAVITY + df) / spec.mass;
             let lat_use = (self.ang_vel.dot(up).abs() * speed / a_max.max(1.0)).min(1.0);
             let lon_room = (1.0 - lat_use * lat_use).max(0.0).sqrt().max(0.35);
+            let slack = if input.ai { 0.0 } else { corner_power_slack(self.assist_level) };
+            let lon_room = lon_room + (1.0 - lon_room) * slack;
             let surplus = 0.98 + (1.0 - tc_strength(self.assist_level)) * 0.28;
             let cap = mu * load * spec.wheel_radius * surplus * lon_room;
             total_drive_torque = total_drive_torque.min(cap);
@@ -1465,6 +1470,12 @@ impl Car {
     /// angle needed to line the wheels up with it. Speed-sensitive steering therefore never
     /// caps countersteer: full opposite lock is always enough to catch a slide.
     ///
+    /// Steering limiter (Cozy/Normal/Sport), away from the front axle's travel direction
+    /// (turning in, changing direction): the input only gets the slip left before the fronts
+    /// reach their peak, so normal steering never makes them slide. Once the front axle is
+    /// already sliding past the peak with the wheels straight (a slide the input didn't cause),
+    /// the input quickly gets its full span back (over the next 0.4 span of slide angle).
+    ///
     /// AI drivers: the input commands front slip relative to the front axle's direction of
     /// travel and the released wheels self-align with it (caster), which keeps the AI's lines
     /// tidy.
@@ -1480,7 +1491,8 @@ impl Car {
             return low;
         }
         let theta = self.front_travel_angle().clamp(-max, max);
-        let span = match steer_limit_factor(self.assist_level) {
+        let limiter = steer_limit_factor(self.assist_level);
+        let span = match limiter {
             Some(k) => k * spec.peak_slip_angle,
             None => {
                 let speed_factor = 1.0 / (1.0 + (speed / 22.0).powi(2) * 0.9);
@@ -1490,7 +1502,18 @@ impl Car {
         let target = if ai {
             (theta * caster_gain(self.assist_level) + steer_in * span).clamp(-max, max)
         } else {
-            let reach = if steer_in * theta > 0.0 { span + theta.abs() } else { span };
+            let x = theta.abs();
+            let reach = if steer_in * theta > 0.0 {
+                span + x
+            } else if limiter.is_some() {
+                // away from the travel direction: the slip left before the fronts' peak, or,
+                // when the front axle already slides past it, the span back step by step
+                let grip_left = (span - x).max(0.0);
+                let sliding = ((x - span) / (0.4 * span)).clamp(0.0, 1.0);
+                grip_left.max(span * sliding)
+            } else {
+                span
+            };
             (steer_in * reach).clamp(-max, max)
         };
         // full lock stays available when parking / turning around
@@ -1633,6 +1656,14 @@ pub fn tc_strength(assist_level: f32) -> f32 {
     } else {
         ((assist_level - 0.2) / 1.1).clamp(0.0, 1.0).powf(1.3)
     }
+}
+
+/// Circuit cars, human drivers: share of the torque the traction map holds back for cornering
+/// that it hands back anyway (0 = full map). Cozy 0, Normal ~0.14 (no visible change), Sport
+/// ~0.31, Sim 0.4. Past ~0.45 the rear snaps out in ~0.5 s at full lock and full throttle;
+/// around 0.3 it steps out over about a second, which leaves time to lift or countersteer.
+pub fn corner_power_slack(assist_level: f32) -> f32 {
+    0.4 * (1.0 - tc_strength(assist_level))
 }
 
 /// ABS strength for an assist level (Sim -> off: wheels can lock)

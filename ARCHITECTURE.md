@@ -43,9 +43,13 @@ Drift model (vehicle.rs): human drivers get the same slide physics at every assi
 released wheel points straight ahead (no automatic countersteer: the player dials in opposite
 lock, whose range always reaches the front axle's direction of travel); no ESC, spin protection
 or TC in a slide (> ~13 deg); a fixed drift-angle-*rate* damping (tyre relaxation). Assist
-levels only change the steering range, TC on wheelspin before a slide and ABS. The handbrake
-locks the rears and cuts rear drive. AI inputs (`CarInput::ai`) keep caster self-alignment and
-the early ESC / spin protection.
+levels only change the steering range, TC on wheelspin before a slide and ABS. The steering
+limiter (Cozy/Normal/Sport) keeps normal steering within the fronts' grip: the input never turns
+the wheels past peak slip relative to the front axle's travel, also when turning against it
+(direction changes); only once the front axle already slides past the peak with straight wheels
+does the input get its full range back (steertest "chicane" checks this). The handbrake locks the
+rears and cuts rear drive. AI inputs (`CarInput::ai`) keep caster self-alignment and the early
+ESC / spin protection.
 crates/rally_net/    online multiplayer (no graphics; depends on rally_core)
   protocol.rs  ClientMsg / ServerMsg, PROTOCOL_VERSION (bump on any layout change), DEFAULT_PORT 27420
   conn.rs      non-blocking framed TCP (u32 LE length + bincode); UdpMsg datagrams carry the
