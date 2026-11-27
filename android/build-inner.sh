@@ -68,7 +68,8 @@ sed -e "s/@PACKAGE@/$PACKAGE/" -e "s/@VERSION_CODE@/$VERSION_CODE/" -e "s/@VERSI
 if [ -f android/keystore/release.jks ]; then
   KS=android/keystore/release.jks; ALIAS=cozyrally; PASS="${COZY_KEYSTORE_PASS:?set COZY_KEYSTORE_PASS}"
 else
-  KS=/root/.android/cozy-debug.keystore; ALIAS=androiddebugkey; PASS=android
+  # COZY_DEBUG_KEYSTORE: another path to the same debug key (CI restores it from a secret)
+  KS="${COZY_DEBUG_KEYSTORE:-/root/.android/cozy-debug.keystore}"; ALIAS=androiddebugkey; PASS=android
   [ -f "$KS" ] || keytool -genkeypair -v -keystore "$KS" -storepass android -keypass android \
     -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Cozy Rally Debug" >/dev/null 2>&1
 fi

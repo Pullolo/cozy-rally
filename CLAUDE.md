@@ -81,6 +81,11 @@ tools\release.ps1                                         # all artifacts -> dis
   the Windows and Linux `rally_server`, the APK, a README (template:
   `tools\release-README.txt`) and SHA256SUMS. Smoke-test the exe and install the APK on the
   phone before handing it over.
+- Or from anywhere (e.g. a cloud session): add `tools/release-notes/v<ver>.md`, commit, then
+  `git tag v<ver> && git push origin v<ver>`. `.github/workflows/release.yml` builds everything on
+  GitHub (Windows MSVC, static musl Linux server, APK) and publishes the release. It signs the APK
+  with the repository secret `ANDROID_DEBUG_KEYSTORE_B64` (base64 of the keystore below) and
+  fails before signing without it.
 - The APK is signed with the debug key in WSL `~/.android/cozy-debug.keystore`. Keep that file:
   a different key can't update the installed app. For a real release key, put
   `android/keystore/release.jks` (gitignored) in place and set `COZY_KEYSTORE_PASS`. Users must
@@ -92,5 +97,5 @@ tools\release.ps1                                         # all artifacts -> dis
   insets aren't passed to Rust).
 - Gamepads on Android have not been tested on hardware yet.
 - UDP from the phone hasn't been tested on real Wi-Fi (TCP fallback works).
-- The Linux server is linked against WSL Ubuntu's glibc. Build it on an older distro, or with
-  musl, if a host can't run it.
+- `tools\release.ps1` still links the Linux server against WSL Ubuntu's glibc; the release
+  workflow builds it static with musl (`--target x86_64-unknown-linux-musl`), which runs anywhere.

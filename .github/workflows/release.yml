@@ -1,0 +1,141 @@
+# Builds every release artifact from a pushed version tag and publishes the GitHub release:
+#   CozyRally-windows-x64.exe, rally_server-windows-x64.exe   (windows-latest, MSVC)
+#   rally_server-linux-x64                                     (static musl, any distro)
+#   CozyRally-android-arm64.apk                                (NDK r25c, SDK 31, android/build-inner.sh)
+#   README.txt (tools/release-README.txt), SHA256SUMS.txt
+# Release notes: tools/release-notes/<tag>.md if it exists.
+#
+# The APK must be signed with the same key as earlier releases or it won't install over them.
+# Store that keystore once as the repository secret ANDROID_DEBUG_KEYSTORE_B64:
+#   base64 -w0 ~/.android/cozy-debug.keystore      (WSL), paste the output as the secret value
+# Without the secret the Android job fails before signing and nothing is published.
+#
+# Usage: git tag v0.4.0 && git push origin v0.4.0   (or run it by hand with a tag name)
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and release (e.g. v0.4.0)'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  CARGO_TERM_COLOR: never
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo build --release -p rally_game --bin rally_game -p rally_net --bin rally_server
+      - shell: bash
+        run: |
+          mkdir out
+          cp target/release/rally_game.exe out/CozyRally-windows-x64.exe
+          cp target/release/rally_server.exe out/rally_server-windows-x64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: out/*
+
+  linux-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - run: rustup toolchain install stable --profile minimal && rustup default stable && rustup target add x86_64-unknown-linux-musl
+      - run: cargo build --release --target x86_64-unknown-linux-musl -p rally_net --bin rally_server
+      - run: |
+          mkdir out
+          strip -o out/rally_server-linux-x64 target/x86_64-unknown-linux-musl/release/rally_server
+          chmod +x out/rally_server-linux-x64
+          out/rally_server-linux-x64 --help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-server
+          path: out/*
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Signing key present
+        env:
+          KS_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$KS_B64" ]; then
+            echo "::error::Secret ANDROID_DEBUG_KEYSTORE_B64 is not set. Add the keystore of earlier releases (see the top of release.yml), then re-run the failed jobs."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/ks"
+          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/ks/cozy-debug.keystore"
+          keytool -list -keystore "$RUNNER_TEMP/ks/cozy-debug.keystore" -storepass android -alias androiddebugkey | tail -1
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0 # versionCode = commit count
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11' # build-tools 31's d8 breaks on newer JDKs
+      - run: rustup toolchain install stable --profile minimal && rustup default stable && rustup target add aarch64-linux-android
+      - name: Android NDK r25c + SDK 31
+        run: |
+          SDK="$RUNNER_TEMP/sdk"; mkdir -p "$SDK/build-tools" "$SDK/platforms" && cd "$SDK"
+          for z in android-ndk-r25c-linux.zip build-tools_r31-linux.zip platform-31_r01.zip; do
+            curl -sSfLO "https://dl.google.com/android/repository/$z"
+          done
+          unzip -q android-ndk-r25c-linux.zip
+          unzip -q build-tools_r31-linux.zip -d bt && mv bt/android-12 build-tools/31.0.0
+          unzip -q platform-31_r01.zip -d pl && mv pl/android-12 platforms/android-31
+          echo "COZY_SDK=$SDK" >> "$GITHUB_ENV"
+      - name: Build APK
+        run: |
+          # build-inner.sh expects the Docker mounts of android/build.sh: /src and /opt/host-rustup
+          sudo ln -sfn "$GITHUB_WORKSPACE" /src
+          sudo ln -sfn "${RUSTUP_HOME:-$HOME/.rustup}" /opt/host-rustup
+          ANDROID_HOME="$COZY_SDK" NDK_HOME="$COZY_SDK/android-ndk-r25c" \
+          HOST_TOOLCHAIN="$(rustup show active-toolchain | cut -d' ' -f1)" \
+          CARGO_TARGET_DIR=/src/target COZY_VERSION_CODE="$(git rev-list --count HEAD)" \
+          COZY_DEBUG_KEYSTORE="$RUNNER_TEMP/ks/cozy-debug.keystore" \
+            bash /src/android/build-inner.sh release
+          mkdir out && cp target/android/cozy-rally.apk out/CozyRally-android-arm64.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: out/*
+
+  release:
+    needs: [windows, linux-server, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: art
+          merge-multiple: true
+      - name: README, checksums, publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/rally_game/Cargo.toml | head -1)
+          HASH=$(git rev-parse --short HEAD)
+          sed -e "s/{{VERSION}}/$VER/" -e "s/{{HASH}}/$HASH/" -e "s/{{DATE}}/$(date +%F)/" \
+              -e 's/Online race server for Linux x86-64 (glibc 2.35+)./Online race server for Linux x86-64 (static, runs on any distro)./' \
+              tools/release-README.txt | sed 's/$/\r/' > art/README.txt
+          (cd art && sha256sum CozyRally-* rally_server-* README.txt > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          NOTES="tools/release-notes/$TAG.md"
+          [ -f "$NOTES" ] || { echo "Cozy Rally $VER" > /tmp/notes.md; NOTES=/tmp/notes.md; }
+          gh release create "$TAG" art/* --verify-tag --title "Cozy Rally $VER" --notes-file "$NOTES"
