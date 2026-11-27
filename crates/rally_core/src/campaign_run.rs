@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Bump when physics / AI changes enough that cached reference times are stale.
-pub const REFERENCE_VERSION: u32 = 1;
+pub const REFERENCE_VERSION: u32 = 2;
 /// Car the reference runs use (the all-rounder), unless the stage restricts cars.
 pub const REFERENCE_CAR: u8 = 2;
 /// Assist level of the reference driver (Normal)
@@ -43,16 +43,21 @@ pub fn reference_car(stage: &StageDef) -> u8 {
 /// Drive a stage headless with a near-optimal autopilot (one lap / A to B).
 pub fn reference_run(stage: &StageDef) -> Option<ReferenceRun> {
     let track = Arc::new(Track::generate(&stage.params));
-    reference_run_on(track, reference_car(stage))
+    reference_run_laps(track, reference_car(stage), stage.laps.max(1))
 }
 
 pub fn reference_run_on(track: Arc<Track>, car: u8) -> Option<ReferenceRun> {
-    let mut world = World::new(track, &[RacerSetup { car_spec: car as usize, controller: Controller::Local(0) }], 1);
+    reference_run_laps(track, car, 1)
+}
+
+/// Reference run over `laps` laps (circuits; stages are always one run)
+pub fn reference_run_laps(track: Arc<Track>, car: u8, laps: u32) -> Option<ReferenceRun> {
+    let mut world = World::new(track, &[RacerSetup { car_spec: car as usize, controller: Controller::Local(0) }], laps);
     world.cars[0].assist_level = REFERENCE_ASSIST;
     let mut ai = AiDriver::with_personality(Personality { skill: 1.0, aggression: 1.0, consistency: 1.0 }, RubberBand::default(), 7);
     let mut splits = Vec::new();
     let mut resets = 0;
-    let max_ticks = (20.0 * 60.0 / TICK) as u64;
+    let max_ticks = ((20.0 + 6.0 * laps as f32) * 60.0 / TICK) as u64;
     let mut ticks = 0u64;
     while ticks < max_ticks {
         let inp = ai.drive(&world.cars[0], &world.track, TICK);

@@ -236,6 +236,7 @@ pub fn generate(inp: &ConditionsInput) -> (StageConditions, Vec<(f32, f32, Weath
             fog: fog.clamp(0.0, 1.0),
             overcast: overcast.clamp(0.0, 1.0),
             wind: [wind * wind_dir.cos(), wind * wind_dir.sin()],
+            ..Weather::default()
         };
         keys.push(ConditionsKey { s, weather: w });
     }
@@ -251,7 +252,7 @@ pub fn generate(inp: &ConditionsInput) -> (StageConditions, Vec<(f32, f32, Weath
         }
     }
     let ev = events.iter().map(|e| (e.0.max(0.0), e.1.min(road_len), e.2)).collect();
-    (StageConditions { keys }, ev)
+    (StageConditions { keys, ..Default::default() }, ev)
 }
 
 fn rng_free_wind(inten: f32) -> f32 {

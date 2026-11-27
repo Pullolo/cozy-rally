@@ -52,6 +52,11 @@ pub fn circuits() -> Vec<CircuitDef> {
     ]
 }
 
+/// Rough lap length (km) of a circuit size class
+pub fn approx_lap_km(size: u8) -> f32 {
+    [2.5, 4.5, 10.0, 20.0][size.min(3) as usize]
+}
+
 pub fn find_circuit(id: &str) -> Option<CircuitDef> {
     circuits().into_iter().find(|c| c.id == id)
 }

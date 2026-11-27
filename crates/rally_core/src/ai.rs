@@ -506,6 +506,30 @@ impl AiDriver {
 
         // ---------------- speed
         let mut v_target = free_speed;
+        // weather the speed plan doesn't know about: time-based weather (the plan was made
+        // for the conditions at the start, so follow the grip there is *now*), standing water
+        // (aquaplaning at the speed we'd like to carry) and slicks losing extra grip in the
+        // wet / on ice. v ~ sqrt(mu) keeps the braking points right. Rally stages with rally
+        // tyres are unaffected (factor 1).
+        if !track.conditions.keys.is_empty() {
+            let w = track.conditions.at(q.s);
+            let slick = car.spec.tyre == crate::vehicle::TyreType::Slick;
+            let mut ratio = 1.0f32;
+            if track.conditions.is_timed() {
+                let planned = line.grip[q.index % line.grip.len()].max(0.05);
+                ratio = (track.road_grip_at(q.s, q.lateral) / planned).clamp(0.2, 1.05);
+            }
+            if w.water > 0.0 {
+                ratio *= crate::weather::aquaplane_grip(w.water * 0.85, v_target.min(90.0), slick);
+            }
+            if slick {
+                let g = track.ground_at(car.pos, Some(q.index));
+                ratio *= crate::vehicle::tyre_surface_factor(car.spec.tyre, &g.props, w.wetness);
+            }
+            // and a touch of caution when they can barely see
+            let murk = 1.0 - 0.05 * ((w.fog - 0.8) / 0.2).clamp(0.0, 1.0);
+            v_target *= ratio.clamp(0.05, 1.05).sqrt() * murk;
+        }
         // personality: slow wobble
         let wobble = (1.0 - p.consistency) * 0.035 * ((self.time * 0.31 + self.phase).sin() * 0.7 + (self.time * 0.83 + self.phase * 1.7).sin() * 0.3);
         let mut scale = 1.0 + wobble;

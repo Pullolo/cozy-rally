@@ -7,10 +7,50 @@
 use crate::biome::Biome;
 use crate::surfacemap::SurfaceMode;
 use crate::track::{LayoutKind, TrackParams};
-use crate::weather::ConditionsSpec;
+use crate::vehicle::{car_specs, CarClass};
+use crate::weather::{ConditionsSpec, WeatherPreset, WeatherTurn};
 use serde::{Deserialize, Serialize};
 
 pub const CAMPAIGN_VERSION: u32 = 1;
+
+/// The two campaigns: rally stages (rally cars) and the circuit season (circuit cars).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CampaignKind {
+    #[default]
+    Rally,
+    Circuit,
+}
+
+impl CampaignKind {
+    pub const ALL: [CampaignKind; 2] = [CampaignKind::Rally, CampaignKind::Circuit];
+    pub fn name(self) -> &'static str {
+        match self {
+            CampaignKind::Rally => "Rally",
+            CampaignKind::Circuit => "Circuit",
+        }
+    }
+    pub fn car_class(self) -> CarClass {
+        match self {
+            CampaignKind::Rally => CarClass::Rally,
+            CampaignKind::Circuit => CarClass::Circuit,
+        }
+    }
+}
+
+/// What an event asks of you.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum EventKind {
+    /// Against the clock (stage A to B, or flying laps): medals from the reference time
+    #[default]
+    TimeTrial,
+    /// Wheel to wheel against AI rivals, from the back of the grid. Medals by place:
+    /// 3rd bronze, 2nd silver, a win gold, a win by `platinum_margin` seconds platinum.
+    Race {
+        rivals: u8,
+        /// AI skill 0..1
+        skill: f32,
+    },
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StageDef {
@@ -21,6 +61,50 @@ pub struct StageDef {
     pub params: TrackParams,
     /// Allowed car ids (empty = any car)
     pub cars: Vec<u8>,
+    #[serde(default)]
+    pub kind: EventKind,
+    /// Laps (circuits; stages are one run A to B)
+    #[serde(default = "one_lap")]
+    pub laps: u32,
+}
+
+fn one_lap() -> u32 {
+    1
+}
+
+impl StageDef {
+    pub fn is_race(&self) -> bool {
+        matches!(self.kind, EventKind::Race { .. })
+    }
+
+    /// Race distance in km
+    pub fn distance_km(&self) -> f32 {
+        match self.params.layout {
+            LayoutKind::PointToPoint { length_m } => length_m / 1000.0,
+            LayoutKind::Loop => crate::circuits::approx_lap_km(self.params.length_class) * self.laps as f32,
+        }
+    }
+
+    /// Winning margin (s) a race needs for platinum: grows with race length, 3..10 s
+    pub fn platinum_margin(&self) -> f32 {
+        (self.distance_km() * 0.45).clamp(3.0, 10.0)
+    }
+
+    /// Medal for finishing a race event in `place` (1-based), `margin` s ahead of second
+    pub fn race_medal(&self, place: usize, margin: f32) -> Medal {
+        match place {
+            1 if margin >= self.platinum_margin() => Medal::Platinum,
+            1 => Medal::Gold,
+            2 => Medal::Silver,
+            3 => Medal::Bronze,
+            _ => Medal::None,
+        }
+    }
+}
+
+/// Car ids of a class (campaign car pools)
+pub fn class_cars(class: CarClass) -> Vec<u8> {
+    car_specs().iter().filter(|c| c.class == class).map(|c| c.id).collect()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -75,6 +159,8 @@ fn stage(id: &str, name: &str, blurb: &str, seed: u64, biome: Biome, km: f32, di
 /// Same as `stage` with an explicit conditions spec (e.g. `ConditionsSpec::Storm`)
 #[allow(clippy::too_many_arguments)]
 fn stage_c(id: &str, name: &str, blurb: &str, seed: u64, biome: Biome, km: f32, difficulty: u8, surface: SurfaceMode, cars: &[u8], conditions: ConditionsSpec) -> StageDef {
+    // rally stages: rally cars only (slick-shod circuit racers are hopeless on gravel)
+    let cars = if cars.is_empty() { class_cars(CarClass::Rally) } else { cars.to_vec() };
     StageDef {
         id: id.into(),
         name: name.into(),
@@ -90,7 +176,9 @@ fn stage_c(id: &str, name: &str, blurb: &str, seed: u64, biome: Biome, km: f32, 
             discipline: crate::track::Discipline::Rally,
             night: false,
         },
-        cars: cars.to_vec(),
+        cars,
+        kind: EventKind::TimeTrial,
+        laps: 1,
     }
 }
 
@@ -153,8 +241,110 @@ pub fn campaign() -> Vec<Chapter> {
     ]
 }
 
+/// Chapters of a campaign
+pub fn campaign_of(kind: CampaignKind) -> Vec<Chapter> {
+    match kind {
+        CampaignKind::Rally => campaign(),
+        CampaignKind::Circuit => circuit_campaign(),
+    }
+}
+
+/// Stage / event by id (either campaign)
 pub fn find_stage(id: &str) -> Option<StageDef> {
-    campaign().into_iter().flat_map(|c| c.stages).find(|s| s.id == id)
+    CampaignKind::ALL.iter().flat_map(|k| campaign_of(*k)).flat_map(|c| c.stages).find(|s| s.id == id)
+}
+
+/// Which campaign an event belongs to
+pub fn campaign_kind_of(id: &str) -> Option<CampaignKind> {
+    CampaignKind::ALL.into_iter().find(|k| campaign_of(*k).iter().any(|c| c.stages.iter().any(|s| s.id == id)))
+}
+
+// ------------------------------------------------------------------ circuit season
+
+/// Weather that turns during the race: `from` -> `to`, fully there at `at` s (built over
+/// `ramp` s), clearing again after `lasts` s (0 = stays)
+fn turn(from: WeatherPreset, to: WeatherPreset, at: u16, lasts: u16, ramp: u16) -> ConditionsSpec {
+    ConditionsSpec::Timeline(WeatherTurn { from, to, at, lasts, ramp })
+}
+
+/// One circuit event on a named circuit (`circuits::circuits()` id) with its own weather,
+/// time of day, laps and format.
+#[allow(clippy::too_many_arguments)]
+fn gp(id: &str, name: &str, blurb: &str, circuit: &str, laps: u32, kind: EventKind, cars: &[u8], conditions: ConditionsSpec, night: bool) -> StageDef {
+    let c = crate::circuits::find_circuit(circuit).unwrap_or_else(|| panic!("unknown circuit {circuit}"));
+    let mut params = c.params;
+    params.conditions = conditions;
+    params.night = night;
+    let cars = if cars.is_empty() { class_cars(CarClass::Circuit) } else { cars.to_vec() };
+    StageDef { id: id.into(), name: name.into(), blurb: blurb.into(), params, cars, kind, laps }
+}
+
+fn race(rivals: u8, skill: f32) -> EventKind {
+    EventKind::Race { rivals, skill }
+}
+
+/// The circuit campaign: a season of club races, hot laps and night races where the
+/// weather is part of the challenge. Mostly sunshine, but every chapter has a surprise: a
+/// cloudburst that floods the track mid-race, sea fog you can't see through, black ice
+/// under the floodlights. Races start from the back of the grid.
+pub fn circuit_campaign() -> Vec<Chapter> {
+    use WeatherPreset::*;
+    const COMET: u8 = 5;
+    const ZEPHYR: u8 = 6;
+    const DRAGONFLY: u8 = 7;
+    let sunny = ConditionsSpec::Fixed(Clear);
+    vec![
+        Chapter {
+            name: "Club Season".into(),
+            biome: Biome::Meadow,
+            unlock_golds: 0,
+            stages: vec![
+                gp("gp1e1-daisy-hot-laps", "Daisy Park Hot Laps", "Three flying laps in the Comet GT. Sunshine, warm tarmac, no excuses.", "circuit-meadow-sprint", 3, EventKind::TimeTrial, &[COMET], sunny, false),
+                gp("gp1e2-daisy-club-race", "Daisy Park Club Race", "Your first race: five rivals, four laps, and you start from the back.", "circuit-meadow-sprint", 4, race(5, 0.55), &[], sunny, false),
+                gp("gp1e3-meadowbrook-cloudburst", "Meadowbrook Cloudburst", "Clear skies forecast. The farmers are bringing the cows in anyway.", "circuit-meadow-gp", 3, race(5, 0.6), &[], turn(Clear, Downpour, 170, 120, 25), false),
+            ],
+        },
+        Chapter {
+            name: "Coastal Series".into(),
+            biome: Biome::Coast,
+            unlock_golds: 2,
+            stages: vec![
+                gp("gp2e1-harbour-lights", "Harbour Lights", "A night race round the harbour. Floodlights on the pit straight, darkness by the pier.", "circuit-coast-sprint", 5, race(5, 0.65), &[], sunny, true),
+                gp("gp2e2-lighthouse-sea-fret", "Sea Fret", "Two hot laps in the Zephyr. A sea fog rolls in off the bay, and it gets thick.", "circuit-coast-gp", 2, EventKind::TimeTrial, &[ZEPHYR], turn(Clear, ThickFog, 75, 0, 40), false),
+                gp("gp2e3-lighthouse-monsoon", "Monsoon Grand Prix", "It has rained all week and it isn't stopping. Standing water everywhere: slicks float.", "circuit-coast-gp", 2, race(5, 0.6), &[], ConditionsSpec::Fixed(Downpour), false),
+            ],
+        },
+        Chapter {
+            name: "Desert Heat".into(),
+            biome: Biome::Desert,
+            unlock_golds: 4,
+            stages: vec![
+                gp("gp3e1-mirage-formula", "Mirage Formula", "Three laps in the Dragonfly, the open-wheel rocket. Brake later than feels sane.", "circuit-desert-sprint", 3, EventKind::TimeTrial, &[DRAGONFLY], sunny, false),
+                gp("gp3e2-canyon-international", "Canyon International", "Full field, full sun, a proper Grand Prix at the foot of the mesas.", "circuit-desert-gp", 3, race(5, 0.72), &[], sunny, false),
+                gp("gp3e3-canyon-haboob", "Haboob", "A night race. Halfway through, a wall of dust swallows the circuit.", "circuit-desert-gp", 3, race(5, 0.68), &[], turn(Clear, ThickFog, 150, 100, 20), true),
+            ],
+        },
+        Chapter {
+            name: "Mountain Endurance".into(),
+            biome: Biome::Forest,
+            unlock_golds: 7,
+            stages: vec![
+                gp("gp4e1-sudety-grand-prix", "Sudety Grand Prix", "Fast, wooded and unforgiving. The rivals are good now.", "circuit-forest-gp", 3, race(5, 0.8), &[], sunny, false),
+                gp("gp4e2-black-forest-storm", "Black Forest Storm", "One lap of the ring in the Zephyr, ten kilometres. The storm hits somewhere in the middle.", "circuit-forest-ring", 1, EventKind::TimeTrial, &[ZEPHYR], turn(Clear, Downpour, 110, 140, 30), false),
+                gp("gp4e3-sudety-black-ice", "Black Ice", "A freezing clear night. The road glitters under the lamps: there is almost no grip.", "circuit-forest-gp", 3, race(5, 0.72), &[], ConditionsSpec::Fixed(BlackIce), true),
+            ],
+        },
+        Chapter {
+            name: "Ring Masters".into(),
+            biome: Biome::Autumn,
+            unlock_golds: 10,
+            stages: vec![
+                gp("gp5e1-maplering-10k", "Maplering 10K", "Ten kilometres of crests and blind corners, wheel to wheel with the best.", "circuit-autumn-ring", 1, race(5, 0.85), &[], sunny, false),
+                gp("gp5e2-clifftop-night-storm", "Clifftop Night Storm", "Night on the clifftop ring. The storm is coming in off the sea, and it won't pass.", "circuit-coast-ring", 1, race(5, 0.8), &[], turn(Clear, Downpour, 80, 0, 35), true),
+                gp("gp5e3-the-green-hell", "The Green Hell", "Twenty kilometres of Nordring against the fastest field of the season. Fog in the valleys, then sun again. Win this.", "circuit-meadow-nordring", 1, race(5, 0.9), &[], turn(Clear, ThickFog, 260, 160, 40), false),
+            ],
+        },
+    ]
 }
 
 // ------------------------------------------------------------------ leaderboards

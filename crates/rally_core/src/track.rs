@@ -822,8 +822,9 @@ impl Track {
         let mut props = SurfaceProps::lerp(SurfaceProps::lerp(road, shoulder, e1), off.props(), e2);
         if !self.conditions.keys.is_empty() {
             // weather: wet roads lose grip (per surface), puddles in the ruts a bit more
-            let w = self.conditions.at(q.s);
-            if w.wetness > 0.0 {
+            let mut w = self.conditions.at(q.s);
+            w.ice *= self.ice_patch(q.s, q.lateral);
+            if w.wetness > 0.0 || w.ice > 0.0 || w.water > 0.0 {
                 let l = |a: f32, b: f32, t: f32| a + (b - a) * t;
                 let f_road = l(w.grip_factor(m.a), w.grip_factor(m.b), m.t);
                 let f_sh = l(w.grip_factor(sa), w.grip_factor(sb), m.t);
@@ -981,17 +982,27 @@ impl Track {
         if self.conditions.keys.is_empty() {
             return 0.0;
         }
-        let wet = self.conditions.at(s).wetness;
+        let w = self.conditions.at(s);
+        let (wet, flood) = (w.wetness, w.water.clamp(0.0, 1.0));
         if wet < 0.25 {
             return 0.0;
         }
         let i = ((s / SAMPLE_SPACING) as isize).clamp(0, self.samples.len() as isize - 1) as usize;
         let hw = self.samples[i].half_width;
         let rut = (lat.abs() - hw * 0.42).abs();
-        let in_rut = 1.0 - smoothstep(0.5, 1.4, rut);
+        // a flooded road: wider, joined-up rivers across the ruts
+        let in_rut = (1.0 - smoothstep(0.5 + 1.6 * flood, 1.4 + 2.6 * flood, rut)).max(0.0);
         let n = noise::value2(s * 0.09, lat * 0.6, self.params.seed as u32 ^ 0x9D11) * 0.5 + 0.5;
-        let blob = smoothstep(0.55, 0.7, n);
+        let blob = smoothstep(0.55 - 0.3 * flood, 0.7 - 0.25 * flood, n);
         (blob * in_rut * smoothstep(0.25, 0.7, wet)).clamp(0.0, 1.0)
+    }
+
+    /// Black ice lies in patches (shaded stretches, dips): 0.25..1 of the weather's ice
+    /// along the road, ~40-120 m long, a little worse towards the verges
+    pub fn ice_patch(&self, s: f32, lat: f32) -> f32 {
+        let n = noise::fbm(s / 70.0, 0.37, 2, self.params.seed as u32 ^ 0x1CE5) * 0.5 + 0.5;
+        let edge = (lat.abs() / 6.0).min(1.0) * 0.15;
+        (0.25 + 0.75 * smoothstep(0.35, 0.65, n) + edge).min(1.0)
     }
 
     /// Grip multiplier of the road surface at (s, lateral) including weather and puddles
@@ -1002,7 +1013,8 @@ impl Track {
         if self.conditions.keys.is_empty() {
             return g;
         }
-        let w = self.conditions.at(s);
+        let mut w = self.conditions.at(s);
+        w.ice *= self.ice_patch(s, lat);
         let f = w.grip_factor(m.a) + (w.grip_factor(m.b) - w.grip_factor(m.a)) * m.t;
         g * f * (1.0 - 0.16 * self.puddle_at(s, lat))
     }
@@ -1014,6 +1026,7 @@ fn build_conditions(params: &TrackParams, biome: Biome, heights: &[f32], start_s
     match params.conditions {
         ConditionsSpec::BiomeDefault => (StageConditions::default(), Vec::new()),
         ConditionsSpec::Fixed(p) => (StageConditions::uniform(p.weather()), Vec::new()),
+        ConditionsSpec::Timeline(turn) => (StageConditions::timeline(turn), Vec::new()),
         ConditionsSpec::Dynamic | ConditionsSpec::Storm => crate::conditions::generate(&crate::conditions::ConditionsInput {
             seed: params.seed,
             biome,

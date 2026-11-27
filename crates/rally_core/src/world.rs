@@ -102,6 +102,8 @@ impl World {
 
     pub fn tick(&mut self) {
         let dt = TICK;
+        // time-based (circuit) weather follows the race clock
+        self.track.conditions.set_clock(self.race.clock);
         for (i, c) in self.cars.iter_mut().enumerate() {
             c.input = self.inputs[i];
             c.prev_pos = c.pos;

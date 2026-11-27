@@ -1084,8 +1084,16 @@ impl Car {
             // compound vs surface (slicks: great on tarmac, hopeless off it / in the wet) and
             // load sensitivity (grip grows less than linearly with load, so downforce helps
             // but not without bound)
-            let wet = if track.conditions.keys.is_empty() { 0.0 } else { track.conditions.at(q.s).wetness };
-            let compound = tyre_surface_factor(spec.tyre, &props, wet);
+            let wx = if track.conditions.keys.is_empty() { crate::weather::Weather { wind: [0.0; 2], ..Default::default() } } else { track.conditions.at(q.s) };
+            let wet = wx.wetness;
+            // standing water: the tyre floats at speed (more where puddles collect)
+            let aqua = if wx.water > 0.0 {
+                let depth = (wx.water * (0.55 + 0.45 * track.puddle_at(q.s, q.lateral))).min(1.0);
+                crate::weather::aquaplane_grip(depth, v_long_body.abs(), spec.tyre == TyreType::Slick)
+            } else {
+                1.0
+            };
+            let compound = tyre_surface_factor(spec.tyre, &props, wet) * aqua;
             let fz_nom = spec.mass * GRAVITY * 0.25;
             let load_k = (1.0 - load_sensitivity(spec.tyre) * (fz / fz_nom - 1.0)).clamp(0.55, 1.1);
             let mu = spec.tire_grip * props.grip * grip_bias * compound * load_k;
@@ -1544,7 +1552,9 @@ pub fn tyre_surface_factor(tyre: TyreType, p: &SurfaceProps, wetness: f32) -> f3
         TyreType::Rally => 1.0,
         TyreType::Slick => {
             let loose = p.looseness();
-            let icy = ((0.5 - p.grip) / 0.2).clamp(0.0, 1.0);
+            // icy ground (snow / ice surfaces). Sealed roads don't count: black ice from the
+            // weather already lowers their grip (counting it twice left nothing to drive on)
+            let icy = ((0.5 - p.grip) / 0.2).clamp(0.0, 1.0) * (1.0 - p.paved.clamp(0.0, 1.0));
             (1.0 - 0.68 * loose - 0.4 * icy).max(0.28) * (1.0 - 0.24 * wetness.clamp(0.0, 1.0))
         }
     }
