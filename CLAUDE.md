@@ -82,7 +82,8 @@ tools\release.ps1                                         # all artifacts -> dis
   `tools\release-README.txt`) and SHA256SUMS. Smoke-test the exe and install the APK on the
   phone before handing it over.
 - Or from anywhere (e.g. a cloud session): add `tools/release-notes/v<ver>.md`, commit, then
-  `git tag v<ver> && git push origin v<ver>`. `.github/workflows/release.yml` builds everything on
+  `git tag v<ver> && git push origin v<ver>` (or run the Release workflow on main with the tag
+  name, e.g. when tags can't be pushed). `.github/workflows/release.yml` builds everything on
   GitHub (Windows MSVC, static musl Linux server, APK) and publishes the release. It signs the APK
   with the repository secret `ANDROID_DEBUG_KEYSTORE_B64` (base64 of the keystore below) and
   fails before signing without it.
