@@ -24,6 +24,7 @@ fn biome_of(style: &BiomeStyle) -> Biome {
         "Canyon Dunes" => Biome::Desert,
         "Seaside Cliffs" => Biome::Coast,
         "Mountain Forest" => Biome::Forest,
+        "Snowy Taiga" => Biome::Taiga,
         _ => Biome::Meadow,
     }
 }
@@ -189,6 +190,8 @@ fn birch(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
     let c = match b {
         Biome::Autumn => [0.98, 0.78, 0.25],
         Biome::Snow => [0.85, 0.75, 0.35],
+        // hoarfrost on the bare winter birches
+        Biome::Taiga => [0.90, 0.91, 0.96],
         _ => mix(style.leaves[1], [0.75, 0.85, 0.35], 0.4),
     };
     let mk = m.mark();
@@ -219,7 +222,7 @@ fn blossom(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
 
 fn pine(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
     let trunk = rgb(style.trunk);
-    let snowy = biome_of(style) == Biome::Snow;
+    let snowy = biome_of(style).is_snowy();
     m.frustum(f.at(0.0, 0.6, 0.0), 0.22, 0.16, 0.6, 5, trunk, trunk);
     let c = shade(style.leaves[0], 0.85 + 0.1 * (p.variant % 3) as f32);
     let mk = m.mark();
@@ -287,6 +290,66 @@ fn log_pile(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
     }
 }
 
+/// Snow-laden taiga spruce (~13 m): short bare trunk, dark drooping tiers, each carrying a
+/// heavy snow cap that leaves a green fringe underneath. Kept lean (~300 vertices): the
+/// taiga has thousands of them.
+fn snow_spruce(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
+    let trunk = rgb(shade(style.trunk, 0.8));
+    m.frustum(f.at(0.0, 1.3, 0.0), 0.3, 0.2, 1.3, 4, trunk, trunk);
+    let c = shade(style.leaves[(p.variant % 2) as usize], 0.88 + 0.16 * f.r(4.0));
+    // how much snow it carries (fresh dump vs. wind-shaken)
+    let load = 0.5 + 0.18 * f.r(5.0);
+    let mk = m.mark();
+    let tiers = 5;
+    let segs = 6;
+    let spin = f.r(6.0) * std::f32::consts::TAU;
+    for i in 0..tiers {
+        let t = i as f32 / (tiers - 1) as f32;
+        let y = 2.8 + t * 8.6;
+        let r = 2.6 * (1.0 - t) + 0.55;
+        let hh = 1.45 - 0.3 * t;
+        let col = shade(c, 0.9 + t * 0.14);
+        // twist each tier so the facets don't line up
+        let rot = Quat::from_rotation_y(spin + i as f32 * 0.5);
+        m.frustum(f.atr(0.0, y, 0.0, rot), r, 0.0, hh, segs, rgb(col), rgb(shade(col, 0.6)));
+        // snow cap: the sides of a slightly wider cone over the upper part of the tier (its
+        // base would be hidden inside the tier, so it has none)
+        let cut = 1.0 - load;
+        let base_y = y - hh + 2.0 * hh * cut;
+        let top = f.p(0.0, y + hh + 0.06, 0.0);
+        let cr = r * (1.0 - cut) * 1.08 + 0.04;
+        let snow = rgb(shade(SNOW, 0.97 + 0.04 * f.r(i as f32 + 9.0)));
+        let ring = |k: usize| {
+            let a = spin + i as f32 * 0.5 + k as f32 / segs as f32 * std::f32::consts::TAU;
+            f.p(a.cos() * cr, base_y, a.sin() * cr)
+        };
+        for k in 0..segs {
+            m.tri(ring((k + 1) % segs), ring(k), top, snow);
+        }
+    }
+    sway_up(m, mk, f.pos.y, 3.0 * f.s, 10.0 * f.s, 0.25);
+}
+
+/// Scots pine of the northern forest (~14 m): long bare trunk glowing orange up top, a
+/// flat-topped crown of dark clumps, each with snow lying on it
+fn snow_pine(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
+    let low = rgb(shade(style.trunk, 0.85));
+    let high = rgb([0.78, 0.46, 0.28]);
+    let h = 10.0 + 1.5 * f.r(3.0);
+    m.frustum(f.at(0.0, h * 0.5, 0.0), 0.32, 0.17, h * 0.5, 5, low, high);
+    let lean = if p.variant % 2 == 0 { 1.0 } else { -1.0 };
+    m.beam(f.p(0.0, h * 0.85, 0.0), f.p(1.4 * lean, h * 0.97, 0.4), 0.1, high);
+    let c = shade(style.leaves[0], 0.95 + 0.12 * f.r(1.0));
+    let mk = m.mark();
+    let clumps = [(0.0f32, h + 1.2, 0.0f32, 2.0f32, 1.05f32), (1.6 * lean, h + 0.3, 0.4, 1.45, 0.75), (-1.1 * lean, h + 0.6, -0.6, 1.35, 0.72)];
+    for (k, (x, y, z, rx, ry)) in clumps.iter().enumerate() {
+        m.blob(f.at(*x, *y, *z), Vec3::new(*rx, *ry, *rx), 2, 6, rgb(shade(c, 0.92 + 0.06 * k as f32)));
+        // snow lying on top of the clump
+        m.blob(f.at(*x, y + ry * 0.55, *z), Vec3::new(rx * 0.82, ry * 0.42, rx * 0.82), 2, 6, rgb(SNOW));
+    }
+    sway_up(m, mk, f.pos.y, (h - 1.0) * f.s, 4.0 * f.s, 0.35);
+}
+
 fn palm(m: &mut MeshBuilder, f: &Frame, style: &BiomeStyle) {
     let trunk = rgb(style.trunk);
     let mut prev = Vec3::ZERO;
@@ -314,18 +377,18 @@ fn palm(m: &mut MeshBuilder, f: &Frame, style: &BiomeStyle) {
 
 fn bush(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
     let b = biome_of(style);
-    let base = if b == Biome::Snow { [0.35, 0.5, 0.42] } else { style.leaves[p.variant as usize % 2] };
+    let base = if b.is_snowy() { [0.35, 0.5, 0.42] } else { style.leaves[p.variant as usize % 2] };
     let c = rgb(shade(base, 0.85));
     let mk = m.mark();
     m.blob(f.at(0.0, 0.45, 0.0), Vec3::new(0.9, 0.6, 0.9), 2, 6, c);
     m.blob(f.at(0.55, 0.35, 0.3), Vec3::new(0.6, 0.45, 0.6), 2, 5, rgb(shade(base, 0.95)));
     m.blob(f.at(-0.4, 0.3, 0.4), Vec3::new(0.5, 0.38, 0.5), 2, 5, rgb(shade(base, 0.8)));
-    if b == Biome::Snow {
+    if b.is_snowy() {
         m.blob(f.at(0.0, 0.85, 0.0), Vec3::new(0.65, 0.22, 0.65), 2, 6, rgb(SNOW));
     }
     sway_up(m, mk, f.pos.y, 0.2 * f.s, 0.8 * f.s, 0.25);
     if p.variant % 3 == 1 && b != Biome::Desert {
-        let berry = if b == Biome::Snow { [0.85, 0.2, 0.25] } else { [[0.9, 0.25, 0.35], [0.45, 0.35, 0.8], [0.98, 0.95, 0.98]][(f.seed * 3.0) as usize % 3] };
+        let berry = if b.is_snowy() { [0.85, 0.2, 0.25] } else { [[0.9, 0.25, 0.35], [0.45, 0.35, 0.8], [0.98, 0.95, 0.98]][(f.seed * 3.0) as usize % 3] };
         for k in 0..7 {
             let a = k as f32 * 2.4 + f.seed;
             m.blob(f.at(a.cos() * 0.75, 0.45 + (k % 3) as f32 * 0.15, a.sin() * 0.75), Vec3::splat(0.09), 1, 4, rgb(berry));
@@ -342,7 +405,7 @@ fn rock(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
         Biome::Meadow | Biome::Autumn | Biome::Coast if p.variant % 2 == 0 => {
             m.blob(f.at(-0.05, 0.92, 0.05), Vec3::new(0.6, 0.12, 0.5), 2, 6, rgb([0.42, 0.62, 0.3]));
         }
-        Biome::Snow => {
+        Biome::Snow | Biome::Taiga => {
             m.blob(f.at(-0.05, 0.9, 0.05), Vec3::new(0.6, 0.14, 0.5), 2, 6, rgb(SNOW));
         }
         _ => {}
@@ -388,7 +451,7 @@ fn grass(m: &mut MeshBuilder, f: &Frame, style: &BiomeStyle) {
     let g = match b {
         Biome::Autumn => [0.72, 0.62, 0.3],
         Biome::Desert => [0.78, 0.7, 0.42],
-        Biome::Snow => [0.55, 0.62, 0.5],
+        Biome::Snow | Biome::Taiga => [0.55, 0.62, 0.5],
         _ => shade(style.ground_a, 0.85),
     };
     let mk = m.mark();
@@ -465,7 +528,7 @@ fn cottage(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
     let roof = match b {
         Biome::Coast => [0.35, 0.55, 0.8],
         Biome::Autumn => [0.65, 0.35, 0.25],
-        Biome::Snow => SNOW,
+        Biome::Snow | Biome::Taiga => SNOW,
         _ => [[0.85, 0.42, 0.35], [0.82, 0.68, 0.42], [0.45, 0.6, 0.82]][p.variant as usize % 3],
     };
     let (hx, hz, h) = (3.0, 2.3, 2.6);
@@ -555,7 +618,7 @@ fn windmill(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
 fn fence(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
     let b = biome_of(style);
     let picket = b == Biome::Coast || (b == Biome::Meadow && p.variant % 2 == 1);
-    let col = if picket { WHITE } else if b == Biome::Snow { [0.5, 0.38, 0.28] } else { WOOD };
+    let col = if picket { WHITE } else if b.is_snowy() { [0.5, 0.38, 0.28] } else { WOOD };
     for x in [-2.0f32, 0.0, 2.0] {
         m.cube(f.at(x, 0.55, 0.0), Vec3::new(0.08, 0.55, 0.08), rgb(shade(col, 0.9)));
     }
@@ -572,7 +635,7 @@ fn fence(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
         for y in [0.45f32, 0.85] {
             m.beam(f.p(-2.05, y, 0.0), f.p(2.05, y + 0.04, 0.0), 0.11, rgb(col));
         }
-        if b == Biome::Snow {
+        if b.is_snowy() {
             m.cube(f.at(0.0, 0.92, 0.0), Vec3::new(2.0, 0.04, 0.11), rgb(SNOW));
         }
     }
@@ -812,6 +875,67 @@ fn deer(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
             m.beam(b, t, 0.04, rgb([0.85, 0.75, 0.6]));
             m.beam(f.p(sx * 0.16, 1.73, -0.53), f.p(sx * 0.12, 1.9, -0.68), 0.035, rgb([0.85, 0.75, 0.6]));
         }
+    }
+}
+
+/// Reindeer: stocky, grey-brown with a pale shaggy neck and big branching antlers
+fn reindeer(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
+    let fur = [[0.50, 0.42, 0.36], [0.58, 0.52, 0.46], [0.40, 0.34, 0.30]][p.variant as usize % 3];
+    let pale = [0.90, 0.88, 0.84];
+    legs(m, f, 0.16, 0.38, 0.6, shade(fur, 0.8));
+    m.blob(f.at(0.0, 0.85, 0.0), Vec3::new(0.3, 0.3, 0.56), 3, 7, rgb(fur));
+    // pale mane hanging under the neck
+    m.blob(f.at(0.0, 0.92, -0.42), Vec3::new(0.2, 0.26, 0.18), 2, 6, rgb(pale));
+    m.beam(f.p(0.0, 1.0, -0.42), f.p(0.0, 1.32, -0.56), 0.17, rgb(fur));
+    m.blob(f.at(0.0, 1.36, -0.66), Vec3::new(0.13, 0.13, 0.22), 2, 6, rgb(shade(fur, 0.9)));
+    m.blob(f.at(0.0, 1.32, -0.87), Vec3::splat(0.05), 1, 4, rgb(DARK));
+    m.blob(f.at(0.0, 0.95, 0.56), Vec3::new(0.09, 0.08, 0.05), 1, 4, rgb(pale));
+    let horn = rgb([0.86, 0.78, 0.64]);
+    for sx in [-1.0f32, 1.0] {
+        m.blob(f.at(sx * 0.13, 1.5, -0.6), Vec3::new(0.1, 0.04, 0.05), 1, 4, rgb(fur));
+        // main beam sweeps back and up, tines forward
+        let a = f.p(sx * 0.07, 1.48, -0.62);
+        let b = f.p(sx * 0.3, 1.9, -0.45);
+        let c = f.p(sx * 0.36, 2.25, -0.62);
+        m.beam(a, b, 0.045, horn);
+        m.beam(b, c, 0.04, horn);
+        m.beam(f.p(sx * 0.24, 1.8, -0.5), f.p(sx * 0.2, 1.95, -0.76), 0.035, horn);
+        m.beam(f.p(sx * 0.34, 2.08, -0.54), f.p(sx * 0.42, 2.2, -0.8), 0.03, horn);
+    }
+}
+
+/// Spectators' campfire on the snow: stone ring, crossed logs, flames, log benches and a
+/// few fans in bobble hats warming their hands (variant: how many)
+fn campfire(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
+    // trampled snow ring
+    m.blob(f.at(0.0, 0.0, 0.0), Vec3::new(2.2, 0.06, 2.2), 2, 9, rgb([0.86, 0.87, 0.92]));
+    for k in 0..9 {
+        let a = k as f32 / 9.0 * std::f32::consts::TAU;
+        m.blob(f.at(a.cos() * 0.62, 0.08, a.sin() * 0.62), Vec3::new(0.16, 0.1, 0.14), 1, 5, rgb(shade(STONE, 0.8 + 0.15 * f.r(k as f32))));
+    }
+    let bark = rgb(shade(style.trunk, 0.7));
+    for k in 0..3 {
+        let a = k as f32 * 1.05;
+        let d = Vec3::new(a.cos(), 0.0, a.sin()) * 0.45;
+        m.beam(f.p(-d.x, 0.08, -d.z), f.p(d.x, 0.3, d.z), 0.09, bark);
+    }
+    m.blob(f.at(0.0, 0.12, 0.0), Vec3::new(0.35, 0.08, 0.35), 2, 6, rgb([0.95, 0.42, 0.18]));
+    m.frustum(f.at(0.0, 0.42, 0.0), 0.3, 0.0, 0.34, 6, rgb([1.0, 0.55, 0.18]), rgb([1.0, 0.55, 0.18]));
+    m.frustum(f.at(0.06, 0.52, 0.04), 0.16, 0.0, 0.36, 5, rgb([1.0, 0.86, 0.35]), rgb([1.0, 0.86, 0.35]));
+    // two log benches
+    for (z, rot) in [(-1.6f32, 0.0f32), (1.6, 0.3)] {
+        m.cylinder(f.atr(0.0, 0.22, z, Quat::from_rotation_y(rot) * Quat::from_rotation_z(FRAC_PI_2)), 0.2, 1.1, 7, bark, rgb([0.86, 0.70, 0.48]));
+    }
+    let hats = [[0.9, 0.3, 0.3], [0.35, 0.55, 0.9], [0.98, 0.82, 0.3], [0.5, 0.78, 0.5], [0.8, 0.5, 0.9]];
+    let n = 2 + (p.variant % 4) as usize;
+    for k in 0..n {
+        let a = k as f32 / n as f32 * std::f32::consts::TAU + 0.4;
+        let (x, z) = (a.cos() * 1.5, a.sin() * 1.5);
+        let coat = PASTELS[(k + p.variant as usize) % 6];
+        person(m, f, x, z, shade(coat, 0.85), Some(hats[(k * 2 + p.variant as usize) % 5]), z.abs() > 1.2);
+        // bobble on the hat
+        let y = if z.abs() > 1.2 { 1.45 } else { 1.8 };
+        m.blob(f.at(x, y, z), Vec3::splat(0.08), 1, 4, rgb(WHITE));
     }
 }
 
@@ -1159,10 +1283,11 @@ fn snowman(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
     }
 }
 
-fn ski_cabin(m: &mut MeshBuilder, f: &Frame, p: &Prop) {
+fn ski_cabin(m: &mut MeshBuilder, f: &Frame, p: &Prop, style: &BiomeStyle) {
     let (hx, hz, h) = (3.0, 2.4, 2.6);
     plinth(m, f, hx, hz);
-    let logs = [[0.55, 0.38, 0.26], [0.5, 0.34, 0.23]];
+    // the taiga's cabins are painted Falu red
+    let logs = if biome_of(style) == Biome::Taiga { [[0.66, 0.22, 0.18], [0.6, 0.19, 0.16]] } else { [[0.55, 0.38, 0.26], [0.5, 0.34, 0.23]] };
     for k in 0..8 {
         // logs stack edge to edge (no overlapping bands) and alternate a little in depth
         let y = 0.17 + k as f32 * 0.33;
@@ -1798,6 +1923,10 @@ pub fn add_prop(m: &mut MeshBuilder, p: &Prop, style: &BiomeStyle) {
         TallTree => tall_tree(m, &f, p, style),
         Spruce => spruce(m, &f, p, style),
         LogPile => log_pile(m, &f, p, style),
+        SnowSpruce => snow_spruce(m, &f, p, style),
+        SnowPine => snow_pine(m, &f, p, style),
+        Reindeer => reindeer(m, &f, p),
+        Campfire => campfire(m, &f, p, style),
         Palm => palm(m, &f, style),
         Bush => bush(m, &f, p, style),
         Rock => rock(m, &f, p, style),
@@ -1830,7 +1959,7 @@ pub fn add_prop(m: &mut MeshBuilder, p: &Prop, style: &BiomeStyle) {
         Tumbleweed => tumbleweed(m, &f),
         Adobe => adobe(m, &f, p),
         Snowman => snowman(m, &f, p),
-        SkiCabin => ski_cabin(m, &f, p),
+        SkiCabin => ski_cabin(m, &f, p, style),
         FrozenPond => frozen_pond(m, &f, p),
         Pumpkin => pumpkin(m, &f, p),
         Scarecrow => scarecrow(m, &f, p),
@@ -1876,6 +2005,7 @@ pub fn catalogue_kinds(b: Biome) -> Vec<(PropKind, u8)> {
         Biome::Desert => &[(Cactus, 0), (Cactus, 1), (Palm, 0), (Mesa, 0), (Tumbleweed, 0), (Adobe, 0), (Cow, 2)],
         Biome::Coast => &[(Palm, 0), (Lighthouse, 0), (BeachUmbrella, 0), (BeachUmbrella, 1), (Boat, 0), (Boat, 1), (Cottage, 2), (Sheep, 0)],
         Biome::Forest => &[(TallTree, 0), (TallTree, 1), (Spruce, 0), (Spruce, 1), (Birch, 0), (LogPile, 0), (SkiCabin, 0), (Deer, 0)],
+        Biome::Taiga => &[(SnowSpruce, 0), (SnowSpruce, 1), (SnowPine, 0), (SnowPine, 1), (Birch, 0), (LogPile, 0), (SkiCabin, 0), (FrozenPond, 0), (Reindeer, 0), (Reindeer, 1), (Campfire, 1), (Campfire, 3)],
     };
     v.extend_from_slice(special);
     v

@@ -106,6 +106,8 @@ struct SkyUniforms {
     params: [f32; 4],
     /// x overcast, y lightning flash, z precipitation
     params2: [f32; 4],
+    /// x aurora strength
+    params3: [f32; 4],
 }
 
 fn sky_meta() -> ShaderMeta {
@@ -122,6 +124,7 @@ fn sky_meta() -> ShaderMeta {
                 UniformDesc::new("sun_color", UniformType::Float3),
                 UniformDesc::new("params", UniformType::Float4),
                 UniformDesc::new("params2", UniformType::Float4),
+                UniformDesc::new("params3", UniformType::Float4),
             ],
         },
     }
@@ -183,6 +186,8 @@ pub struct Environment {
     pub time: f32,
     /// 0 = day .. 1 = night (headlights on, stars, dark weather)
     pub night: f32,
+    /// 0..1 northern lights in the night sky (taiga nights)
+    pub aurora: f32,
 }
 
 /// Maximum dynamic lights per draw (headlights at night)
@@ -972,6 +977,7 @@ impl Gpu {
             sun_color: env.sun_color,
             params: [if self.target == Target::Scene { 1.0 } else { 0.0 }, 0.0011, (1.0 - 0.95 * wl.overcast).max(0.0) * (1.0 - wl.murk()), env.time],
             params2: [wl.overcast, wl.flash, wl.precip, env.night],
+            params3: [env.aurora, 0.0, 0.0, 0.0],
         };
         ctx.apply_uniforms(UniformsSource::table(&u));
         for c in &mesh.chunks {

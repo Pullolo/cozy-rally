@@ -69,6 +69,8 @@ pub fn grade_for(biome: Biome) -> Grade {
         Biome::Coast => Grade { lift: [0.95, 0.98, 1.05], gain: [1.04, 1.01, 0.96], saturation: 1.1, warmth: 0.45, ..d },
         // cool, slightly misty mountain woods
         Biome::Forest => Grade { lift: [0.96, 0.98, 1.03], gain: [1.03, 1.02, 0.97], saturation: 1.0, warmth: 0.45, softness: 0.2, ..d },
+        // golden-hour winter: warm sunlit snow, lilac shade, soft glow round the low sun
+        Biome::Taiga => Grade { lift: [0.96, 0.95, 1.05], gain: [1.05, 1.0, 0.95], saturation: 1.06, contrast: 1.05, warmth: 0.6, threshold: 0.92, knee: 0.4, softness: 0.15, ..d },
     }
 }
 
@@ -119,10 +121,10 @@ pub fn look_for(track: &Track, tod: TimeOfDay) -> BiomeStyle {
         let d = Vec3::from(st.sun_dir).normalize();
         let flat = Vec3::new(-d.x, 0.0, -d.z).normalize_or_zero();
         st.sun_dir = (flat * 0.72 + Vec3::Y * 0.69).normalize().to_array();
-        let snow = track.biome == Biome::Snow;
+        let snow = track.biome.is_snowy();
         // snow and sand reflect the moon: those nights are brighter
         let bright = match track.biome {
-            Biome::Snow => 1.6,
+            Biome::Snow | Biome::Taiga => 1.6,
             Biome::Desert => 1.25,
             _ => 1.0,
         };
@@ -132,6 +134,11 @@ pub fn look_for(track: &Track, tod: TimeOfDay) -> BiomeStyle {
         st.sky_horizon = if snow { [0.07, 0.10, 0.19] } else { [0.05, 0.07, 0.16] };
         st.fog = [0.020, 0.028, 0.065];
         st.fog_density = st.fog_density.max(0.0045) * 1.6;
+        if track.biome == Biome::Taiga {
+            // the aurora tints the snow and the sky low down a faint green
+            st.sky_horizon = [0.05, 0.12, 0.15];
+            st.ambient = [st.ambient[0], st.ambient[1] + 0.014, st.ambient[2] + 0.004];
+        }
     }
     st
 }
@@ -157,6 +164,8 @@ impl<'a> GroundPainter<'a> {
                 PropKind::Pine => (0.9, 2.6),
                 PropKind::TallTree => (1.0, 4.2),
                 PropKind::Spruce => (1.0, 3.0),
+                PropKind::SnowSpruce => (1.0, 3.0),
+                PropKind::SnowPine => (0.9, 2.8),
                 PropKind::Palm => (0.5, 2.4),
                 PropKind::Bush => (0.4, 1.6),
                 _ => continue,
@@ -216,6 +225,14 @@ impl<'a> GroundPainter<'a> {
                 col = mix(col, [0.80, 0.86, 0.98], hollow * 0.5);
                 col = mix(col, [0.62, 0.70, 0.66], (canopy * 0.25).min(0.3));
             }
+            Biome::Taiga => {
+                // lilac-blue shade in the hollows, wind-packed drifts, and the thinner,
+                // needle-strewn snow under the spruce canopy
+                let hollow = smoothstep(0.55, 0.25, v);
+                col = mix(col, [0.78, 0.82, 0.96], hollow * 0.45);
+                col = mix(col, [1.0, 0.99, 0.98], meadow * 0.25);
+                col = mix(col, [0.66, 0.70, 0.74], (canopy * 0.3).min(0.35));
+            }
             Biome::Forest => {
                 col = mix(col, [0.46, 0.58, 0.28], meadow * 0.3);
                 col = mix(col, shade(st.shoulder, 1.05), dirt * 0.2);
@@ -232,7 +249,7 @@ impl<'a> GroundPainter<'a> {
         }
         if let Some(w) = self.track.water_level {
             let beach = ((w + 1.4 - y) / 1.4).clamp(0.0, 1.0);
-            let sand = if biome == Biome::Snow { [0.80, 0.84, 0.90] } else { mix(st.shoulder, [0.93, 0.86, 0.66], 0.6) };
+            let sand = if biome.is_snowy() { [0.80, 0.84, 0.90] } else { mix(st.shoulder, [0.93, 0.86, 0.66], 0.6) };
             col = mix(col, sand, smoothstep(0.0, 1.0, beach));
             // wet sand right at the waterline
             col = mix(col, shade(sand, 0.8), smoothstep(0.55, 1.0, beach) * 0.6);
@@ -538,6 +555,13 @@ pub fn road_look(surface: Surface, st: &BiomeStyle) -> RoadLook {
         look.edge = st.road_edge;
         if surface == Surface::Snow {
             look.rut = mix(st.road, [0.70, 0.78, 0.93], 0.6);
+        }
+        if st.name == "Snowy Taiga" {
+            // sand-gritted packed snow with polished blue-ice ruts: reads clearly against
+            // the fresh snow on the banks
+            look.rut = mix(st.road, [0.58, 0.66, 0.84], 0.7);
+            look.stones = 0.3;
+            look.drifts = 0.45;
         }
     }
     look
@@ -970,6 +994,33 @@ fn add_far_prop(far: &mut MeshBuilder, near: &MeshBuilder, base: Vec3) {
     }
 }
 
+/// Far stand-in for a conifer that is widest at the bottom (snow spruce): a short trunk and
+/// one cone in the tree's average (snow-and-needle) colour. `add_far_prop` would see no
+/// crown wider than the base and make it a block.
+fn far_conifer(far: &mut MeshBuilder, near: &MeshBuilder, base: Vec3) {
+    let (mut min, mut max) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    let (mut c, mut n) = ([0.0f32; 3], 0.0f32);
+    for ch in &near.chunks {
+        for v in &ch.vertices {
+            let p = Vec3::from(v.pos);
+            min = min.min(p);
+            max = max.max(p);
+            c = [c[0] + v.color[0] as f32, c[1] + v.color[1] as f32, c[2] + v.color[2] as f32];
+            n += 255.0;
+        }
+    }
+    if n == 0.0 {
+        return;
+    }
+    let h = max.y - min.y;
+    let r = (max.x - min.x).max(max.z - min.z) * 0.5;
+    let col = shade([c[0] / n, c[1] / n, c[2] / n], 0.9);
+    let y0 = min.y + h * 0.12;
+    far.box_tapered(Mat4::from_translation(Vec3::new(base.x, (min.y + y0) * 0.5, base.z)), Vec3::new(r * 0.1, (y0 - min.y) * 0.5, r * 0.1), 0.8, rgb([0.35, 0.25, 0.2]));
+    let half = (max.y - y0) * 0.5;
+    far.frustum(Mat4::from_translation(Vec3::new(base.x, y0 + half, base.z)), r * 0.95, 0.0, half, 6, rgb(col), rgb(shade(col, 0.8)));
+}
+
 /// Circuits: is `p` on the track, kerbs, verge or a non-grass run-off (where nothing grows)?
 fn circuit_clear_zone(track: &Track, p: Vec3, hint: &mut Option<usize>) -> bool {
     let q = track.query(p, *hint);
@@ -1009,7 +1060,11 @@ pub fn prop_tiles(track: &Track, gpu: &mut Gpu) -> Vec<PropTile> {
         }
         let t = tiles.entry(key).or_default();
         t.0.append(&one);
-        add_far_prop(&mut t.1, &one, p.pos);
+        if p.kind == PropKind::SnowSpruce {
+            far_conifer(&mut t.1, &one, p.pos);
+        } else {
+            add_far_prop(&mut t.1, &one, p.pos);
+        }
     }
     let mut keys: Vec<_> = tiles.keys().cloned().collect();
     keys.sort();
@@ -1138,7 +1193,7 @@ pub fn detail_mesh(track: &Track, painter: &GroundPainter) -> MeshBuilder {
         let along = Vec3::new(smp.tangent.x, 0.0, smp.tangent.z).normalize();
         for side in [-1.0f32, 1.0] {
             let count = match biome {
-                Biome::Snow => 5,
+                Biome::Snow | Biome::Taiga => 5,
                 Biome::Desert => 6,
                 _ => 12,
             };
@@ -1210,7 +1265,7 @@ pub fn detail_mesh(track: &Track, painter: &GroundPainter) -> MeshBuilder {
                             d.tuft(p, rng.range(0.35, 0.7), rng.range_i(4, 7) as usize, base, tip);
                         }
                     }
-                    Biome::Snow => {
+                    Biome::Snow | Biome::Taiga => {
                         if r < 0.35 {
                             d.pebble(p, rng.range(0.08, 0.2), shade(st.cliff, rng.range(0.95, 1.2)));
                         } else if r < 0.55 {
@@ -1385,6 +1440,8 @@ fn hills_mesh(track: &Track, st: &BiomeStyle) -> MeshBuilder {
     ];
     let far_c = match track.biome {
         Biome::Snow => [0.80, 0.84, 0.95],
+        // far forested ridges fading to violet in the haze
+        Biome::Taiga => [0.42, 0.46, 0.60],
         Biome::Desert => mix(st.cliff, [0.9, 0.6, 0.5], 0.3),
         Biome::Autumn => [0.62, 0.48, 0.52],
         _ => [0.42, 0.55, 0.62],
@@ -1402,9 +1459,12 @@ fn hills_mesh(track: &Track, st: &BiomeStyle) -> MeshBuilder {
             }
             h + 8.0
         };
-        let base = match li {
-            0 => far_c,
-            1 => mix(far_c, st.ground_a, 0.45),
+        let base = match (li, track.biome) {
+            // taiga: dark spruce-covered hills dusted with snow, all the way to the horizon
+            (1, Biome::Taiga) => mix(far_c, st.leaves[0], 0.4),
+            (_, Biome::Taiga) if li > 1 => mix(st.leaves[0], st.ground_a, 0.25),
+            (0, _) => far_c,
+            (1, _) => mix(far_c, st.ground_a, 0.45),
             _ => mix(st.ground_a, st.leaves[0], 0.35),
         };
         let col_low = mix(shade(base, 0.85), haze, hz + 0.08);
@@ -1615,7 +1675,7 @@ impl Scene {
         let water = track.water_level.map(|w| gpu.upload(&water_mesh(track, w)));
         let apron = if track.water_level.is_none() { Some(gpu.upload(&apron_mesh(track))) } else { None };
         let water_shallow = match track.biome {
-            Biome::Snow => [0.62, 0.86, 0.92],
+            Biome::Snow | Biome::Taiga => [0.62, 0.86, 0.92],
             Biome::Autumn => [0.48, 0.72, 0.68],
             _ => [0.45, 0.85, 0.82],
         };
@@ -1630,7 +1690,7 @@ impl Scene {
             clouds,
             hills,
             apron,
-            env: Environment { sun_dir: n3(st.sun_dir), sun_color: st.sun_color, ambient: st.ambient, fog_color: st.fog, fog_density: st.fog_density, time: 0.0, night: if tod == TimeOfDay::Night { 1.0 } else { 0.0 } },
+            env: Environment { sun_dir: n3(st.sun_dir), sun_color: st.sun_color, ambient: st.ambient, fog_color: st.fog, fog_density: st.fog_density, time: 0.0, night: if tod == TimeOfDay::Night { 1.0 } else { 0.0 }, aurora: if tod == TimeOfDay::Night && track.biome == Biome::Taiga { 1.0 } else { 0.0 } },
             sky_top: st.sky_top,
             sky_horizon: st.sky_horizon,
             water_level: track.water_level,

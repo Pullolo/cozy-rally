@@ -200,6 +200,7 @@ impl Fx {
             Biome::Desert => Vec3::new(2.6, 0.0, 1.1),
             Biome::Coast => Vec3::new(2.0, 0.0, -0.9),
             Biome::Forest => Vec3::new(0.7, 0.0, 0.45),
+            Biome::Taiga => Vec3::new(0.5, 0.0, -0.3),
         };
         let locals = (0..world.cars.len()).filter(|&i| matches!(world.controllers[i], Controller::Local(_))).collect();
         Fx {

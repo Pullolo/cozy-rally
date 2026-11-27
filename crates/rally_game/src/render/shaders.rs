@@ -342,6 +342,7 @@ uniform vec3 sun_dir;
 uniform vec3 sun_color;
 uniform vec4 params; // x out mode, y sun size, z glow strength, w time
 uniform vec4 params2; // x overcast, y lightning flash, z precipitation, w night
+uniform vec4 params3; // x aurora
 
 float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float vnoise(vec2 p) {
@@ -381,6 +382,25 @@ void main() {
         float dust = vnoise(d.xz / (y + 0.3) * 9.0) * 0.6 + vnoise(d.xz / (y + 0.3) * 23.0) * 0.4;
         float fade = smoothstep(0.02, 0.28, y) * (1.0 - min(1.0, params2.x * 1.3));
         col += (vec3(0.85, 0.9, 1.0) * star + vec3(0.10, 0.11, 0.18) * band * dust) * fade * night;
+        // northern lights: slow green curtains with a violet hem, rays converging overhead
+        float au = params3.x * night;
+        if (au > 0.01) {
+            vec2 p = d.xz / (y + 0.12);
+            float tt = params.w * 0.04;
+            float a = 0.0;
+            for (int k = 0; k < 2; k++) {
+                float fk = float(k);
+                float centre = sin(p.x * 0.32 + fk * 2.3 + tt) * 0.8 + fk * 1.4 - 0.9 + 0.7 * vnoise(vec2(p.x * 0.9 + tt * 2.0, fk * 7.0));
+                float dist = p.y - centre;
+                // sharp lower edge, long soft fade upwards (like real curtains)
+                float curtain = exp(-dist * dist * (dist < 0.0 ? 18.0 : 2.2));
+                float rays = 0.45 + 0.55 * vnoise(vec2(p.x * 7.0 + tt * 5.0, fk * 3.0));
+                a += curtain * rays * (1.0 - 0.35 * fk);
+            }
+            vec3 ac = mix(vec3(0.22, 1.0, 0.55), vec3(0.72, 0.38, 0.95), smoothstep(0.3, 0.75, y));
+            float afade = smoothstep(0.02, 0.22, y) * (1.0 - min(1.0, params2.x * 1.4));
+            col += ac * a * afade * au * 0.6;
+        }
     }
     col = mix(col, disc_col, disc);
     // overcast / rain cloud deck: soft billows on a plane above, drifting with time

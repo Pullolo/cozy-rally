@@ -31,7 +31,7 @@ Everything is generated in code: stages, scenery, car models, engine sound and m
 
 ## Capabilities and Constraints
 
-- Rally stages and loops, circuits (2.5 km sprints up to the 20 km Nordring), 6 biomes (Sunny Meadow, Maple Woods, Frosty Peaks, Canyon Dunes, Seaside Cliffs, Mountain Forest), night races with headlights, weather.
+- Rally stages and loops, circuits (2.5 km sprints up to the 20 km Nordring), 7 biomes (Sunny Meadow, Maple Woods, Frosty Peaks, Canyon Dunes, Seaside Cliffs, Mountain Forest, Snowy Taiga), night races with headlights, weather.
 - 9 cars: Pip, Bramble, Thistle, Burrow, Blossom, Kestrel (rally); Comet, Zephyr, Dragonfly (circuit).
 - Pace notes with co-driver calls, AI opponents with racing lines, split-screen, gamepads, time trial with ghost, campaign, online multiplayer.
 - Android: touch controls; holds 60–120 fps on a recent phone on Low.

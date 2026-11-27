@@ -23,7 +23,9 @@ crates/rally_core/   headless simulation (no graphics). glam 0.27 shared with ma
   layout.rs    rally layout planner (corner complexes, exact loop closure), crests/jumps
   surfacemap.rs surface sections + organic patches with smooth transitions, road_color
   pacenotes.rs rally pace notes from the centre line (UI-agnostic, serialisable)
-  biome.rs     5 biomes: palette + surfaces + terrain character
+  biome.rs     7 biomes: palette + surfaces + terrain character; `Biome::is_snowy()` (Snow, Taiga)
+               shares snow caps / snowfall / bright snowy nights. Taiga: plowed snowbanks are
+               terrain berms beside the verge (track.rs `snowbank`), aurora on night stages
   race.rs      countdown, checkpoints, laps, placings, respawns
   world.rs     fixed 120 Hz tick (2 physics substeps), collisions, WorldEvent stream
   ai.rs        AI driver (follows the grip there is now under time-based weather / standing water)
@@ -109,8 +111,8 @@ Online test: run `rally_server --port 27999`, then two game instances with
 `COZY_ONLINE=127.0.0.1:27999 COZY_NAME=Alice COZY_ONLINE_LEAD=2` (leader: picks a 1-lap race and
 starts once 2 are in) and `COZY_ONLINE=127.0.0.1:27999 COZY_NAME=Bob`, plus `COZY_AUTOPLAY=1`
 and separate `COZY_SETTINGS` files.
-Other env hooks: `COZY_SPLIT=1` (2 players), `COZY_NO_HUD=1` (clean frames for screenshots: no HUD, touch widgets or racing line), `COZY_BIOME=0..6` (0 random, 1 Meadow, 2 Autumn,
-3 Snow, 4 Desert, 5 Coast, 6 Mountain Forest), `COZY_SCREEN=title|setup|help|race|campaign|stage_intro|stage`, `COZY_MSAA=1`,
+Other env hooks: `COZY_SPLIT=1` (2 players), `COZY_NO_HUD=1` (clean frames for screenshots: no HUD, touch widgets or racing line), `COZY_BIOME=0..7` (0 random, 1 Meadow, 2 Autumn,
+3 Snow, 4 Desert, 5 Coast, 6 Mountain Forest, 7 Snowy Taiga), `COZY_SCREEN=title|setup|help|race|campaign|stage_intro|stage`, `COZY_MSAA=1`,
 `COZY_CAMPAIGN=circuit` (campaign screen on the circuit season), `COZY_CAMPAIGN_STAGE=<event id>`,
 `COZY_UNLOCK_ALL=1`, `COZY_WEATHER_CLOCK=<s>` (start time-based weather that far in, e.g. a mid-race
 downpour), `COZY_WEATHER=...|downpour|thickfog|blackice`.

@@ -253,6 +253,15 @@ pub enum PropKind {
     Spruce,
     /// Stack of felled logs by the forest road
     LogPile,
+    // --- Snowy Taiga
+    /// Snow-laden spruce (~13 m at scale 1): dense dark tiers, each with a heavy snow cap
+    SnowSpruce,
+    /// Tall Scots pine with a snowy crown: long bare orange trunk (~14 m at scale 1)
+    SnowPine,
+    /// Reindeer
+    Reindeer,
+    /// Spectators' campfire with a lean-to and benches (variant: crowd size)
+    Campfire,
 }
 
 /// Lamp head position on a `PropKind::LampPost` in prop-local metres (before scale)
@@ -483,8 +492,27 @@ fn natural_height(style: &BiomeStyle, biome: Biome, seed: u32, x: f32, z: f32) -
             let m = noise::ridged(x * f * 0.8, z * f * 0.8, 3, seed + 11) * style.hill_amp * 0.9;
             base * 0.7 + m + detail
         }
+        Biome::Taiga => {
+            // rolling northern woodland: long low swells, rounded glacial hummocks
+            let swell = noise::fbm(x * f * 0.45, z * f * 0.45, 2, seed + 23) * style.hill_amp * 0.8;
+            let hummock = noise::fbm(x * f * 3.0, z * f * 3.0, 2, seed + 31) * style.hill_amp * 0.12;
+            base * 0.6 + swell + hummock + detail
+        }
         _ => base + detail,
     }
+}
+
+/// Plowed snowbank beside a taiga road: extra height `d` metres beyond the paved verge
+/// (`half_width + SHOULDER`). A soft berm ~0.5-1.1 m high peaking ~2 m out, varying along the
+/// road with the odd gap (farm tracks, plough turnouts) so it reads as piled snow, not a wall.
+fn snowbank(seed: u32, x: f32, z: f32, d: f32) -> f32 {
+    if d <= 0.0 || d >= 5.0 {
+        return 0.0;
+    }
+    let bell = smoothstep(0.0, 2.0, d) * (1.0 - smoothstep(2.0, 5.0, d));
+    let n = noise::fbm(x * 0.035, z * 0.035, 2, seed ^ 0x5b0a) * 0.5 + 0.5;
+    let gap = smoothstep(0.18, 0.3, n);
+    bell * (0.5 + 0.6 * n) * gap
 }
 
 impl Track {
@@ -652,10 +680,12 @@ impl Track {
                     let mut wsum = 1.0;
                     let mut hsum = nat;
                     let mut exact = None;
+                    let mut beyond = f32::MAX;
                     for &j in &sections {
                         let (lat, along_h, hw) = road_profile_at(&samples, j, q);
                         let core = hw + SHOULDER;
                         let d = lat.abs();
+                        beyond = beyond.min(d - core);
                         let t = smoothstep(core, core + BLEND, d);
                         if t <= 1e-4 {
                             exact = Some(along_h);
@@ -666,6 +696,9 @@ impl Track {
                         hsum += w * along_h;
                     }
                     h = exact.unwrap_or(hsum / wsum);
+                    if biome == Biome::Taiga && exact.is_none() {
+                        h += snowbank(noise_seed, x, z, beyond);
+                    }
                 }
                 let id = hf.idx(ix, iz);
                 hf.heights[id] = h;
@@ -1907,9 +1940,11 @@ impl Track {
                         let mut wsum = 1.0;
                         let mut hsum = nat_h;
                         let mut exact = None;
+                        let mut beyond = f32::MAX;
                         for &j in &sections {
                             let (lat, along_h, hw) = road_profile_at_open(&samples, j, q);
                             let core = hw + SHOULDER;
+                            beyond = beyond.min(lat.abs() - core);
                             let t = smoothstep(core, core + BLEND, lat.abs());
                             if t <= 1e-4 {
                                 exact = Some(along_h);
@@ -1920,6 +1955,9 @@ impl Track {
                             hsum += w * along_h;
                         }
                         h = exact.unwrap_or(hsum / wsum);
+                        if biome == Biome::Taiga && exact.is_none() {
+                            h += snowbank(noise_seed, x, z, beyond);
+                        }
                     }
                 }
                 hf.heights[id] = h;
@@ -2795,7 +2833,7 @@ impl<'a> PropPlacer<'a> {
                 let e = self.edge(i);
                 self.tape_line(i - 12, i + 12, outside * (e + 3.2));
             }
-            if self.t.biome == Biome::Forest && c > 1.0 / 42.0 {
+            if matches!(self.t.biome, Biome::Forest | Biome::Taiga) && c > 1.0 / 42.0 {
                 // banners on the outside of the bend, like a real event
                 let e = self.edge(i);
                 {
@@ -2820,7 +2858,14 @@ impl<'a> PropPlacer<'a> {
                 let edge = sj.half_width + SHOULDER;
                 let cnt = rng.range_i(4, 9);
                 self.crowd(rng, j, outside, 5.0, cnt, 1.4);
-                for k in 0..3 {
+                if self.t.biome == Biome::Taiga {
+                    // fans up on the snowbank around a campfire: the bank is the barrier
+                    let p = self.beside(j, outside * (edge + 7.5), rng.range(-2.0, 2.0));
+                    if self.clearance(p) > 5.0 && !self.under_water(p.y, 0.3) {
+                        self.push(PropKind::Campfire, p, yaw_facing((sj.pos - p).normalize_or_zero()), 1.0, 0.7, rng.range_i(0, 4) as u8);
+                    }
+                }
+                for k in 0..if self.t.biome == Biome::Taiga { 0 } else { 3 } {
                     let p = self.beside(j, outside * (edge + 2.2), (k as f32 - 1.0) * 2.4);
                     if self.clearance(p) > 1.4 {
                         let t = Vec3::new(sj.tangent.x, 0.0, sj.tangent.z).normalize();
@@ -2988,6 +3033,29 @@ impl<'a> PropPlacer<'a> {
                     self.around(rng, c, LogPile, 2, 6.0, 9.0, 1.2, (0.9, 1.2), 10.0);
                     self.around(rng, c, Deer, 2, 10.0, 16.0, 0.0, (0.9, 1.1), 12.0);
                 }
+                (Biome::Taiga, 0) => {
+                    // red log cabin (sauna smoke optional) with firewood and reindeer
+                    self.push(SkiCabin, c, face, 1.0, 3.8, v);
+                    self.around(rng, c, LogPile, 2, 6.0, 9.0, 1.2, (0.9, 1.2), 10.0);
+                    self.around(rng, c, Reindeer, 3, 9.0, 15.0, 0.0, (0.9, 1.1), 12.0);
+                }
+                (Biome::Taiga, 1) => {
+                    // frozen forest lake: fans on the ice round a campfire
+                    if let Some(y) = self.footprint(c, 5.0, 1.1) {
+                        self.push(FrozenPond, Vec3::new(c.x, y, c.z), rng.range(0.0, 6.28), 1.0, 0.0, v);
+                        self.around(rng, c, Campfire, 1, 8.0, 10.0, 0.7, (1.0, 1.0), 10.0);
+                    } else {
+                        self.push(Campfire, c, face, 1.0, 0.7, v);
+                    }
+                    self.around(rng, c, Reindeer, 4, 10.0, 16.0, 0.0, (0.9, 1.1), 12.0);
+                }
+                (Biome::Taiga, _) => {
+                    // logging camp: stacked timber under tall pines
+                    self.push(LogPile, c, face, 1.4, 2.4, v);
+                    self.around(rng, c, LogPile, 2, 5.0, 9.0, 1.4, (0.8, 1.2), 10.0);
+                    self.around(rng, c, Reindeer, 2, 9.0, 15.0, 0.0, (0.9, 1.1), 12.0);
+                    self.around(rng, c, SnowPine, 3, 10.0, 16.0, 0.45, (0.8, 1.1), 12.0);
+                }
                 (Biome::Forest, _) => {
                     // timber yard in a clearing
                     self.push(LogPile, c, face, 1.4, 2.4, v);
@@ -3028,7 +3096,7 @@ impl<'a> PropPlacer<'a> {
     fn fences(&mut self, noise_seed: u32) {
         let biome = self.t.biome;
         // no ranch fences in the desert or the deep forest
-        if biome == Biome::Desert || biome == Biome::Forest {
+        if matches!(biome, Biome::Desert | Biome::Forest | Biome::Taiga) {
             return;
         }
         let n = self.n() as isize;
@@ -3086,11 +3154,17 @@ impl<'a> PropPlacer<'a> {
                     Biome::Forest => {
                         if r < 0.6 { PropKind::Grass } else if r < 0.78 { PropKind::Mushroom } else if r < 0.96 { PropKind::Bush } else { PropKind::Rock }
                     }
+                    // dry stalks through the snow, snow-capped juniper, spruce saplings
+                    Biome::Taiga => {
+                        if r < 0.5 { PropKind::Grass } else if r < 0.8 { PropKind::Bush } else if r < 0.92 { PropKind::SnowSpruce } else { PropKind::Rock }
+                    }
                 };
                 let (scale, radius) = match kind {
                     PropKind::Rock => (rng.range(0.4, 0.7), 0.0),
                     PropKind::Snowman => (1.0, 0.0),
                     PropKind::Bush => (rng.range(0.5, 0.8), 0.0),
+                    // knee-to-head-high saplings: nothing to crash into
+                    PropKind::SnowSpruce => (rng.range(0.12, 0.22), 0.0),
                     _ => (rng.range(0.8, 1.3), 0.0),
                 };
                 self.push(kind, p, rng.range(0.0, 6.28), scale, radius, rng.range_i(0, 3) as u8);
@@ -3124,17 +3198,23 @@ impl<'a> PropPlacer<'a> {
                 if self.circuit() {
                     density *= 0.55;
                 }
+                // taiga: the forest goes on as far as the fog lets you see
+                let band = if biome == Biome::Taiga { 72.0 } else { 60.0 };
                 if self.open() {
-                    if q.dist > 60.0 {
+                    if q.dist > band {
                         continue;
                     }
-                    density *= 0.6 - 0.4 * smoothstep(18.0, 60.0, q.dist);
+                    density *= 0.6 - 0.4 * smoothstep(18.0, band, q.dist);
                 } else {
                     density *= 1.0 - 0.72 * smoothstep(50.0, 140.0, q.dist);
                 }
                 if biome == Biome::Forest {
                     // closed woods: the forest stands right behind the verge
                     density = (density * 1.3 + 0.22).min(0.95);
+                }
+                if biome == Biome::Taiga {
+                    // endless spruce: dense everywhere, a wall of trees behind the snowbanks
+                    density = (density * 1.35 + 0.28).min(0.95);
                 }
                 if !rng.chance(density) {
                     continue;
@@ -3175,11 +3255,19 @@ impl<'a> PropPlacer<'a> {
                         Biome::Forest => {
                             if r < 0.04 { Rock } else if r < 0.42 { TallTree } else if r < 0.74 { Spruce } else if r < 0.8 { Birch } else if r < 0.88 { Bush } else if r < 0.92 { Mushroom } else { Grass }
                         }
+                        Biome::Taiga => {
+                            if r < 0.03 { Rock } else if r < 0.6 { SnowSpruce } else if r < 0.82 { SnowPine } else if r < 0.88 { Birch } else if r < 0.96 { Bush } else { Grass }
+                        }
                     }
                 };
-                let tall = matches!(kind, Tree | Pine | Palm | Birch | Blossom | TallTree | Spruce);
-                // forest: the big trunks stand closer to the road (like a real forest stage)
-                let tall_gap = if biome == Biome::Forest { 3.5 } else { 6.0 };
+                let tall = matches!(kind, Tree | Pine | Palm | Birch | Blossom | TallTree | Spruce | SnowSpruce | SnowPine);
+                // forest / taiga: the big trunks stand close to the road (like a real forest
+                // stage); in the taiga right behind the snowbank
+                let tall_gap = match biome {
+                    Biome::Forest => 3.5,
+                    Biome::Taiga => 4.0,
+                    _ => 6.0,
+                };
                 if tall && q.dist < hw + SHOULDER + tall_gap {
                     continue;
                 }
@@ -3193,6 +3281,8 @@ impl<'a> PropPlacer<'a> {
                     Tree | Pine | Palm | Blossom => 0.45 * scale,
                     TallTree => 0.55 * scale,
                     Spruce => 0.45 * scale,
+                    SnowSpruce => 0.45 * scale,
+                    SnowPine => 0.4 * scale,
                     LogPile => 1.2 * scale,
                     Birch => 0.3 * scale,
                     Cactus => 0.35 * scale,

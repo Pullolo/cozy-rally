@@ -11,10 +11,13 @@ pub enum Biome {
     Coast,
     /// European mountain forest: narrow tarmac through tall beech and spruce woods
     Forest,
+    /// Snowy northern taiga: packed-snow roads between snowbanks, endless snow-laden spruces
+    /// and pines, a low golden winter sun
+    Taiga,
 }
 
 /// Random-biome picks (`seed % 5`) only draw from the first five so old seeds keep their biome.
-pub const ALL_BIOMES: [Biome; 6] = [Biome::Meadow, Biome::Autumn, Biome::Snow, Biome::Desert, Biome::Coast, Biome::Forest];
+pub const ALL_BIOMES: [Biome; 7] = [Biome::Meadow, Biome::Autumn, Biome::Snow, Biome::Desert, Biome::Coast, Biome::Forest, Biome::Taiga];
 
 #[derive(Clone, Debug)]
 pub struct BiomeStyle {
@@ -196,7 +199,38 @@ impl Biome {
                 has_water: true,
                 tree_density: 1.0,
             },
+            Biome::Taiga => BiomeStyle {
+                name: "Snowy Taiga",
+                // low northern winter sun: peach-pink horizon, cool blue shade
+                sky_top: [0.40, 0.54, 0.80],
+                sky_horizon: [1.0, 0.82, 0.74],
+                fog: [0.92, 0.86, 0.88],
+                fog_density: 0.0052,
+                sun_dir: [-0.6, 0.36, -0.5],
+                sun_color: [1.18, 0.92, 0.76],
+                ambient: [0.50, 0.54, 0.70],
+                ground_a: [0.95, 0.95, 0.99],
+                ground_b: [0.88, 0.90, 0.97],
+                cliff: [0.46, 0.48, 0.54],
+                road: [0.76, 0.74, 0.76],
+                road_edge: [0.86, 0.86, 0.91],
+                shoulder: [0.97, 0.97, 1.0],
+                water: [0.62, 0.78, 0.90],
+                leaves: [[0.13, 0.30, 0.24], [0.17, 0.36, 0.27], [0.96, 0.97, 1.0]],
+                trunk: [0.46, 0.30, 0.22],
+                road_surface: Surface::Snow,
+                offroad_surface: Surface::Snow,
+                hill_amp: 26.0,
+                hill_freq: 1.0 / 260.0,
+                has_water: true,
+                tree_density: 1.0,
+            },
         }
+    }
+
+    /// Snow-covered biomes (snow caps on props, snowfall instead of rain, bright snowy nights)
+    pub fn is_snowy(self) -> bool {
+        matches!(self, Biome::Snow | Biome::Taiga)
     }
 
     pub fn from_index(i: usize) -> Biome {

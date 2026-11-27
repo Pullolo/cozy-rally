@@ -66,6 +66,8 @@ pub fn generate(inp: &ConditionsInput) -> (StageConditions, Vec<(f32, f32, Weath
         Biome::Desert => 0.05,
         Biome::Coast => 0.25,
         Biome::Forest => 0.4,
+        // mostly crisp, clear winter days
+        Biome::Taiga => 0.3,
     };
     let base_wind = match inp.biome {
         Biome::Coast => rng.range(4.0, 6.5),
@@ -74,7 +76,7 @@ pub fn generate(inp: &ConditionsInput) -> (StageConditions, Vec<(f32, f32, Weath
         _ => rng.range(1.0, 2.5),
     };
     let wind_dir = rng.range(0.0, std::f32::consts::TAU);
-    let snowy = inp.biome == Biome::Snow;
+    let snowy = inp.biome.is_snowy();
     let desert = inp.biome == Biome::Desert;
 
     // ---- events: (start, end, kind, intensity)
@@ -173,7 +175,7 @@ pub fn generate(inp: &ConditionsInput) -> (StageConditions, Vec<(f32, f32, Weath
     let base_wet = wet;
     let dry_rate = match inp.biome {
         Biome::Desert => 1.0 / 500.0,
-        Biome::Snow => 1.0 / 2000.0,
+        Biome::Snow | Biome::Taiga => 1.0 / 2000.0,
         _ => 1.0 / rng.range(900.0, 1500.0),
     };
     for k in 0..count {

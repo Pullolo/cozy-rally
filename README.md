@@ -10,7 +10,7 @@ physics. Everything (models, sounds, music) is generated in code.
 - Procedural rally stages: hairpins, squares, chicanes, crests, jumps; Relaxed / Rally / Expert
 - Surfaces: gravel, tarmac, dirt, snow, ice, mud, sand, Mixed stages with smooth transitions
 - Rally pace notes with co-driver calls (N)
-- 5 biomes, shadows, bloom, wind, water, golden hour
+- 7 biomes, shadows, bloom, wind, water, golden hour
 - Night races (Setup -> Time: Night): you see what your headlights reach. H toggles high /
   low beam (pad: D-pad up); big hits can smash a lamp; stars, moon, fireflies, glowing tail lights.
   Circuits have floodlit zones (pit straight + a few slow corners); the rest of the lap is dark

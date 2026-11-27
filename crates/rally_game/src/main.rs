@@ -572,7 +572,7 @@ impl App {
         let view = Mat4::look_at_rh(eye, target, Vec3::Y);
         let proj = Mat4::perspective_rh_gl(fov, aspect, 0.1, 100.0);
         let v = View::new(view, proj, eye);
-        let env = Environment { sun_dir: vec3(-0.4, 0.8, 0.5).normalize(), sun_color: [1.0, 0.95, 0.88], ambient: [0.48, 0.5, 0.56], fog_color: [1.0, 1.0, 1.0], fog_density: 0.0, time: 0.0, night: 0.0 };
+        let env = Environment { sun_dir: vec3(-0.4, 0.8, 0.5).normalize(), sun_color: [1.0, 0.95, 0.88], ambient: [0.48, 0.5, 0.56], fog_color: [1.0, 1.0, 1.0], fog_density: 0.0, time: 0.0, night: 0.0, aurora: 0.0 };
         let rot = Mat4::from_rotation_y(self.preview_angle);
         let ride = -spec.mount_height + spec.susp_rest * 0.8 + spec.wheel_radius - 0.6;
         let m = rot * Mat4::from_translation(vec3(0.0, ride, 0.0));

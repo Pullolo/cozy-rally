@@ -80,13 +80,13 @@ impl Night {
             })
             .collect();
         let firefly_color = match biome {
-            Biome::Snow => [0.0; 3], // no fireflies in the snow
+            Biome::Snow | Biome::Taiga => [0.0; 3], // no fireflies in the snow
             Biome::Desert => [1.0, 0.75, 0.45],
             Biome::Coast => [0.55, 1.0, 0.85],
             _ => [0.85, 1.0, 0.45],
         };
         Night { lamps: vec![[1.0, 1.0]; cars], high: vec![std::env::var("COZY_HIGHBEAM").is_ok_and(|v| v == "1"); cars], lamp_msg: vec![f32::INFINITY; cars], fireflies: Vec::new(), firefly_color, seed: seed as u32, posts, power: match biome {
-            Biome::Snow => 0.62,
+            Biome::Snow | Biome::Taiga => 0.62,
             Biome::Desert => 0.82,
             _ => 1.0,
         } }

@@ -238,7 +238,23 @@ pub fn campaign() -> Vec<Chapter> {
                 stage_c("c5s3-summit-blizzard", "Summit Blizzard", "The final test: a blizzard at the top.", 5103, Biome::Snow, 7.5, 2, SurfaceMode::Snow, &[], ConditionsSpec::Storm),
             ],
         },
+        Chapter {
+            name: "Taiga Rally".into(),
+            biome: Biome::Taiga,
+            unlock_golds: 14,
+            stages: vec![
+                stage("c6s1-spruce-corridor", "Spruce Corridor", "Packed snow between walls of snow-laden spruce. Lean on the snowbanks.", 6101, Biome::Taiga, 5.0, 1, BiomeDefault, &[]),
+                stage("c6s2-reindeer-crossing", "Reindeer Crossing", "Fast forest roads in the low winter sun, polished ice in the shade. Mind the herd.", 6102, Biome::Taiga, 6.5, 2, BiomeDefault, &[]),
+                night(stage("c6s3-northern-lights", "Northern Lights", "The long one, after dark. Headlights, snowbanks and nine kilometres of spruce.", 6103, Biome::Taiga, 9.0, 2, SurfaceMode::Snow, &[])),
+            ],
+        },
     ]
+}
+
+/// The same stage run after dark (headlamps, floodlit nothing: it's the forest)
+fn night(mut s: StageDef) -> StageDef {
+    s.params.night = true;
+    s
 }
 
 /// Chapters of a campaign
