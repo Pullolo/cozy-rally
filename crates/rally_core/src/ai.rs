@@ -495,7 +495,7 @@ impl AiDriver {
                 delta = delta.clamp(theta - half, theta + half);
             }
             // invert the car's steering system (assists / slip-angle limiter included)
-            steer = car.steer_input_for_angle(delta);
+            steer = car.steer_input_for_angle(delta, true);
         }
         if car.telemetry.wheels_on_ground == 0 && car.telemetry.airtime > 0.05 {
             // keep the wheels straight in the air: land pointing where we're going

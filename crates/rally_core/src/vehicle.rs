@@ -8,8 +8,9 @@
 //!   drivetrain/brakes, combined via a friction ellipse (wheelspin steals lateral grip ->
 //!   power oversteer; handbrake locks the rear -> rotation).
 //! * Engine torque curve, auto gearbox with shift cut, engine braking, reverse logic.
-//! * Assists (Forza-Horizon-ish feel): speed-sensitive steering, counter-steer assist,
-//!   yaw stability, air control that lands you wheels-down.
+//! * Assists: speed-sensitive steering, traction control, ABS, air control that lands you
+//!   wheels-down. Slides get no help for human drivers at any assist level (no automatic
+//!   countersteer, stability control or spin protection); the AI keeps those.
 //! Car local frame: +X right, +Y up, -Z forward.
 use crate::input::CarInput;
 use crate::surface::{Surface, SurfaceProps};
@@ -856,7 +857,7 @@ impl Car {
 
         // ---------------- steering with assists (see steer_target)
         let steer_in = input.steer.clamp(-1.0, 1.0);
-        let target = self.steer_target(steer_in);
+        let target = self.steer_target(steer_in, input.ai);
         let rate = 4.0 * dt;
         self.steer += (target - self.steer).clamp(-rate, rate);
 
@@ -945,13 +946,14 @@ impl Car {
             total_drive_torque = total_drive_torque.min(cap);
         }
 
-        // assists that follow the player's assist level: traction control, stability control, ABS
+        // assists that follow the assist level: traction control and ABS. Human drivers get no
+        // slide aids at any level (no stability control, spin protection or TC in a slide):
+        // a slide behaves the same on Cozy as on Sim and the driver catches it.
         let tc = tc_strength(self.assist_level);
         let abs = abs_strength(self.assist_level);
-        if tc > 0.0 && speed > 6.0 && v_long_body > 0.0 && total_drive_torque > 0.0 {
-            // stability control: back off the power when the car is sliding beyond a drift angle
-            // (drifts are allowed: power is only cut near a spin, past the assist's drift limit,
-            // and only while the slide is still growing)
+        if input.ai && tc > 0.0 && speed > 6.0 && v_long_body > 0.0 && total_drive_torque > 0.0 {
+            // AI stability control: back off the power when the car is sliding beyond a drift
+            // angle (only past the limit and only while the slide is still growing)
             let beta = v_lat_body.atan2(v_long_body);
             let lim = self.esc_limit(input.ai);
             // d(beta)/dt = yaw rate - course rate
@@ -979,10 +981,12 @@ impl Car {
         let mut lockup: f32 = 0.0;
         // Once the car is properly sideways (a drift the driver started: handbrake, flick or
         // power), traction control stops holding the driven wheels to grip-level slip: a drift
-        // is steered with the throttle, and cutting all drive just lets it die. It still reins
-        // in plain wheelspin and catches spins (power cut past the drift limit above).
+        // is steered with the throttle, and cutting all drive just lets it die. For human
+        // drivers TC lets go completely past ~13 deg (`tc_off`), at every assist level; the AI
+        // keeps a reduced TC in a slide.
         let body_beta = v_lat_body.atan2(v_long_body.abs().max(0.5));
         let drifting = if speed > 6.0 { ((body_beta.abs() - 0.1) / 0.12).clamp(0.0, 1.0) } else { 0.0 };
+        let tc_off = if input.ai { 0.0 } else { drifting };
         for i in 0..4 {
             let mount = self.pos + self.rot * self.wheels[i].local_mount;
             let down = -up;
@@ -1179,7 +1183,7 @@ impl Car {
                 let by_combined = (combined - (1.0 + (1.0 - tc) * 2.6)) / 0.5 * lat_frac * (1.0 - drifting);
                 // in a drift the rears may spin up a little (power-over) before TC reins them in
                 let drift_relax = 1.0 - 0.75 * drifting;
-                ((p_cut + w.tc_i) * drift_relax).max(by_combined).clamp(0.0, 1.0) * (0.6 + 0.4 * tc)
+                ((p_cut + w.tc_i) * drift_relax).max(by_combined).clamp(0.0, 1.0) * (0.6 + 0.4 * tc) * (1.0 - tc_off)
             } else {
                 w.tc_i = (w.tc_i - dt * 1.5).max(0.0);
                 0.0
@@ -1256,7 +1260,9 @@ impl Car {
         // drift damping: resist the drift angle *changing* (yaw rate vs. how fast the direction
         // of travel turns), never the rotation itself. A steady corner or a held drift feels
         // nothing; the left-right pendulum of a slide snapping back and overshooting is calmed
-        // (tyre carcass / relaxation damping, more with assists).
+        // (tyre carcass / relaxation damping). AI: more with assists. Human drivers: the same
+        // physical amount at every assist level.
+        let damp_level = if input.ai { self.assist_level } else { HUMAN_DAMPING_LEVEL };
         if on_ground >= 2 && speed > 3.0 {
             let rel = self.ang_vel.dot(up) - self.course_rate;
             // the drift angle beta grows when the nose rotates past the travel direction:
@@ -1264,19 +1270,20 @@ impl Car {
             // overshoots to the other side) fully
             let beta = v_lat_body.atan2(v_long_body.abs());
             let building = rel * beta.signum() > 0.0 && beta.abs() < self.esc_limit(input.ai);
-            let k = drift_damping(self.assist_level) * (0.6 + 0.4 * spec.assist) * (speed / 8.0).min(1.0) * if building { 0.3 } else { 1.0 };
+            let k = drift_damping(damp_level) * (0.6 + 0.4 * spec.assist) * (speed / 8.0).min(1.0) * if building { 0.3 } else { 1.0 };
             torque -= up * rel * k / self.inv_inertia_local.y;
         }
 
-        // electronic stability control (strength follows the assist level): when the car is
-        // sliding past a drift angle and still rotating into the slide, apply a corrective yaw
-        // moment (what per-wheel ESC braking achieves). Off while handbrake-drifting.
+        // electronic stability control, AI only (strength follows the assist level): when the
+        // car is sliding past a drift angle and still rotating into the slide, apply a
+        // corrective yaw moment (what per-wheel ESC braking achieves). Off while
+        // handbrake-drifting.
         if input.handbrake > 0.5 {
             self.handbrake_age = 0.0;
         } else {
             self.handbrake_age += dt;
         }
-        if tc > 0.0 && on_ground >= 2 && speed > 5.0 && v_long_body > 0.0 {
+        if input.ai && tc > 0.0 && on_ground >= 2 && speed > 5.0 && v_long_body > 0.0 {
             let beta = v_lat_body.atan2(v_long_body);
             // spin catcher, not a drift killer: only past the assist's drift limit
             let lim = self.esc_limit(input.ai);
@@ -1293,8 +1300,8 @@ impl Car {
             }
         }
 
-        // spin protection: beyond a generous drift angle, gently yaw the car back
-        if on_ground >= 2 && speed > 5.0 && v_long_body > -1.0 {
+        // spin protection, AI only: beyond a generous drift angle, gently yaw the car back
+        if input.ai && on_ground >= 2 && speed > 5.0 && v_long_body > -1.0 {
             let beta = v_lat_body.atan2(v_long_body.abs());
             let limit = self.esc_limit(input.ai) + 0.2 + (1.0 - spec.assist * self.assist_level).max(0.0) * 0.4;
             if beta.abs() > limit {
@@ -1448,17 +1455,20 @@ impl Car {
     }
 
     /// Road-wheel angle the steering system aims for with `steer_in` (-1..1). Monotonic in
-    /// `steer_in` (the AI inverts it).
+    /// `steer_in` (the AI inverts it). `ai`: the AI driver's steering model (see below).
     ///
-    /// Steering model (all assist levels): the input commands the front tyres' slip relative to
-    /// where the front axle is actually travelling. With the wheel released, caster and the
-    /// tyres' self-aligning torque turn the wheels toward that direction of travel (zero front
-    /// slip), exactly like letting go of a real steering wheel in a slide: the car stops
-    /// rotating and settles instead of being steered into a spin or snapped back. Full input
-    /// either way adds a span of slip on top: about the tyres' peak slip angle with the steering
-    /// limiter (Cozy/Normal/Sport), a speed-sensitive raw angle on Sim. Countersteer is never
-    /// capped by speed sensitivity, so a slide can always be caught with opposite lock.
-    pub fn steer_target(&self, steer_in: f32) -> f32 {
+    /// Human drivers (every assist level): the input alone turns the wheels. Released, they
+    /// point straight ahead relative to the car, so nothing countersteers for the driver: in a
+    /// slide the player has to dial in opposite lock. The input's range each way is a span of
+    /// slip (about the tyres' peak slip angle with the steering limiter on Cozy/Normal/Sport, a
+    /// speed-sensitive raw angle on Sim) plus, toward where the front axle is travelling, the
+    /// angle needed to line the wheels up with it. Speed-sensitive steering therefore never
+    /// caps countersteer: full opposite lock is always enough to catch a slide.
+    ///
+    /// AI drivers: the input commands front slip relative to the front axle's direction of
+    /// travel and the released wheels self-align with it (caster), which keeps the AI's lines
+    /// tidy.
+    pub fn steer_target(&self, steer_in: f32, ai: bool) -> f32 {
         let spec = &self.spec;
         let steer_in = steer_in.clamp(-1.0, 1.0);
         let max = spec.max_steer;
@@ -1470,7 +1480,6 @@ impl Car {
             return low;
         }
         let theta = self.front_travel_angle().clamp(-max, max);
-        let neutral = theta * caster_gain(self.assist_level);
         let span = match steer_limit_factor(self.assist_level) {
             Some(k) => k * spec.peak_slip_angle,
             None => {
@@ -1478,19 +1487,24 @@ impl Car {
                 (max * speed_factor.max(0.22)).max(spec.peak_slip_angle * 1.3)
             }
         };
-        let target = (neutral + steer_in * span).clamp(-max, max);
+        let target = if ai {
+            (theta * caster_gain(self.assist_level) + steer_in * span).clamp(-max, max)
+        } else {
+            let reach = if steer_in * theta > 0.0 { span + theta.abs() } else { span };
+            (steer_in * reach).clamp(-max, max)
+        };
         // full lock stays available when parking / turning around
         let w = ((speed - 3.0) / 5.0).clamp(0.0, 1.0);
         (low + (target - low) * w).clamp(-max, max)
     }
 
-    /// Drift angle (rad) where stability / traction control start catching a slide: the
-    /// drift-friendly `drift_limit` for human drivers, early (~7-30 deg) for the AI.
+    /// Drift angle (rad) where stability control starts catching a slide: early (~7-30 deg)
+    /// for the AI, never for human drivers (their slides are theirs to catch).
     fn esc_limit(&self, ai: bool) -> f32 {
         if ai {
             0.12 + (1.0 - tc_strength(self.assist_level)) * 0.45
         } else {
-            drift_limit(self.assist_level)
+            std::f32::consts::PI
         }
     }
 
@@ -1503,17 +1517,17 @@ impl Car {
     }
 
     /// Steering input (-1..1) that makes `steer_target` closest to `angle` (rad)
-    pub fn steer_input_for_angle(&self, angle: f32) -> f32 {
+    pub fn steer_input_for_angle(&self, angle: f32, ai: bool) -> f32 {
         let (mut lo, mut hi) = (-1.0f32, 1.0f32);
-        if self.steer_target(hi) <= angle {
+        if self.steer_target(hi, ai) <= angle {
             return 1.0;
         }
-        if self.steer_target(lo) >= angle {
+        if self.steer_target(lo, ai) >= angle {
             return -1.0;
         }
         for _ in 0..14 {
             let mid = 0.5 * (lo + hi);
-            if self.steer_target(mid) < angle {
+            if self.steer_target(mid, ai) < angle {
                 lo = mid;
             } else {
                 hi = mid;
@@ -1580,9 +1594,8 @@ pub fn load_sensitivity(tyre: TyreType) -> f32 {
     }
 }
 
-/// How far the released steering self-aligns toward the front axle's direction of travel
-/// (caster + self-aligning torque; 1 = zero front slip hands-off). A touch less on Sim, where
-/// the driver holds the wheel more.
+/// AI steering only: how far the released steering self-aligns toward the front axle's
+/// direction of travel (caster + self-aligning torque; 1 = zero front slip hands-off).
 pub fn caster_gain(assist_level: f32) -> f32 {
     if assist_level <= 0.2 {
         0.85
@@ -1591,20 +1604,14 @@ pub fn caster_gain(assist_level: f32) -> f32 {
     }
 }
 
-/// Drift angle (rad) up to which stability control / traction control leave a slide alone.
-/// Beyond it they help catch a spin. Cozy ~36 deg, Normal ~44, Sport ~55, Sim none.
-pub fn drift_limit(assist_level: f32) -> f32 {
-    if assist_level <= 0.2 {
-        3.0
-    } else {
-        (0.98 - 0.25 * assist_level).clamp(0.62, 0.95)
-    }
-}
-
 /// Drift-angle-rate damping (1/s) for an assist level
 pub fn drift_damping(assist_level: f32) -> f32 {
     1.5 + 2.5 * assist_level.clamp(0.0, 1.3)
 }
+
+/// Level whose `drift_damping` human drivers get at every assist level (the physical tyre
+/// relaxation part, no assist on top)
+const HUMAN_DAMPING_LEVEL: f32 = 0.0;
 
 /// Steering limiter: fraction of the tyre's peak slip angle that full steering input uses,
 /// or None (Sim: raw steering angle). Cozy 0.85, Normal 0.9, Sport ~1.1.

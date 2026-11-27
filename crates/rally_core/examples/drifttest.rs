@@ -3,7 +3,8 @@
 //!
 //! For each car / assist level / surface:
 //! * init: 70 km/h, flick into a corner with a short handbrake pull, full throttle, then
-//!   HANDS OFF the steering (keyboard released). Reports how long the drift lasts.
+//!   HANDS OFF the steering (keyboard released). Reports how long the drift lasts. Human
+//!   drivers get no automatic countersteer, so hands off usually ends in a spin (max ~90).
 //! * pad: an analogue "skilled driver" holds a 30 deg drift for 6 s (steering toward the front
 //!   axle's direction of travel plus a correction, throttle on the drift angle).
 //! * key: the same with keyboard-style digital steering and throttle (game ramps).
@@ -105,7 +106,7 @@ fn run(spec: usize, track: &Track, assist: f32, mode: Mode) -> Stats {
                     let theta = c.front_travel_angle();
                     let corr = (b - target) * 1.2;
                     let angle = theta + side * corr * 0.6;
-                    steer = c.steer_input_for_angle(angle);
+                    steer = c.steer_input_for_angle(angle, false);
                     thr = (0.75 + (target - b) * 4.0).clamp(0.0, 1.0);
                 }
                 Mode::Exit | Mode::Pad => {

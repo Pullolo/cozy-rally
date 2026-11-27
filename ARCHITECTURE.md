@@ -39,10 +39,13 @@ crates/rally_core/   headless simulation (no graphics). glam 0.27 shared with ma
                drifttest.rs (initiate / hold / exit a drift per car and assist level),
                circuit_season.rs (drives every circuit campaign event headless)
 
-Drift model (vehicle.rs): steering input commands front slip relative to the front axle's
-direction of travel and the released wheel self-aligns with it (caster); the handbrake locks the
-rears and cuts rear drive; ESC / TC only catch spins past `drift_limit` (human inputs) and damp
-the drift-angle *rate*, never a held drift. AI inputs (`CarInput::ai`) keep the early ESC.
+Drift model (vehicle.rs): human drivers get the same slide physics at every assist level. The
+released wheel points straight ahead (no automatic countersteer: the player dials in opposite
+lock, whose range always reaches the front axle's direction of travel); no ESC, spin protection
+or TC in a slide (> ~13 deg); a fixed drift-angle-*rate* damping (tyre relaxation). Assist
+levels only change the steering range, TC on wheelspin before a slide and ABS. The handbrake
+locks the rears and cuts rear drive. AI inputs (`CarInput::ai`) keep caster self-alignment and
+the early ESC / spin protection.
 crates/rally_net/    online multiplayer (no graphics; depends on rally_core)
   protocol.rs  ClientMsg / ServerMsg, PROTOCOL_VERSION (bump on any layout change), DEFAULT_PORT 27420
   conn.rs      non-blocking framed TCP (u32 LE length + bincode); UdpMsg datagrams carry the
